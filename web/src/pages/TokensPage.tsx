@@ -4,6 +4,30 @@ import DataTable, { type Column } from "../components/DataTable";
 import { backendGet, backendPost, backendPut, backendDelete } from "../lib/backend";
 import { toast } from "../components/Feedback";
 import { compact, shortDate } from "../lib/fmt";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Plus, RefreshCw, Trash2, Copy } from "lucide-react";
 
 type Token = {
   id: number;
@@ -35,6 +59,7 @@ export default function TokensPage() {
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState<TokenForm>(emptyForm);
+  const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
 
   function load() {
     setLoading(true);
@@ -79,14 +104,16 @@ export default function TokensPage() {
     }
   }
 
-  async function deleteToken(id: number) {
-    if (!confirm("确定删除此令牌？")) return;
+  async function confirmDelete() {
+    if (deleteTarget === null) return;
     try {
-      await backendDelete(`/api/token/${id}`);
+      await backendDelete(`/api/token/${deleteTarget}`);
       toast("已删除");
       load();
     } catch {
       toast("删除失败", "error");
+    } finally {
+      setDeleteTarget(null);
     }
   }
 
@@ -101,16 +128,38 @@ export default function TokensPage() {
     }
   }
 
+  function copyKey(key: string) {
+    navigator.clipboard.writeText(key);
+    toast("已复制到剪贴板");
+  }
+
   const columns: Column<Token>[] = [
-    { key: "name", header: "名称", render: (r) => <span className="font-medium">{r.name}</span> },
+    {
+      key: "name",
+      header: "名称",
+      render: (r) => <span className="font-medium">{r.name}</span>,
+    },
     {
       key: "key",
       header: "Key",
-      render: (r) => (
-        <code className="text-xs text-paper-500">
-          {r.key ? `sk-...${r.key.slice(-6)}` : "-"}
-        </code>
-      ),
+      render: (r) =>
+        r.key ? (
+          <div className="flex items-center gap-1">
+            <code className="text-xs text-muted-foreground">
+              sk-...{r.key.slice(-6)}
+            </code>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6"
+              onClick={() => copyKey(r.key)}
+            >
+              <Copy className="size-3" />
+            </Button>
+          </div>
+        ) : (
+          <span className="text-muted-foreground">-</span>
+        ),
     },
     {
       key: "status",
@@ -139,25 +188,21 @@ export default function TokensPage() {
       key: "actions",
       header: "",
       render: (r) => (
-        <div className="flex gap-2">
-          <button
-            onClick={() => openEdit(r)}
-            className="rounded px-2 py-1 text-xs text-paper-500 border border-paper-200 hover:bg-paper-200/60 transition-colors"
-          >
+        <div className="flex gap-1">
+          <Button variant="ghost" size="sm" onClick={() => openEdit(r)}>
             编辑
-          </button>
-          <button
-            onClick={() => toggleToken(r)}
-            className="rounded px-2 py-1 text-xs text-paper-500 border border-paper-200 hover:bg-paper-200/60 transition-colors"
-          >
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => toggleToken(r)}>
             {r.status === 1 ? "停用" : "启用"}
-          </button>
-          <button
-            onClick={() => deleteToken(r.id)}
-            className="rounded px-2 py-1 text-xs text-clay-500 border border-clay-500/30 hover:bg-clay-500/10 transition-colors"
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 text-destructive hover:text-destructive"
+            onClick={() => setDeleteTarget(r.id)}
           >
-            删除
-          </button>
+            <Trash2 className="size-4" />
+          </Button>
         </div>
       ),
     },
@@ -168,97 +213,110 @@ export default function TokensPage() {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">令牌</h2>
         <div className="flex gap-2">
-          <button
-            onClick={load}
-            className="rounded-md border border-paper-200 px-3 py-1.5 text-xs text-paper-500 hover:bg-paper-200/60 transition-colors"
-          >
+          <Button variant="outline" size="sm" onClick={load}>
+            <RefreshCw className="size-4" />
             刷新
-          </button>
-          <button
-            onClick={openCreate}
-            className="rounded-md bg-paper-700 px-3 py-1.5 text-xs text-paper-50 hover:bg-paper-800 transition-colors"
-          >
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="size-4" />
             新建令牌
-          </button>
+          </Button>
         </div>
       </div>
 
       {loading ? (
-        <p className="py-12 text-center text-sm text-paper-300">加载中...</p>
+        <Skeleton className="h-48" />
       ) : (
-        <div className="rounded-xl border border-paper-200 bg-paper-100 p-1">
-          <DataTable
-            columns={columns}
-            rows={tokens}
-            rowKey={(r) => r.id}
-            empty="暂无令牌"
-          />
-        </div>
+        <Card>
+          <CardContent className="p-1">
+            <DataTable
+              columns={columns}
+              rows={tokens}
+              rowKey={(r) => r.id}
+              empty="暂无令牌"
+            />
+          </CardContent>
+        </Card>
       )}
 
-      {/* ── create / edit form ── */}
-      {showForm && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-paper-800/30">
-          <form
-            onSubmit={handleSubmit}
-            className="w-full max-w-sm rounded-xl border border-paper-200 bg-paper-50 p-6 shadow-lg"
-          >
-            <h3 className="mb-4 text-lg font-semibold text-paper-700">
-              {editId ? "编辑令牌" : "新建令牌"}
-            </h3>
+      <Dialog open={showForm} onOpenChange={setShowForm}>
+        <DialogContent>
+          <form onSubmit={handleSubmit}>
+            <DialogHeader>
+              <DialogTitle>
+                {editId ? "编辑令牌" : "新建令牌"}
+              </DialogTitle>
+            </DialogHeader>
 
-            <label className="block text-xs text-paper-500 mb-1">名称</label>
-            <input
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              required
-              className="mb-4 block w-full rounded-md border border-paper-200 bg-paper-100 px-3 py-2 text-sm text-paper-800 focus:border-paper-500 focus:outline-none"
-            />
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="token-name">名称</Label>
+                <Input
+                  id="token-name"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  required
+                />
+              </div>
 
-            <div className="mb-4 flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={form.unlimited_quota}
-                onChange={(e) =>
-                  setForm({ ...form, unlimited_quota: e.target.checked })
-                }
-                className="rounded border-paper-200"
-              />
-              <label className="text-xs text-paper-500">无限额度</label>
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={form.unlimited_quota}
+                  onCheckedChange={(v) =>
+                    setForm({ ...form, unlimited_quota: v })
+                  }
+                />
+                <Label>无限额度</Label>
+              </div>
+
+              {!form.unlimited_quota && (
+                <div className="space-y-2">
+                  <Label htmlFor="token-quota">额度</Label>
+                  <Input
+                    id="token-quota"
+                    type="number"
+                    value={form.remain_quota}
+                    onChange={(e) =>
+                      setForm({ ...form, remain_quota: Number(e.target.value) })
+                    }
+                  />
+                </div>
+              )}
             </div>
 
-            {!form.unlimited_quota && (
-              <>
-                <label className="block text-xs text-paper-500 mb-1">额度</label>
-                <input
-                  type="number"
-                  value={form.remain_quota}
-                  onChange={(e) =>
-                    setForm({ ...form, remain_quota: Number(e.target.value) })
-                  }
-                  className="mb-4 block w-full rounded-md border border-paper-200 bg-paper-100 px-3 py-2 text-sm text-paper-800 focus:border-paper-500 focus:outline-none"
-                />
-              </>
-            )}
-
-            <div className="flex justify-end gap-2">
-              <button
+            <DialogFooter>
+              <Button
                 type="button"
+                variant="outline"
                 onClick={() => setShowForm(false)}
-                className="rounded-md border border-paper-200 px-3 py-1.5 text-sm text-paper-500 hover:bg-paper-200/60 transition-colors"
               >
                 取消
-              </button>
-              <button
-                type="submit"
-                className="rounded-md bg-paper-700 px-3 py-1.5 text-sm text-paper-50 hover:bg-paper-800 transition-colors"
-              >
-                {editId ? "保存" : "创建"}
-              </button>
-            </div>
+              </Button>
+              <Button type="submit">{editId ? "保存" : "创建"}</Button>
+            </DialogFooter>
           </form>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确定删除此令牌？</AlertDialogTitle>
+            <AlertDialogDescription>
+              此操作不可撤销，删除后令牌将立即失效。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete}>
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

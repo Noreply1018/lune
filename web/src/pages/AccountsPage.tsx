@@ -3,6 +3,27 @@ import StatusBadge from "../components/StatusBadge";
 import DataTable, { type Column } from "../components/DataTable";
 import { luneGet, lunePost, lunePut } from "../lib/api";
 import { toast } from "../components/Feedback";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Plus, RefreshCw } from "lucide-react";
 
 type Account = {
   id: string;
@@ -108,14 +129,14 @@ export default function AccountsPage() {
       key: "id",
       header: "ID",
       render: (r) => (
-        <code className="text-xs text-paper-500">{r.id}</code>
+        <code className="text-xs text-muted-foreground">{r.id}</code>
       ),
     },
     {
       key: "credential",
       header: "凭据",
       render: (r) => (
-        <code className="text-xs text-paper-500">
+        <code className="text-xs text-muted-foreground">
           {r.credential || r.credential_env || "-"}
         </code>
       ),
@@ -145,19 +166,13 @@ export default function AccountsPage() {
       key: "actions",
       header: "",
       render: (r) => (
-        <div className="flex gap-2">
-          <button
-            onClick={() => openEdit(r)}
-            className="rounded px-2 py-1 text-xs text-paper-500 border border-paper-200 hover:bg-paper-200/60 transition-colors"
-          >
+        <div className="flex gap-1">
+          <Button variant="ghost" size="sm" onClick={() => openEdit(r)}>
             编辑
-          </button>
-          <button
-            onClick={() => toggleAccount(r)}
-            className="rounded px-2 py-1 text-xs text-paper-500 border border-paper-200 hover:bg-paper-200/60 transition-colors"
-          >
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => toggleAccount(r)}>
             {r.enabled ? "停用" : "启用"}
-          </button>
+          </Button>
         </div>
       ),
     },
@@ -168,117 +183,117 @@ export default function AccountsPage() {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">账号</h2>
         <div className="flex gap-2">
-          <button
-            onClick={load}
-            className="rounded-md border border-paper-200 px-3 py-1.5 text-xs text-paper-500 hover:bg-paper-200/60 transition-colors"
-          >
+          <Button variant="outline" size="sm" onClick={load}>
+            <RefreshCw className="size-4" />
             刷新
-          </button>
-          <button
-            onClick={openCreate}
-            className="rounded-md bg-paper-700 px-3 py-1.5 text-xs text-paper-50 hover:bg-paper-800 transition-colors"
-          >
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="size-4" />
             新建账号
-          </button>
+          </Button>
         </div>
       </div>
 
       {loading ? (
-        <p className="py-12 text-center text-sm text-paper-300">加载中...</p>
+        <Skeleton className="h-48" />
       ) : (
-        <div className="rounded-xl border border-paper-200 bg-paper-100 p-1">
-          <DataTable
-            columns={columns}
-            rows={accounts}
-            rowKey={(r) => r.id}
-            empty="暂无账号"
-          />
-        </div>
+        <Card>
+          <CardContent className="p-1">
+            <DataTable
+              columns={columns}
+              rows={accounts}
+              rowKey={(r) => r.id}
+              empty="暂无账号"
+            />
+          </CardContent>
+        </Card>
       )}
 
-      {showForm && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-paper-800/30">
-          <form
-            onSubmit={handleSubmit}
-            className="w-full max-w-sm rounded-xl border border-paper-200 bg-paper-50 p-6 shadow-lg"
-          >
-            <h3 className="mb-4 text-lg font-semibold text-paper-700">
-              {editId ? "编辑账号" : "新建账号"}
-            </h3>
+      <Dialog open={showForm} onOpenChange={setShowForm}>
+        <DialogContent>
+          <form onSubmit={handleSubmit}>
+            <DialogHeader>
+              <DialogTitle>
+                {editId ? "编辑账号" : "新建账号"}
+              </DialogTitle>
+            </DialogHeader>
 
-            <label className="block text-xs text-paper-500 mb-1">标签</label>
-            <input
-              value={form.label}
-              onChange={(e) => setForm({ ...form, label: e.target.value })}
-              required
-              className="mb-4 block w-full rounded-md border border-paper-200 bg-paper-100 px-3 py-2 text-sm text-paper-800 focus:border-paper-500 focus:outline-none"
-              placeholder="如 My Backend Key"
-            />
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="acc-label">标签</Label>
+                <Input
+                  id="acc-label"
+                  value={form.label}
+                  onChange={(e) => setForm({ ...form, label: e.target.value })}
+                  required
+                  placeholder="如 My Backend Key"
+                />
+              </div>
 
-            <label className="block text-xs text-paper-500 mb-1">
-              凭据（API Key）
-            </label>
-            <input
-              type="password"
-              value={form.credential}
-              onChange={(e) => setForm({ ...form, credential: e.target.value })}
-              className="mb-1 block w-full rounded-md border border-paper-200 bg-paper-100 px-3 py-2 text-sm text-paper-800 focus:border-paper-500 focus:outline-none"
-              placeholder={editId ? "留空则保持不变" : "直接输入 API Key"}
-            />
-            <p className="mb-4 text-xs text-paper-400">
-              或通过环境变量名引用：
-              <input
-                value={form.credential_env}
-                onChange={(e) =>
-                  setForm({ ...form, credential_env: e.target.value })
-                }
-                className="ml-1 inline-block w-40 rounded border border-paper-200 bg-paper-100 px-2 py-0.5 text-xs focus:border-paper-500 focus:outline-none"
-                placeholder="如 LUNE_BACKEND_KEY"
-              />
-            </p>
+              <div className="space-y-2">
+                <Label htmlFor="acc-credential">凭据（API Key）</Label>
+                <Input
+                  id="acc-credential"
+                  type="password"
+                  value={form.credential}
+                  onChange={(e) =>
+                    setForm({ ...form, credential: e.target.value })
+                  }
+                  placeholder={editId ? "留空则保持不变" : "直接输入 API Key"}
+                />
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>或通过环境变量名引用：</span>
+                  <Input
+                    value={form.credential_env}
+                    onChange={(e) =>
+                      setForm({ ...form, credential_env: e.target.value })
+                    }
+                    className="h-7 w-40 text-xs"
+                    placeholder="如 LUNE_BACKEND_KEY"
+                  />
+                </div>
+              </div>
 
-            <label className="block text-xs text-paper-500 mb-1">套餐</label>
-            <select
-              value={form.plan_type}
-              onChange={(e) => setForm({ ...form, plan_type: e.target.value })}
-              className="mb-4 block w-full rounded-md border border-paper-200 bg-paper-100 px-3 py-2 text-sm text-paper-800 focus:border-paper-500 focus:outline-none"
-            >
-              <option value="free">Free</option>
-              <option value="plus">Plus</option>
-              <option value="pro">Pro</option>
-              <option value="team">Team</option>
-            </select>
+              <div className="space-y-2">
+                <Label>套餐</Label>
+                <Select
+                  value={form.plan_type}
+                  onValueChange={(v) => v && setForm({ ...form, plan_type: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="free">Free</SelectItem>
+                    <SelectItem value="plus">Plus</SelectItem>
+                    <SelectItem value="pro">Pro</SelectItem>
+                    <SelectItem value="team">Team</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <div className="mb-4 flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={(e) =>
-                  setForm({ ...form, enabled: e.target.checked })
-                }
-                className="rounded border-paper-200"
-              />
-              <label className="text-xs text-paper-500">启用</label>
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={form.enabled}
+                  onCheckedChange={(v) => setForm({ ...form, enabled: v })}
+                />
+                <Label>启用</Label>
+              </div>
             </div>
 
-            <div className="flex justify-end gap-2">
-              <button
+            <DialogFooter>
+              <Button
                 type="button"
+                variant="outline"
                 onClick={() => setShowForm(false)}
-                className="rounded-md border border-paper-200 px-3 py-1.5 text-sm text-paper-500 hover:bg-paper-200/60 transition-colors"
               >
                 取消
-              </button>
-              <button
-                type="submit"
-                className="rounded-md bg-paper-700 px-3 py-1.5 text-sm text-paper-50 hover:bg-paper-800 transition-colors"
-              >
-                {editId ? "保存" : "创建"}
-              </button>
-            </div>
+              </Button>
+              <Button type="submit">{editId ? "保存" : "创建"}</Button>
+            </DialogFooter>
           </form>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

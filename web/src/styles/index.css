@@ -1,4 +1,8 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
 
 /* ── Nature / Paper palette ─────────────────────────────── */
 
@@ -21,8 +25,6 @@
 body {
   font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
     system-ui, -apple-system, sans-serif;
-  background: var(--color-paper-50);
-  color: var(--color-paper-800);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -30,5 +32,93 @@ body {
 h1, h2, h3 {
   font-family: "Iowan Old Style", "Palatino Linotype", "Noto Serif SC",
     "Source Han Serif SC", Georgia, serif;
-  color: var(--color-paper-700);
+}
+
+/* ── shadcn theme tokens → Paper palette ────────────────── */
+
+@theme inline {
+  --font-sans: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  --color-sidebar-ring:  var(--sidebar-ring);
+  --color-sidebar-border:  var(--sidebar-border);
+  --color-sidebar-accent-foreground:  var(--sidebar-accent-foreground);
+  --color-sidebar-accent:  var(--sidebar-accent);
+  --color-sidebar-primary-foreground:  var(--sidebar-primary-foreground);
+  --color-sidebar-primary:  var(--sidebar-primary);
+  --color-sidebar-foreground:  var(--sidebar-foreground);
+  --color-sidebar:  var(--sidebar);
+  --color-chart-5:  var(--chart-5);
+  --color-chart-4:  var(--chart-4);
+  --color-chart-3:  var(--chart-3);
+  --color-chart-2:  var(--chart-2);
+  --color-chart-1:  var(--chart-1);
+  --color-ring:  var(--ring);
+  --color-input:  var(--input);
+  --color-border:  var(--border);
+  --color-destructive:  var(--destructive);
+  --color-accent-foreground:  var(--accent-foreground);
+  --color-accent:  var(--accent);
+  --color-muted-foreground:  var(--muted-foreground);
+  --color-muted:  var(--muted);
+  --color-secondary-foreground:  var(--secondary-foreground);
+  --color-secondary:  var(--secondary);
+  --color-primary-foreground:  var(--primary-foreground);
+  --color-primary:  var(--primary);
+  --color-popover-foreground:  var(--popover-foreground);
+  --color-popover:  var(--popover);
+  --color-card-foreground:  var(--card-foreground);
+  --color-card:  var(--card);
+  --color-foreground:  var(--foreground);
+  --color-background:  var(--background);
+  --radius-sm:  calc(var(--radius) * 0.6);
+  --radius-md:  calc(var(--radius) * 0.8);
+  --radius-lg:  var(--radius);
+  --radius-xl:  calc(var(--radius) * 1.4);
+  --radius-2xl:  calc(var(--radius) * 1.8);
+  --radius-3xl:  calc(var(--radius) * 2.2);
+  --radius-4xl:  calc(var(--radius) * 2.6);
+}
+
+:root {
+  /* Paper palette mapped to shadcn semantic tokens */
+  --background:  #faf8f4;   /* paper-50 */
+  --foreground:  #2a211c;   /* paper-800 */
+  --card:  #f3efe8;          /* paper-100 */
+  --card-foreground:  #2a211c;
+  --popover:  #faf8f4;       /* paper-50 */
+  --popover-foreground:  #2a211c;
+  --primary:  #3d322a;       /* paper-700 */
+  --primary-foreground:  #faf8f4;
+  --secondary:  #e8e0d4;     /* paper-200 */
+  --secondary-foreground:  #2a211c;
+  --muted:  #f3efe8;         /* paper-100 */
+  --muted-foreground:  #8a7260; /* paper-500 */
+  --accent:  #f3efe8;        /* paper-100 */
+  --accent-foreground:  #2a211c;
+  --destructive:  #b5706a;   /* clay-500 */
+  --border:  #e8e0d4;        /* paper-200 */
+  --input:  #e8e0d4;         /* paper-200 */
+  --ring:  #8a7260;          /* paper-500 */
+  --chart-1:  #6b8f71;       /* sage-500 */
+  --chart-2:  #8a7260;       /* paper-500 */
+  --chart-3:  #b5706a;       /* clay-500 */
+  --chart-4:  #d4c8b8;       /* paper-300 */
+  --chart-5:  #3d322a;       /* paper-700 */
+  --radius:  0.5rem;
+  --sidebar:  #f3efe8;       /* paper-100 */
+  --sidebar-foreground:  #2a211c;
+  --sidebar-primary:  #3d322a;
+  --sidebar-primary-foreground:  #faf8f4;
+  --sidebar-accent:  #e8e0d4; /* paper-200 */
+  --sidebar-accent-foreground:  #2a211c;
+  --sidebar-border:  #e8e0d4;
+  --sidebar-ring:  #8a7260;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
 }

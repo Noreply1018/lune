@@ -1,4 +1,12 @@
 import type { ReactNode } from "react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export type Column<T> = {
   key: string;
@@ -20,44 +28,33 @@ export default function DataTable<T>({
 }) {
   if (rows.length === 0) {
     return (
-      <p className="py-8 text-center text-sm text-paper-300">
+      <p className="py-8 text-center text-sm text-muted-foreground">
         {empty ?? "暂无数据"}
       </p>
     );
   }
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-paper-200 text-left text-xs text-paper-500">
-            {columns.map((col) => (
-              <th
-                key={col.key}
-                className={`px-3 py-2 font-medium ${col.className ?? ""}`}
-              >
-                {col.header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr
-              key={rowKey(row)}
-              className="border-b border-paper-200/60 hover:bg-paper-100/60 transition-colors"
-            >
-              {columns.map((col) => (
-                <td
-                  key={col.key}
-                  className={`px-3 py-2.5 text-paper-800 ${col.className ?? ""}`}
-                >
-                  {col.render(row)}
-                </td>
-              ))}
-            </tr>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          {columns.map((col) => (
+            <TableHead key={col.key} className={col.className}>
+              {col.header}
+            </TableHead>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row) => (
+          <TableRow key={rowKey(row)}>
+            {columns.map((col) => (
+              <TableCell key={col.key} className={col.className}>
+                {col.render(row)}
+              </TableCell>
+            ))}
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   );
 }

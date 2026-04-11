@@ -4,6 +4,15 @@ import DataTable, { type Column } from "../components/DataTable";
 import { backendGet, backendPut } from "../lib/backend";
 import { toast } from "../components/Feedback";
 import { latency } from "../lib/fmt";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { RefreshCw, Loader2 } from "lucide-react";
 
 type Channel = {
   id: number;
@@ -36,9 +45,11 @@ export default function ChannelsPage() {
   async function testChannel(id: number) {
     setTesting(id);
     try {
-      const res = await backendGet<{ success: boolean; message: string; time: number }>(
-        `/api/channel/test/${id}`,
-      );
+      const res = await backendGet<{
+        success: boolean;
+        message: string;
+        time: number;
+      }>(`/api/channel/test/${id}`);
       if (res.success) {
         toast(`测试通过 (${latency(res.time ?? 0)})`, "success");
       } else {
@@ -65,14 +76,27 @@ export default function ChannelsPage() {
 
   const columns: Column<Channel>[] = [
     { key: "id", header: "ID", render: (r) => r.id, className: "w-12" },
-    { key: "name", header: "名称", render: (r) => <span className="font-medium">{r.name}</span> },
+    {
+      key: "name",
+      header: "名称",
+      render: (r) => <span className="font-medium">{r.name}</span>,
+    },
     {
       key: "models",
       header: "模型",
       render: (r) => (
-        <span className="text-xs text-paper-500 line-clamp-1 max-w-48 block">
-          {r.models}
-        </span>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span className="text-xs text-muted-foreground line-clamp-1 max-w-48 block cursor-default">
+                {r.models}
+              </span>
+            }
+          />
+          <TooltipContent className="max-w-sm">
+            <p className="text-xs whitespace-pre-wrap">{r.models}</p>
+          </TooltipContent>
+        </Tooltip>
       ),
     },
     {
@@ -88,8 +112,7 @@ export default function ChannelsPage() {
     {
       key: "response_time",
       header: "响应",
-      render: (r) =>
-        r.response_time ? latency(r.response_time) : "-",
+      render: (r) => (r.response_time ? latency(r.response_time) : "-"),
     },
     {
       key: "priority",
@@ -100,20 +123,25 @@ export default function ChannelsPage() {
       key: "actions",
       header: "",
       render: (r) => (
-        <div className="flex gap-2">
-          <button
+        <div className="flex gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => testChannel(r.id)}
             disabled={testing === r.id}
-            className="rounded px-2 py-1 text-xs text-paper-500 border border-paper-200 hover:bg-paper-200/60 disabled:opacity-50 transition-colors"
           >
-            {testing === r.id ? "测试中..." : "测试"}
-          </button>
-          <button
+            {testing === r.id ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : null}
+            {testing === r.id ? "测试中" : "测试"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => toggleChannel(r)}
-            className="rounded px-2 py-1 text-xs text-paper-500 border border-paper-200 hover:bg-paper-200/60 transition-colors"
           >
             {r.status === 1 ? "停用" : "启用"}
-          </button>
+          </Button>
         </div>
       ),
     },
@@ -123,25 +151,25 @@ export default function ChannelsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">渠道</h2>
-        <button
-          onClick={load}
-          className="rounded-md border border-paper-200 px-3 py-1.5 text-xs text-paper-500 hover:bg-paper-200/60 transition-colors"
-        >
+        <Button variant="outline" size="sm" onClick={load}>
+          <RefreshCw className="size-4" />
           刷新
-        </button>
+        </Button>
       </div>
 
       {loading ? (
-        <p className="py-12 text-center text-sm text-paper-300">加载中...</p>
+        <Skeleton className="h-48" />
       ) : (
-        <div className="rounded-xl border border-paper-200 bg-paper-100 p-1">
-          <DataTable
-            columns={columns}
-            rows={channels}
-            rowKey={(r) => r.id}
-            empty="暂无渠道"
-          />
-        </div>
+        <Card>
+          <CardContent className="p-1">
+            <DataTable
+              columns={columns}
+              rows={channels}
+              rowKey={(r) => r.id}
+              empty="暂无渠道"
+            />
+          </CardContent>
+        </Card>
       )}
     </div>
   );

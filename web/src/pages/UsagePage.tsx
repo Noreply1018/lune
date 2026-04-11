@@ -4,6 +4,9 @@ import DataTable, { type Column } from "../components/DataTable";
 import { luneGet } from "../lib/api";
 import { backendGet } from "../lib/backend";
 import { compact, shortDate } from "../lib/fmt";
+import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
 
 type UsageSummary = {
   total_entries: number;
@@ -46,7 +49,17 @@ export default function UsagePage() {
   }, []);
 
   if (loading) {
-    return <p className="py-12 text-center text-sm text-paper-300">加载中...</p>;
+    return (
+      <div className="space-y-8">
+        <Skeleton className="h-7 w-20" />
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-24" />
+          ))}
+        </div>
+        <Skeleton className="h-48" />
+      </div>
+    );
   }
 
   const statColumns: Column<BackendLogStat>[] = [
@@ -67,7 +80,6 @@ export default function UsagePage() {
     <div className="space-y-8">
       <h2 className="text-xl font-semibold">用量</h2>
 
-      {/* ── 额度总览 ── */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
         <StatCard
           label="总额度"
@@ -83,57 +95,73 @@ export default function UsagePage() {
         />
       </div>
 
-      {/* ── 模型用量明细 ── */}
       <section>
-        <h3 className="mb-3 text-sm font-medium text-paper-500">
+        <h3 className="mb-3 text-sm font-medium text-muted-foreground">
           模型用量明细
         </h3>
-        <div className="rounded-xl border border-paper-200 bg-paper-100 p-1">
-          <DataTable
-            columns={statColumns}
-            rows={logStats}
-            rowKey={(r) => `${r.date}-${r.model_name}`}
-            empty="暂无用量数据"
-          />
-        </div>
+        <Card>
+          <CardContent className="p-1">
+            <DataTable
+              columns={statColumns}
+              rows={logStats}
+              rowKey={(r) => `${r.date}-${r.model_name}`}
+              empty="暂无用量数据"
+            />
+          </CardContent>
+        </Card>
       </section>
 
-      {/* ── Lune-side usage ── */}
+      <Separator />
+
       <div className="grid gap-6 md:grid-cols-2">
         <section>
-          <h3 className="mb-3 text-sm font-medium text-paper-500">
+          <h3 className="mb-3 text-sm font-medium text-muted-foreground">
             按账号统计
           </h3>
-          <div className="rounded-xl border border-paper-200 bg-paper-100 p-4 space-y-2">
-            {byAccountEntries.length === 0 ? (
-              <p className="text-sm text-paper-300">暂无数据</p>
-            ) : (
-              byAccountEntries.map(([name, count]) => (
-                <div key={name} className="flex items-center justify-between text-sm">
-                  <span className="text-paper-700">{name}</span>
-                  <span className="text-paper-500">{compact(count)}</span>
-                </div>
-              ))
-            )}
-          </div>
+          <Card>
+            <CardContent className="p-4 space-y-2">
+              {byAccountEntries.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无数据</p>
+              ) : (
+                byAccountEntries.map(([name, count]) => (
+                  <div
+                    key={name}
+                    className="flex items-center justify-between text-sm"
+                  >
+                    <span className="font-medium">{name}</span>
+                    <span className="text-muted-foreground">
+                      {compact(count)}
+                    </span>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
         </section>
 
         <section>
-          <h3 className="mb-3 text-sm font-medium text-paper-500">
+          <h3 className="mb-3 text-sm font-medium text-muted-foreground">
             按令牌统计
           </h3>
-          <div className="rounded-xl border border-paper-200 bg-paper-100 p-4 space-y-2">
-            {byTokenEntries.length === 0 ? (
-              <p className="text-sm text-paper-300">暂无数据</p>
-            ) : (
-              byTokenEntries.map(([name, count]) => (
-                <div key={name} className="flex items-center justify-between text-sm">
-                  <span className="text-paper-700">{name}</span>
-                  <span className="text-paper-500">{compact(count)}</span>
-                </div>
-              ))
-            )}
-          </div>
+          <Card>
+            <CardContent className="p-4 space-y-2">
+              {byTokenEntries.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无数据</p>
+              ) : (
+                byTokenEntries.map(([name, count]) => (
+                  <div
+                    key={name}
+                    className="flex items-center justify-between text-sm"
+                  >
+                    <span className="font-medium">{name}</span>
+                    <span className="text-muted-foreground">
+                      {compact(count)}
+                    </span>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
         </section>
       </div>
     </div>

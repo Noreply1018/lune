@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { isAuthenticated } from "./lib/auth";
 import { luneGet } from "./lib/api";
-import Feedback from "./components/Feedback";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import Shell from "./components/Shell";
 import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
@@ -12,6 +14,7 @@ import AccountsPage from "./pages/AccountsPage";
 import PoolsPage from "./pages/PoolsPage";
 import SettingsPage from "./pages/SettingsPage";
 import SetupWizard from "./pages/SetupWizard";
+import { Loader2 } from "lucide-react";
 
 function PageRouter() {
   const path = window.location.pathname.replace(/\/$/, "");
@@ -46,36 +49,38 @@ export default function App() {
 
   if (!isAuthenticated()) {
     return (
-      <>
-        <Feedback />
+      <TooltipProvider>
+        <Toaster richColors position="top-right" />
         <LoginPage />
-      </>
+      </TooltipProvider>
     );
   }
 
   if (bootstrapNeeded === null) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-paper-50">
-        <p className="text-sm text-paper-300">加载中...</p>
+      <div className="flex min-h-screen items-center justify-center">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   if (bootstrapNeeded) {
     return (
-      <>
-        <Feedback />
+      <TooltipProvider>
+        <Toaster richColors position="top-right" />
         <SetupWizard onComplete={() => setBootstrapNeeded(false)} />
-      </>
+      </TooltipProvider>
     );
   }
 
   return (
-    <>
-      <Feedback />
-      <Shell>
-        <PageRouter />
-      </Shell>
-    </>
+    <TooltipProvider>
+      <Toaster richColors position="top-right" />
+      <SidebarProvider>
+        <Shell>
+          <PageRouter />
+        </Shell>
+      </SidebarProvider>
+    </TooltipProvider>
   );
 }

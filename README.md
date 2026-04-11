@@ -50,20 +50,14 @@ docker compose up -d lune
 ### 3. 使用
 
 ```bash
-# 健康检查
-curl http://localhost:7788/healthz
+# 停止旧服务
+docker compose down
 
-# 查看模型
-curl -H "Authorization: Bearer sk-lune-local-dev" http://localhost:7788/v1/models
-
-# 对话
-curl -X POST http://localhost:7788/openai/v1/chat/completions \
-  -H "Authorization: Bearer sk-lune-local-dev" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}'
+# 启动服务
+docker compose up -d
 ```
 
-控制台：`http://localhost:7788/admin`
+打开 `http://localhost:7788/admin` 进入控制台，管理账号、号池、渠道、令牌、查看用量和日志。
 
 ---
 

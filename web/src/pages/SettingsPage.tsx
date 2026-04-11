@@ -1,6 +1,12 @@
 import { FormEvent, useEffect, useState } from "react";
 import { luneGet, lunePut } from "../lib/api";
 import { toast } from "../components/Feedback";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Loader2 } from "lucide-react";
 
 type Settings = {
   backend_url: string;
@@ -43,7 +49,10 @@ export default function SettingsPage() {
 
   if (loading || !settings) {
     return (
-      <p className="py-12 text-center text-sm text-paper-300">加载中...</p>
+      <div className="space-y-6">
+        <Skeleton className="h-7 w-20" />
+        <Skeleton className="h-64 max-w-lg" />
+      </div>
     );
   }
 
@@ -51,60 +60,52 @@ export default function SettingsPage() {
     <div className="space-y-6">
       <h2 className="text-xl font-semibold">设置</h2>
 
-      <form
-        onSubmit={handleSubmit}
-        className="max-w-lg rounded-xl border border-paper-200 bg-paper-100 p-6 space-y-4"
-      >
-        <div>
-          <label className="block text-xs text-paper-500 mb-1">
-            后端引擎地址
-          </label>
-          <input
-            type="url"
-            value={backendUrl}
-            onChange={(e) => setBackendUrl(e.target.value)}
-            required
-            className="block w-full rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-sm text-paper-800 focus:border-paper-500 focus:outline-none"
-          />
-        </div>
+      <Card className="max-w-lg">
+        <CardContent className="p-6">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="backend-url">后端引擎地址</Label>
+              <Input
+                id="backend-url"
+                type="url"
+                value={backendUrl}
+                onChange={(e) => setBackendUrl(e.target.value)}
+                required
+              />
+            </div>
 
-        <div>
-          <label className="block text-xs text-paper-500 mb-1">
-            监听端口
-          </label>
-          <input
-            type="text"
-            value={settings.port}
-            disabled
-            className="block w-full rounded-md border border-paper-200 bg-paper-100 px-3 py-2 text-sm text-paper-500"
-          />
-          <p className="mt-1 text-xs text-paper-400">
-            修改端口需要重启服务
-          </p>
-        </div>
+            <div className="space-y-2">
+              <Label htmlFor="port">监听端口</Label>
+              <Input
+                id="port"
+                type="text"
+                value={settings.port}
+                disabled
+              />
+              <p className="text-xs text-muted-foreground">
+                修改端口需要重启服务
+              </p>
+            </div>
 
-        <div>
-          <label className="block text-xs text-paper-500 mb-1">
-            数据目录
-          </label>
-          <input
-            type="text"
-            value={settings.data_dir}
-            disabled
-            className="block w-full rounded-md border border-paper-200 bg-paper-100 px-3 py-2 text-sm text-paper-500"
-          />
-        </div>
+            <div className="space-y-2">
+              <Label htmlFor="data-dir">数据目录</Label>
+              <Input
+                id="data-dir"
+                type="text"
+                value={settings.data_dir}
+                disabled
+              />
+            </div>
 
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={saving}
-            className="rounded-md bg-paper-700 px-4 py-2 text-sm font-medium text-paper-50 hover:bg-paper-800 disabled:opacity-50 transition-colors"
-          >
-            {saving ? "保存中..." : "保存"}
-          </button>
-        </div>
-      </form>
+            <div className="flex justify-end">
+              <Button type="submit" disabled={saving}>
+                {saving && <Loader2 className="animate-spin" />}
+                {saving ? "保存中..." : "保存"}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -3,6 +3,28 @@ import StatusBadge from "../components/StatusBadge";
 import DataTable, { type Column } from "../components/DataTable";
 import { luneGet, lunePost, lunePut } from "../lib/api";
 import { toast } from "../components/Feedback";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Plus, RefreshCw } from "lucide-react";
 
 type Pool = {
   id: string;
@@ -108,13 +130,15 @@ export default function PoolsPage() {
     {
       key: "strategy",
       header: "策略",
-      render: (r) => <code className="text-xs text-paper-500">{r.strategy}</code>,
+      render: (r) => (
+        <code className="text-xs text-muted-foreground">{r.strategy}</code>
+      ),
     },
     {
       key: "members",
       header: "成员",
       render: (r) => (
-        <span className="text-xs text-paper-500">
+        <span className="text-xs text-muted-foreground">
           {r.members?.length ?? 0} 个账号
         </span>
       ),
@@ -133,12 +157,9 @@ export default function PoolsPage() {
       key: "actions",
       header: "",
       render: (r) => (
-        <button
-          onClick={() => openEdit(r)}
-          className="rounded px-2 py-1 text-xs text-paper-500 border border-paper-200 hover:bg-paper-200/60 transition-colors"
-        >
+        <Button variant="ghost" size="sm" onClick={() => openEdit(r)}>
           编辑
-        </button>
+        </Button>
       ),
     },
   ];
@@ -148,122 +169,122 @@ export default function PoolsPage() {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">号池</h2>
         <div className="flex gap-2">
-          <button
-            onClick={load}
-            className="rounded-md border border-paper-200 px-3 py-1.5 text-xs text-paper-500 hover:bg-paper-200/60 transition-colors"
-          >
+          <Button variant="outline" size="sm" onClick={load}>
+            <RefreshCw className="size-4" />
             刷新
-          </button>
-          <button
-            onClick={openCreate}
-            className="rounded-md bg-paper-700 px-3 py-1.5 text-xs text-paper-50 hover:bg-paper-800 transition-colors"
-          >
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="size-4" />
             新建号池
-          </button>
+          </Button>
         </div>
       </div>
 
       {loading ? (
-        <p className="py-12 text-center text-sm text-paper-300">加载中...</p>
+        <Skeleton className="h-48" />
       ) : (
-        <div className="rounded-xl border border-paper-200 bg-paper-100 p-1">
-          <DataTable
-            columns={columns}
-            rows={pools}
-            rowKey={(r) => r.id}
-            empty="暂无号池"
-          />
-        </div>
+        <Card>
+          <CardContent className="p-1">
+            <DataTable
+              columns={columns}
+              rows={pools}
+              rowKey={(r) => r.id}
+              empty="暂无号池"
+            />
+          </CardContent>
+        </Card>
       )}
 
-      {showForm && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-paper-800/30">
-          <form
-            onSubmit={handleSubmit}
-            className="w-full max-w-sm rounded-xl border border-paper-200 bg-paper-50 p-6 shadow-lg"
-          >
-            <h3 className="mb-4 text-lg font-semibold text-paper-700">
-              {editId ? "编辑号池" : "新建号池"}
-            </h3>
+      <Dialog open={showForm} onOpenChange={setShowForm}>
+        <DialogContent>
+          <form onSubmit={handleSubmit}>
+            <DialogHeader>
+              <DialogTitle>
+                {editId ? "编辑号池" : "新建号池"}
+              </DialogTitle>
+            </DialogHeader>
 
-            <label className="block text-xs text-paper-500 mb-1">ID</label>
-            <input
-              value={form.id}
-              onChange={(e) => setForm({ ...form, id: e.target.value })}
-              required
-              disabled={!!editId}
-              className="mb-4 block w-full rounded-md border border-paper-200 bg-paper-100 px-3 py-2 text-sm text-paper-800 focus:border-paper-500 focus:outline-none disabled:opacity-50"
-              placeholder="如 default-pool"
-            />
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="pool-id">ID</Label>
+                <Input
+                  id="pool-id"
+                  value={form.id}
+                  onChange={(e) => setForm({ ...form, id: e.target.value })}
+                  required
+                  disabled={!!editId}
+                  placeholder="如 default-pool"
+                />
+              </div>
 
-            <label className="block text-xs text-paper-500 mb-1">策略</label>
-            <select
-              value={form.strategy}
-              onChange={(e) => setForm({ ...form, strategy: e.target.value })}
-              className="mb-4 block w-full rounded-md border border-paper-200 bg-paper-100 px-3 py-2 text-sm text-paper-800 focus:border-paper-500 focus:outline-none"
-            >
-              <option value="sticky-first-healthy">sticky-first-healthy</option>
-              <option value="single">single</option>
-              <option value="fallback">fallback</option>
-            </select>
+              <div className="space-y-2">
+                <Label>策略</Label>
+                <Select
+                  value={form.strategy}
+                  onValueChange={(v) => v && setForm({ ...form, strategy: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="sticky-first-healthy">
+                      sticky-first-healthy
+                    </SelectItem>
+                    <SelectItem value="single">single</SelectItem>
+                    <SelectItem value="fallback">fallback</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            <label className="block text-xs text-paper-500 mb-2">
-              成员账号
-            </label>
-            <div className="mb-4 max-h-40 overflow-y-auto rounded-md border border-paper-200 bg-paper-100 p-2 space-y-1">
-              {accounts.length === 0 ? (
-                <p className="text-xs text-paper-300 py-2 text-center">
-                  暂无账号，请先创建账号
-                </p>
-              ) : (
-                accounts.map((a) => (
-                  <label
-                    key={a.id}
-                    className="flex items-center gap-2 rounded px-2 py-1 hover:bg-paper-200/60 cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={form.members.includes(a.id)}
-                      onChange={() => toggleMember(a.id)}
-                      className="rounded border-paper-200"
-                    />
-                    <span className="text-sm text-paper-700">{a.label}</span>
-                    <code className="text-xs text-paper-400">{a.id}</code>
-                  </label>
-                ))
-              )}
+              <div className="space-y-2">
+                <Label>成员账号</Label>
+                <div className="max-h-40 overflow-y-auto rounded-md border p-2 space-y-1">
+                  {accounts.length === 0 ? (
+                    <p className="text-xs text-muted-foreground py-2 text-center">
+                      暂无账号，请先创建账号
+                    </p>
+                  ) : (
+                    accounts.map((a) => (
+                      <label
+                        key={a.id}
+                        className="flex items-center gap-2 rounded px-2 py-1 hover:bg-accent cursor-pointer"
+                      >
+                        <Checkbox
+                          checked={form.members.includes(a.id)}
+                          onCheckedChange={() => toggleMember(a.id)}
+                        />
+                        <span className="text-sm">{a.label}</span>
+                        <code className="text-xs text-muted-foreground">
+                          {a.id}
+                        </code>
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={form.enabled}
+                  onCheckedChange={(v) => setForm({ ...form, enabled: v })}
+                />
+                <Label>启用</Label>
+              </div>
             </div>
 
-            <div className="mb-4 flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={(e) =>
-                  setForm({ ...form, enabled: e.target.checked })
-                }
-                className="rounded border-paper-200"
-              />
-              <label className="text-xs text-paper-500">启用</label>
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <button
+            <DialogFooter>
+              <Button
                 type="button"
+                variant="outline"
                 onClick={() => setShowForm(false)}
-                className="rounded-md border border-paper-200 px-3 py-1.5 text-sm text-paper-500 hover:bg-paper-200/60 transition-colors"
               >
                 取消
-              </button>
-              <button
-                type="submit"
-                className="rounded-md bg-paper-700 px-3 py-1.5 text-sm text-paper-50 hover:bg-paper-800 transition-colors"
-              >
-                {editId ? "保存" : "创建"}
-              </button>
-            </div>
+              </Button>
+              <Button type="submit">{editId ? "保存" : "创建"}</Button>
+            </DialogFooter>
           </form>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

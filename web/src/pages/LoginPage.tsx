@@ -2,6 +2,11 @@ import { FormEvent, useState } from "react";
 import { setLuneToken } from "../lib/auth";
 import { luneGet } from "../lib/api";
 import { backendLogin } from "../lib/backend";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Loader2 } from "lucide-react";
 
 export default function LoginPage() {
   const [luneToken, setLuneTokenLocal] = useState("");
@@ -16,22 +21,19 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      // 1. Validate Lune admin token
       setLuneToken(luneToken);
       const data = await luneGet<{
         overview: { needs_bootstrap: boolean };
       }>("/admin/api/overview");
 
-      // 2. If bootstrap needed, skip backend login (not configured yet)
       if (!data.overview.needs_bootstrap && password) {
         try {
           await backendLogin(username, password);
         } catch {
-          // Backend login failure is non-fatal — admin UI still works
+          // Backend login failure is non-fatal
         }
       }
 
-      // Both succeeded — navigate
       window.location.href = "/admin";
     } catch (err) {
       setLuneToken("");
@@ -42,79 +44,73 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-paper-50 px-4">
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-sm rounded-xl border border-paper-200 bg-paper-100 p-8"
-      >
-        <h1
-          className="mb-6 text-center text-2xl font-semibold text-paper-700"
-          style={{
-            fontFamily:
-              '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif',
-          }}
-        >
-          Lune
-        </h1>
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <Card className="w-full max-w-sm">
+        <CardContent className="p-8">
+          <form onSubmit={handleSubmit}>
+            <h1
+              className="mb-6 text-center text-2xl font-semibold"
+              style={{
+                fontFamily:
+                  '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif',
+              }}
+            >
+              Lune
+            </h1>
 
-        {error && (
-          <div className="mb-4 rounded-md bg-clay-500/15 px-3 py-2 text-sm text-clay-600">
-            {error}
-          </div>
-        )}
+            {error && (
+              <div className="mb-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            )}
 
-        <label className="block text-xs text-paper-500 mb-1">
-          Admin Token
-        </label>
-        <input
-          type="password"
-          value={luneToken}
-          onChange={(e) => setLuneTokenLocal(e.target.value)}
-          required
-          className="mb-4 block w-full rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-sm text-paper-800 placeholder:text-paper-300 focus:border-paper-500 focus:outline-none"
-          placeholder="在终端中查看自动生成的 token"
-        />
-
-        <details className="mb-4">
-          <summary className="cursor-pointer text-xs text-paper-400 hover:text-paper-500 transition-colors">
-            后端引擎登录（可选）
-          </summary>
-          <div className="mt-3 space-y-3">
-            <div>
-              <label className="block text-xs text-paper-500 mb-1">
-                用户名
-              </label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="block w-full rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-sm text-paper-800 placeholder:text-paper-300 focus:border-paper-500 focus:outline-none"
-                placeholder="root"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-paper-500 mb-1">
-                密码
-              </label>
-              <input
+            <div className="space-y-2 mb-4">
+              <Label htmlFor="admin-token">Admin Token</Label>
+              <Input
+                id="admin-token"
                 type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="block w-full rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-sm text-paper-800 placeholder:text-paper-300 focus:border-paper-500 focus:outline-none"
-                placeholder="password"
+                value={luneToken}
+                onChange={(e) => setLuneTokenLocal(e.target.value)}
+                required
+                placeholder="在终端中查看自动生成的 token"
               />
             </div>
-          </div>
-        </details>
 
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded-md bg-paper-700 px-4 py-2.5 text-sm font-medium text-paper-50 hover:bg-paper-800 disabled:opacity-50 transition-colors"
-        >
-          {loading ? "登录中..." : "登录"}
-        </button>
-      </form>
+            <details className="mb-4">
+              <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors">
+                后端引擎登录（可选）
+              </summary>
+              <div className="mt-3 space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="username">用户名</Label>
+                  <Input
+                    id="username"
+                    type="text"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="root"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="password">密码</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="password"
+                  />
+                </div>
+              </div>
+            </details>
+
+            <Button type="submit" disabled={loading} className="w-full">
+              {loading && <Loader2 className="animate-spin" />}
+              {loading ? "登录中..." : "登录"}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   );
 }
