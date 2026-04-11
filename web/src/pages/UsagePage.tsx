@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import StatCard from "../components/StatCard";
 import DataTable, { type Column } from "../components/DataTable";
 import { luneGet } from "../lib/api";
-import { oneapiGet } from "../lib/oneapi";
+import { backendGet } from "../lib/backend";
 import { compact, shortDate } from "../lib/fmt";
 
 type UsageSummary = {
@@ -13,7 +13,7 @@ type UsageSummary = {
   by_token: Record<string, number>;
 };
 
-type OneAPILogStat = {
+type BackendLogStat = {
   date: string;
   model_name: string;
   quota: number;
@@ -21,7 +21,7 @@ type OneAPILogStat = {
   count: number;
 };
 
-type OneAPIDashboard = {
+type BackendDashboard = {
   total_quota: number;
   used_quota: number;
   remaining_quota: number;
@@ -29,17 +29,17 @@ type OneAPIDashboard = {
 
 export default function UsagePage() {
   const [usage, setUsage] = useState<UsageSummary | null>(null);
-  const [logStats, setLogStats] = useState<OneAPILogStat[]>([]);
-  const [dashboard, setDashboard] = useState<OneAPIDashboard | null>(null);
+  const [logStats, setLogStats] = useState<BackendLogStat[]>([]);
+  const [dashboard, setDashboard] = useState<BackendDashboard | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.allSettled([
       luneGet<UsageSummary>("/admin/api/usage").then(setUsage),
-      oneapiGet<{ data: OneAPILogStat[] }>("/api/log/stat?type=0").then((d) =>
+      backendGet<{ data: BackendLogStat[] }>("/api/log/stat?type=0").then((d) =>
         setLogStats(d.data ?? []),
       ),
-      oneapiGet<{ data: OneAPIDashboard }>("/api/user/dashboard").then((d) =>
+      backendGet<{ data: BackendDashboard }>("/api/user/dashboard").then((d) =>
         setDashboard(d.data ?? null),
       ),
     ]).finally(() => setLoading(false));
@@ -49,7 +49,7 @@ export default function UsagePage() {
     return <p className="py-12 text-center text-sm text-paper-300">加载中...</p>;
   }
 
-  const statColumns: Column<OneAPILogStat>[] = [
+  const statColumns: Column<BackendLogStat>[] = [
     { key: "date", header: "日期", render: (r) => shortDate(r.date) },
     { key: "model", header: "模型", render: (r) => r.model_name },
     { key: "count", header: "次数", render: (r) => compact(r.count) },
@@ -67,7 +67,7 @@ export default function UsagePage() {
     <div className="space-y-8">
       <h2 className="text-xl font-semibold">用量</h2>
 
-      {/* ── One-API quota overview ── */}
+      {/* ── 额度总览 ── */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
         <StatCard
           label="总额度"
@@ -83,7 +83,7 @@ export default function UsagePage() {
         />
       </div>
 
-      {/* ── 7-day model usage (One-API) ── */}
+      {/* ── 模型用量明细 ── */}
       <section>
         <h3 className="mb-3 text-sm font-medium text-paper-500">
           模型用量明细

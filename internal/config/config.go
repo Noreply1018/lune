@@ -26,7 +26,7 @@ type ServerConfig struct {
 	ShutdownTimeoutS        int    `json:"shutdown_timeout_seconds"`
 	DataDir                 string `json:"data_dir"`
 	PlatformRefreshInterval int    `json:"platform_refresh_interval_seconds"`
-	UpstreamURL             string `json:"upstream_url"`
+	UpstreamURL             string `json:"backend_url"`
 }
 
 type AuthConfig struct {
@@ -157,7 +157,7 @@ func (c *Config) applyDefaults() {
 		c.Server.PlatformRefreshInterval = 60
 	}
 	if c.Server.UpstreamURL == "" {
-		if envURL := os.Getenv("LUNE_UPSTREAM_URL"); envURL != "" {
+		if envURL := os.Getenv("LUNE_BACKEND_URL"); envURL != "" {
 			c.Server.UpstreamURL = envURL
 		} else {
 			c.Server.UpstreamURL = "http://localhost:3000"

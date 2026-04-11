@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultPlatformID   = "upstream"
+	defaultPlatformID   = "backend"
 	defaultModelAlias   = "default-gpt"
 	defaultTargetModel  = "gpt-4o"
 	defaultPoolStrategy = "sticky-first-healthy"
@@ -565,7 +565,7 @@ func (h *Handler) ConfigSchema(w http.ResponseWriter, r *http.Request) {
 			"pool_strategies":    []string{defaultPoolStrategy, "single", "fallback"},
 		},
 		"help": map[string]string{
-			"account.credential_env": "填写环境变量名，不是凭据明文。例如 UPSTREAM_API_KEY，值为 upstream 引擎的 API key。",
+			"account.credential_env": "填写环境变量名，不是凭据明文。例如 LUNE_BACKEND_KEY，值为后端引擎的 API key。",
 			"account_pool.strategy":  "建议使用 sticky-first-healthy，优先复用最近可用账号。",
 			"api_key.quota_calls":    "额度以本地调用次数估算，不依赖上游官方余额接口。",
 		},

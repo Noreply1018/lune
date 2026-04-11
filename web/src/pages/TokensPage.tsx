@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import StatusBadge from "../components/StatusBadge";
 import DataTable, { type Column } from "../components/DataTable";
-import { oneapiGet, oneapiPost, oneapiPut, oneapiDelete } from "../lib/oneapi";
+import { backendGet, backendPost, backendPut, backendDelete } from "../lib/backend";
 import { toast } from "../components/Feedback";
 import { compact, shortDate } from "../lib/fmt";
 
@@ -38,7 +38,7 @@ export default function TokensPage() {
 
   function load() {
     setLoading(true);
-    oneapiGet<{ data: Token[] }>("/api/token/?p=0&page_size=100")
+    backendGet<{ data: Token[] }>("/api/token/?p=0&page_size=100")
       .then((d) => setTokens(d.data ?? []))
       .catch(() => toast("加载令牌失败", "error"))
       .finally(() => setLoading(false));
@@ -66,10 +66,10 @@ export default function TokensPage() {
     e.preventDefault();
     try {
       if (editId) {
-        await oneapiPut("/api/token/", { id: editId, ...form });
+        await backendPut("/api/token/", { id: editId, ...form });
         toast("令牌已更新");
       } else {
-        await oneapiPost("/api/token/", form);
+        await backendPost("/api/token/", form);
         toast("令牌已创建");
       }
       setShowForm(false);
@@ -82,7 +82,7 @@ export default function TokensPage() {
   async function deleteToken(id: number) {
     if (!confirm("确定删除此令牌？")) return;
     try {
-      await oneapiDelete(`/api/token/${id}`);
+      await backendDelete(`/api/token/${id}`);
       toast("已删除");
       load();
     } catch {
@@ -93,7 +93,7 @@ export default function TokensPage() {
   async function toggleToken(t: Token) {
     try {
       const newStatus = t.status === 1 ? 2 : 1;
-      await oneapiPut("/api/token/", { ...t, status: newStatus });
+      await backendPut("/api/token/", { ...t, status: newStatus });
       toast(newStatus === 1 ? "已启用" : "已停用");
       load();
     } catch {

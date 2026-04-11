@@ -7,7 +7,7 @@ import (
 
 	accountadapter "lune/internal/adapter/account"
 	"lune/internal/api/admin"
-	"lune/internal/api/oneapiproxy"
+	"lune/internal/api/backendproxy"
 	"lune/internal/api/public"
 	"lune/internal/auth"
 	"lune/internal/config"
@@ -58,10 +58,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/readyz", publicHandler.Readyz)
 	s.mux.HandleFunc("/v1/models", publicHandler.Models)
 
-	// One-API reverse proxy (requires admin token)
-	s.mux.Handle("/oneapi/", auth.RequireAdminFunc(
+	// Backend engine reverse proxy (requires admin token)
+	s.mux.Handle("/backend/", auth.RequireAdminFunc(
 		func() string { return s.cfg.Current().Auth.AdminToken },
-		oneapiproxy.Handler(s.cfg),
+		backendproxy.Handler(s.cfg),
 	))
 
 	// SPA deep-link fallbacks — more specific than /admin/ so they win

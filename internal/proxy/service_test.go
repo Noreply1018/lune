@@ -99,13 +99,13 @@ func TestChatCompletionsSuccessRecordsLedgerAndConsumesQuota(t *testing.T) {
 			},
 		},
 		Platforms: []config.Platform{
-			{ID: "upstream", Adapter: "openai-upstream", Enabled: true},
+			{ID: "backend", Adapter: "openai-upstream", Enabled: true},
 		},
 		Accounts: []config.Account{
-			{ID: "plus-a", Platform: "upstream", Enabled: true, Status: "healthy"},
+			{ID: "plus-a", Platform: "backend", Enabled: true, Status: "healthy"},
 		},
 		AccountPools: []config.AccountPool{
-			{ID: "default-pool", Platform: "upstream", Enabled: true, Members: []string{"plus-a"}},
+			{ID: "default-pool", Platform: "backend", Enabled: true, Members: []string{"plus-a"}},
 		},
 		Models: []config.ModelRoute{
 			{Alias: "gpt-4o", TargetKind: "account_pool", TargetID: "default-pool", TargetModel: "gpt-4o"},
@@ -184,16 +184,16 @@ func TestChatCompletionsSuccessRecordsLedgerAndConsumesQuota(t *testing.T) {
 func TestChatCompletionsFallsBackOnRetryableStatus(t *testing.T) {
 	cfg := config.Config{
 		Platforms: []config.Platform{
-			{ID: "upstream", Adapter: "openai-upstream", Enabled: true},
-			{ID: "upstream-backup", Adapter: "openai-upstream", Enabled: true},
+			{ID: "backend", Adapter: "openai-upstream", Enabled: true},
+			{ID: "backend-backup", Adapter: "openai-upstream", Enabled: true},
 		},
 		Accounts: []config.Account{
-			{ID: "plus-a", Platform: "upstream", Enabled: true, Status: "healthy"},
-			{ID: "plus-b", Platform: "upstream-backup", Enabled: true, Status: "healthy"},
+			{ID: "plus-a", Platform: "backend", Enabled: true, Status: "healthy"},
+			{ID: "plus-b", Platform: "backend-backup", Enabled: true, Status: "healthy"},
 		},
 		AccountPools: []config.AccountPool{
-			{ID: "primary", Platform: "upstream", Enabled: true, Members: []string{"plus-a"}},
-			{ID: "backup", Platform: "upstream-backup", Enabled: true, Members: []string{"plus-b"}},
+			{ID: "primary", Platform: "backend", Enabled: true, Members: []string{"plus-a"}},
+			{ID: "backup", Platform: "backend-backup", Enabled: true, Members: []string{"plus-b"}},
 		},
 		Models: []config.ModelRoute{
 			{Alias: "gpt-4o", TargetKind: "account_pool", TargetID: "primary", TargetModel: "gpt-4o", Fallbacks: []string{"backup:gpt-4.1-mini"}},
@@ -231,13 +231,13 @@ func TestChatCompletionsRecordsFailureBodySnippet(t *testing.T) {
 			},
 		},
 		Platforms: []config.Platform{
-			{ID: "upstream", Adapter: "openai-upstream", Enabled: true},
+			{ID: "backend", Adapter: "openai-upstream", Enabled: true},
 		},
 		Accounts: []config.Account{
-			{ID: "plus-a", Platform: "upstream", Enabled: true, Status: "healthy"},
+			{ID: "plus-a", Platform: "backend", Enabled: true, Status: "healthy"},
 		},
 		AccountPools: []config.AccountPool{
-			{ID: "default-pool", Platform: "upstream", Enabled: true, Members: []string{"plus-a"}},
+			{ID: "default-pool", Platform: "backend", Enabled: true, Members: []string{"plus-a"}},
 		},
 		Models: []config.ModelRoute{
 			{Alias: "gpt-4o", TargetKind: "account_pool", TargetID: "default-pool", TargetModel: "gpt-4o"},
@@ -290,13 +290,13 @@ func TestChatCompletionsRecordsFailureBodySnippet(t *testing.T) {
 func TestChatCompletionsReturnsNotImplementedWithoutAdapter(t *testing.T) {
 	cfg := config.Config{
 		Platforms: []config.Platform{
-			{ID: "upstream", Adapter: "openai-upstream", Enabled: true},
+			{ID: "backend", Adapter: "openai-upstream", Enabled: true},
 		},
 		Accounts: []config.Account{
-			{ID: "plus-a", Platform: "upstream", Enabled: true, Status: "healthy"},
+			{ID: "plus-a", Platform: "backend", Enabled: true, Status: "healthy"},
 		},
 		AccountPools: []config.AccountPool{
-			{ID: "default-pool", Platform: "upstream", Enabled: true, Members: []string{"plus-a"}},
+			{ID: "default-pool", Platform: "backend", Enabled: true, Members: []string{"plus-a"}},
 		},
 		Models: []config.ModelRoute{
 			{Alias: "gpt-4o", TargetKind: "account_pool", TargetID: "default-pool", TargetModel: "gpt-4o"},

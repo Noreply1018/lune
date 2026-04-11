@@ -55,7 +55,7 @@ func (a *OpenAIUpstreamAdapter) Prepare(_ context.Context, req execution.Request
 }
 
 func (a *OpenAIUpstreamAdapter) Execute(ctx context.Context, prepared *execution.PreparedExecution) (*execution.RawResult, error) {
-	upstreamURL := os.Getenv("LUNE_UPSTREAM_URL")
+	upstreamURL := os.Getenv("LUNE_BACKEND_URL")
 	if upstreamURL == "" {
 		upstreamURL = "http://localhost:3000"
 	}

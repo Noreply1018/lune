@@ -34,7 +34,7 @@ func TestOpenAIUpstreamAdapterPrepare(t *testing.T) {
 		Headers:    http.Header{"Authorization": []string{"Bearer sk-user"}},
 	}
 	plan := execution.Plan{TargetModel: "gpt-4o-2024-08-06"}
-	platform := config.Platform{ID: "upstream"}
+	platform := config.Platform{ID: "backend"}
 	account := config.Account{ID: "test-account", CredentialEnv: "TEST_API_KEY"}
 
 	prepared, err := adapter.Prepare(context.Background(), req, plan, platform, account)
@@ -71,7 +71,7 @@ func TestOpenAIUpstreamAdapterExecuteAndNormalize(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	t.Setenv("LUNE_UPSTREAM_URL", upstream.URL)
+	t.Setenv("LUNE_BACKEND_URL", upstream.URL)
 	t.Setenv("TEST_KEY", "sk-upstream")
 
 	adapter := NewOpenAIUpstreamAdapter()
@@ -81,7 +81,7 @@ func TestOpenAIUpstreamAdapterExecuteAndNormalize(t *testing.T) {
 			Endpoint: "/v1/chat/completions",
 			RawBody:  []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`),
 		},
-		Platform: config.Platform{ID: "upstream"},
+		Platform: config.Platform{ID: "backend"},
 		Account:  config.Account{ID: "test", CredentialEnv: "TEST_KEY"},
 		RawBody:  []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`),
 		Headers:  http.Header{"Authorization": []string{"Bearer sk-upstream"}, "Content-Type": []string{"application/json"}},
@@ -144,13 +144,13 @@ func TestOpenAIUpstreamAdapterStreamingPassthrough(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	t.Setenv("LUNE_UPSTREAM_URL", upstream.URL)
+	t.Setenv("LUNE_BACKEND_URL", upstream.URL)
 
 	adapter := NewOpenAIUpstreamAdapter()
 
 	prepared := &execution.PreparedExecution{
 		Request:  execution.Request{Endpoint: "/v1/chat/completions", RawBody: []byte(`{"model":"gpt-4o","stream":true}`)},
-		Platform: config.Platform{ID: "upstream"},
+		Platform: config.Platform{ID: "backend"},
 		Account:  config.Account{ID: "test"},
 		RawBody:  []byte(`{"model":"gpt-4o","stream":true}`),
 		Headers:  http.Header{"Content-Type": []string{"application/json"}},

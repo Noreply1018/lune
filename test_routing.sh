@@ -5,7 +5,7 @@ echo "=== 出口路由验证 ==="
 echo "通过 SOCKS5 代理请求 ipinfo.io ..."
 echo
 
-RESULT=$(docker compose exec upstream-node \
+RESULT=$(docker compose exec proxy-node \
   curl -sS -x socks5://14ab64b73c90c:643153285e@192.208.4.212:12324 \
   https://ipinfo.io/json)
 

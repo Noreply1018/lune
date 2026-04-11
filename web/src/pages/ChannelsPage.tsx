@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import StatusBadge from "../components/StatusBadge";
 import DataTable, { type Column } from "../components/DataTable";
-import { oneapiGet, oneapiPut } from "../lib/oneapi";
+import { backendGet, backendPut } from "../lib/backend";
 import { toast } from "../components/Feedback";
 import { latency } from "../lib/fmt";
 
@@ -25,7 +25,7 @@ export default function ChannelsPage() {
 
   function load() {
     setLoading(true);
-    oneapiGet<{ data: Channel[] }>("/api/channel/?p=0&page_size=100")
+    backendGet<{ data: Channel[] }>("/api/channel/?p=0&page_size=100")
       .then((d) => setChannels(d.data ?? []))
       .catch(() => toast("加载渠道失败", "error"))
       .finally(() => setLoading(false));
@@ -36,7 +36,7 @@ export default function ChannelsPage() {
   async function testChannel(id: number) {
     setTesting(id);
     try {
-      const res = await oneapiGet<{ success: boolean; message: string; time: number }>(
+      const res = await backendGet<{ success: boolean; message: string; time: number }>(
         `/api/channel/test/${id}`,
       );
       if (res.success) {
@@ -55,7 +55,7 @@ export default function ChannelsPage() {
   async function toggleChannel(ch: Channel) {
     try {
       const newStatus = ch.status === 1 ? 2 : 1;
-      await oneapiPut("/api/channel/", { ...ch, status: newStatus });
+      await backendPut("/api/channel/", { ...ch, status: newStatus });
       toast(newStatus === 1 ? "已启用" : "已停用");
       load();
     } catch {

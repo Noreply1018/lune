@@ -14,13 +14,13 @@ func TestValidateAcceptsMinimalValidConfig(t *testing.T) {
 			},
 		},
 		Platforms: []Platform{
-			{ID: "upstream", Enabled: true},
+			{ID: "backend", Enabled: true},
 		},
 		Accounts: []Account{
-			{ID: "plus-a", Platform: "upstream", Enabled: true},
+			{ID: "plus-a", Platform: "backend", Enabled: true},
 		},
 		AccountPools: []AccountPool{
-			{ID: "default-pool", Platform: "upstream", Enabled: true, Members: []string{"plus-a"}},
+			{ID: "default-pool", Platform: "backend", Enabled: true, Members: []string{"plus-a"}},
 		},
 		Models: []ModelRoute{
 			{Alias: "gpt-4o", TargetKind: "account_pool", TargetID: "default-pool", TargetModel: "gpt-4o"},
@@ -44,7 +44,7 @@ func TestValidateRejectsUnknownModelTarget(t *testing.T) {
 			},
 		},
 		Platforms: []Platform{
-			{ID: "upstream", Enabled: true},
+			{ID: "backend", Enabled: true},
 		},
 		Models: []ModelRoute{
 			{Alias: "plus-chat", TargetKind: "account_pool", TargetID: "missing-pool", TargetModel: "gpt-4o"},

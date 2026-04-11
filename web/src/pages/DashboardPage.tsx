@@ -3,7 +3,7 @@ import StatCard from "../components/StatCard";
 import StatusBadge from "../components/StatusBadge";
 import DataTable, { type Column } from "../components/DataTable";
 import { luneGet } from "../lib/api";
-import { oneapiGet } from "../lib/oneapi";
+import { backendGet } from "../lib/backend";
 import { pct, latency, shortDate } from "../lib/fmt";
 
 type Overview = {
@@ -28,7 +28,7 @@ type LogRecord = {
   access_token_name: string;
 };
 
-type OneAPIChannel = {
+type BackendChannel = {
   id: number;
   name: string;
   status: number;
@@ -55,7 +55,7 @@ const logColumns: Column<LogRecord>[] = [
 export default function DashboardPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [logs, setLogs] = useState<LogRecord[]>([]);
-  const [channels, setChannels] = useState<OneAPIChannel[]>([]);
+  const [channels, setChannels] = useState<BackendChannel[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -64,7 +64,7 @@ export default function DashboardPage() {
       luneGet<{ logs: LogRecord[] }>("/admin/api/logs?limit=10").then((d) =>
         setLogs(d.logs ?? []),
       ),
-      oneapiGet<{ data: OneAPIChannel[] }>("/api/channel/?p=0&page_size=100").then(
+      backendGet<{ data: BackendChannel[] }>("/api/channel/?p=0&page_size=100").then(
         (d) => setChannels(d.data ?? []),
       ),
     ]).finally(() => setLoading(false));

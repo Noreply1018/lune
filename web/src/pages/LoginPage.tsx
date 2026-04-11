@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { setLuneToken } from "../lib/auth";
 import { luneGet } from "../lib/api";
-import { oneapiLogin } from "../lib/oneapi";
+import { backendLogin } from "../lib/backend";
 
 export default function LoginPage() {
   const [luneToken, setLuneTokenLocal] = useState("");
@@ -20,8 +20,8 @@ export default function LoginPage() {
       setLuneToken(luneToken);
       await luneGet("/admin/api/overview");
 
-      // 2. Login to One-API
-      await oneapiLogin(username, password);
+      // 2. Login to backend engine
+      await backendLogin(username, password);
 
       // Both succeeded — navigate
       window.location.href = "/admin";
@@ -68,7 +68,7 @@ export default function LoginPage() {
         />
 
         <label className="block text-xs text-paper-500 mb-1">
-          One-API 用户名
+          用户名
         </label>
         <input
           type="text"
@@ -80,7 +80,7 @@ export default function LoginPage() {
         />
 
         <label className="block text-xs text-paper-500 mb-1">
-          One-API 密码
+          密码
         </label>
         <input
           type="password"

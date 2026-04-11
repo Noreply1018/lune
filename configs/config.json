@@ -22,7 +22,7 @@
   },
   "platforms": [
     {
-      "id": "upstream",
+      "id": "backend",
       "type": "openai",
       "adapter": "openai-upstream",
       "enabled": true,
@@ -33,11 +33,11 @@
   ],
   "accounts": [
     {
-      "id": "upstream-default",
-      "platform": "upstream",
-      "label": "One-API Upstream",
+      "id": "backend-default",
+      "platform": "backend",
+      "label": "Lune Backend",
       "credential_type": "api_key",
-      "credential_env": "UPSTREAM_API_KEY",
+      "credential_env": "LUNE_BACKEND_KEY",
       "plan_type": "plus",
       "enabled": true,
       "status": "healthy",
@@ -47,11 +47,11 @@
   "account_pools": [
     {
       "id": "default-pool",
-      "platform": "upstream",
+      "platform": "backend",
       "strategy": "sticky-first-healthy",
       "enabled": true,
       "members": [
-        "upstream-default"
+        "backend-default"
       ]
     }
   ],

@@ -2,9 +2,9 @@
 
 Lune 是一个面向个人自用的 **LLM API 网关**。
 
-对下游暴露 OpenAI 兼容接口，通过 one-api 等成熟开源项目作为 Upstream 引擎，管理多个 LLM Provider（OpenAI、DeepSeek、Anthropic 等），提供统一的接入层。
+对下游暴露 OpenAI 兼容接口，通过内置后端引擎管理多个 LLM Provider（OpenAI、DeepSeek、Anthropic 等），提供统一的接入层。
 
-**架构：** Lune (Bearer Token 鉴权 + 透明代理) → one-api (Upstream 引擎) → LLM Provider
+**架构：** Client → Lune (Bearer Token 鉴权 + 路由调度) → Backend Engine → LLM Provider
 
 ---
 
@@ -32,10 +32,10 @@ Lune 是一个面向个人自用的 **LLM API 网关**。
 
 ## 快速开始
 
-### 1. 启动 Upstream（one-api）
+### 1. 启动后端引擎
 
 ```bash
-docker compose up -d upstream
+docker compose up -d backend
 ```
 
 访问 `http://localhost:3000`，创建 Channel → 配置 LLM Provider → 生成 API Key。
@@ -43,7 +43,7 @@ docker compose up -d upstream
 ### 2. 配置并启动 Lune
 
 ```bash
-export UPSTREAM_API_KEY=sk-xxxxx   # one-api 生成的 key
+export LUNE_BACKEND_KEY=sk-xxxxx   # 后端引擎生成的 key
 docker compose up -d lune
 ```
 
@@ -77,11 +77,11 @@ curl -X POST http://localhost:7788/openai/v1/chat/completions \
 {
   "accounts": [
     {
-      "id": "upstream-default",
-      "platform": "upstream",
-      "label": "One-API Upstream",
+      "id": "backend-default",
+      "platform": "backend",
+      "label": "Lune Backend",
       "credential_type": "api_key",
-      "credential_env": "UPSTREAM_API_KEY",
+      "credential_env": "LUNE_BACKEND_KEY",
       "plan_type": "plus",
       "enabled": true,
       "status": "healthy"
@@ -134,5 +134,5 @@ SQLite 数据库：`data/lune.db`
 | `POST /openai/v1/responses` | Responses API |
 | `POST /openai/v1/embeddings` | Embeddings API |
 | `POST /openai/v1/images/generations` | 图像生成 API |
-| `GET\|POST /admin/api/*` | 管理 API（需 admin_token） |
+| `GET|POST /admin/api/*` | 管理 API（需 admin_token） |
 | `/admin` | Web 控制台 |

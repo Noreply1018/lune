@@ -49,7 +49,7 @@ func TestAccountsAPIAndToggleUpdateConfig(t *testing.T) {
 	h, st := newTestHandler(t)
 	defer st.Close()
 
-	createBody := bytes.NewBufferString(`{"id":"plus-b","label":"Backup Plus","credential_type":"api_key","credential_env":"UPSTREAM_API_KEY_B","plan_type":"plus","enabled":true,"status":"healthy"}`)
+	createBody := bytes.NewBufferString(`{"id":"plus-b","label":"Backup Plus","credential_type":"api_key","credential_env":"LUNE_BACKEND_KEY_B","plan_type":"plus","enabled":true,"status":"healthy"}`)
 	createReq := httptest.NewRequest(http.MethodPost, "/admin/api/accounts", createBody)
 	createReq.Header.Set("Authorization", "Bearer admin-token")
 	createReq.Header.Set("Content-Type", "application/json")
@@ -112,9 +112,9 @@ func newTestHandler(t *testing.T) (*Handler, *store.Store) {
 				{Name: "default", Token: "sk-lune", Enabled: true, QuotaCalls: 1000, CostPerRequest: 1},
 			},
 		},
-		Platforms:    []config.Platform{{ID: "upstream", Type: "openai", Adapter: "openai-upstream", Enabled: true}},
-		Accounts:     []config.Account{{ID: "plus-a", Platform: "upstream", Label: "Primary Plus", CredentialType: "api_key", CredentialEnv: "UPSTREAM_API_KEY", PlanType: "plus", Enabled: true, Status: "healthy"}},
-		AccountPools: []config.AccountPool{{ID: "default-pool", Platform: "upstream", Strategy: "sticky-first-healthy", Enabled: true, Members: []string{"plus-a"}}},
+		Platforms:    []config.Platform{{ID: "backend", Type: "openai", Adapter: "openai-upstream", Enabled: true}},
+		Accounts:     []config.Account{{ID: "plus-a", Platform: "backend", Label: "Primary Plus", CredentialType: "api_key", CredentialEnv: "LUNE_BACKEND_KEY", PlanType: "plus", Enabled: true, Status: "healthy"}},
+		AccountPools: []config.AccountPool{{ID: "default-pool", Platform: "backend", Strategy: "sticky-first-healthy", Enabled: true, Members: []string{"plus-a"}}},
 		Models:       []config.ModelRoute{{Alias: "gpt-4o", AccountPool: "default-pool", TargetKind: "account_pool", TargetID: "default-pool", TargetModel: "gpt-4o"}},
 	}
 	return newTestHandlerWithConfig(t, cfg)

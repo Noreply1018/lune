@@ -1,12 +1,12 @@
 services:
-  upstream:
+  backend:
     image: justsong/one-api:latest
-    container_name: lune-upstream
+    container_name: lune-backend
     restart: unless-stopped
     ports:
       - "3000:3000"
     volumes:
-      - upstream-data:/data
+      - backend-data:/data
     environment:
       - TZ=Asia/Shanghai
     healthcheck:
@@ -23,27 +23,27 @@ services:
       - "7788:7788"
     environment:
       LUNE_CONFIG: /app/configs/config.json
-      LUNE_UPSTREAM_URL: "http://upstream:3000"
-      UPSTREAM_API_KEY: "${UPSTREAM_API_KEY:-sk-one-api-default}"
+      LUNE_BACKEND_URL: "http://backend:3000"
+      LUNE_BACKEND_KEY: "${LUNE_BACKEND_KEY:-sk-default}"
     volumes:
       - ./configs/config.json:/app/configs/config.json
       - lune-data:/app/data
     depends_on:
-      upstream:
+      backend:
         condition: service_healthy
 
-  upstream-node:
+  proxy-node:
     image: eceasy/cli-proxy-api:latest
-    container_name: lune-upstream-node
+    container_name: lune-proxy-node
     restart: unless-stopped
     environment:
-      - HTTP_PROXY=${CPA_PROXY}
-      - HTTPS_PROXY=${CPA_PROXY}
-      - ALL_PROXY=${CPA_PROXY}
+      - HTTP_PROXY=${PROXY_NODE_PROXY}
+      - HTTPS_PROXY=${PROXY_NODE_PROXY}
+      - ALL_PROXY=${PROXY_NODE_PROXY}
     volumes:
-      - ./cpa-config.yaml:/CLIProxyAPI/config.yaml
-      - ./cpa-auth:/root/.cli-proxy-api
+      - ./proxy-node-config.yaml:/CLIProxyAPI/config.yaml
+      - ./proxy-node-auth:/root/.cli-proxy-api
 
 volumes:
-  upstream-data:
+  backend-data:
   lune-data:

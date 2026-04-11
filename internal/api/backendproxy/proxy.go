@@ -1,4 +1,4 @@
-package oneapiproxy
+package backendproxy
 
 import (
 	"net/http"
@@ -9,9 +9,9 @@ import (
 	"lune/internal/runtimeconfig"
 )
 
-// Handler returns an http.Handler that reverse-proxies requests to the One-API
-// upstream. It strips the "/oneapi" path prefix so that
-// /oneapi/api/channel/ → /api/channel/ on the upstream.
+// Handler returns an http.Handler that reverse-proxies requests to the backend
+// engine. It strips the "/backend" path prefix so that
+// /backend/api/channel/ → /api/channel/ on the backend engine.
 //
 // The upstream URL is read from the runtime config on every request so that
 // hot-reloads take effect immediately.
@@ -34,10 +34,10 @@ func Handler(cfg *runtimeconfig.Manager) http.Handler {
 				req.URL.Host = target.Host
 				req.Host = target.Host
 
-				// Strip the /oneapi prefix: /oneapi/api/foo → /api/foo
-				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/oneapi")
+				// Strip the /backend prefix: /backend/api/foo → /api/foo
+				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/backend")
 				if req.URL.RawPath != "" {
-					req.URL.RawPath = strings.TrimPrefix(req.URL.RawPath, "/oneapi")
+					req.URL.RawPath = strings.TrimPrefix(req.URL.RawPath, "/backend")
 				}
 			},
 		}

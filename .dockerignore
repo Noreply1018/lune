@@ -1,7 +1,7 @@
 .git
 reference/
 web/node_modules/
-cpa-auth/
+proxy-node-auth/
 data/
 *.db
 *.db-journal
