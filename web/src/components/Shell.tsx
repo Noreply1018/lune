@@ -3,9 +3,12 @@ import { logout } from "../lib/auth";
 
 const navItems = [
   { label: "总览", href: "/admin" },
+  { label: "账号", href: "/admin/accounts" },
+  { label: "号池", href: "/admin/pools" },
   { label: "渠道", href: "/admin/channels" },
   { label: "用量", href: "/admin/usage" },
   { label: "令牌", href: "/admin/tokens" },
+  { label: "设置", href: "/admin/settings" },
 ];
 
 export default function Shell({ children }: { children: ReactNode }) {

@@ -18,10 +18,18 @@ export default function LoginPage() {
     try {
       // 1. Validate Lune admin token
       setLuneToken(luneToken);
-      await luneGet("/admin/api/overview");
+      const data = await luneGet<{
+        overview: { needs_bootstrap: boolean };
+      }>("/admin/api/overview");
 
-      // 2. Login to backend engine
-      await backendLogin(username, password);
+      // 2. If bootstrap needed, skip backend login (not configured yet)
+      if (!data.overview.needs_bootstrap && password) {
+        try {
+          await backendLogin(username, password);
+        } catch {
+          // Backend login failure is non-fatal — admin UI still works
+        }
+      }
 
       // Both succeeded — navigate
       window.location.href = "/admin";
@@ -56,7 +64,7 @@ export default function LoginPage() {
         )}
 
         <label className="block text-xs text-paper-500 mb-1">
-          Lune Admin Token
+          Admin Token
         </label>
         <input
           type="password"
@@ -64,32 +72,40 @@ export default function LoginPage() {
           onChange={(e) => setLuneTokenLocal(e.target.value)}
           required
           className="mb-4 block w-full rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-sm text-paper-800 placeholder:text-paper-300 focus:border-paper-500 focus:outline-none"
-          placeholder="admin token"
+          placeholder="在终端中查看自动生成的 token"
         />
 
-        <label className="block text-xs text-paper-500 mb-1">
-          用户名
-        </label>
-        <input
-          type="text"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          required
-          className="mb-4 block w-full rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-sm text-paper-800 placeholder:text-paper-300 focus:border-paper-500 focus:outline-none"
-          placeholder="root"
-        />
-
-        <label className="block text-xs text-paper-500 mb-1">
-          密码
-        </label>
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          className="mb-6 block w-full rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-sm text-paper-800 placeholder:text-paper-300 focus:border-paper-500 focus:outline-none"
-          placeholder="password"
-        />
+        <details className="mb-4">
+          <summary className="cursor-pointer text-xs text-paper-400 hover:text-paper-500 transition-colors">
+            后端引擎登录（可选）
+          </summary>
+          <div className="mt-3 space-y-3">
+            <div>
+              <label className="block text-xs text-paper-500 mb-1">
+                用户名
+              </label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="block w-full rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-sm text-paper-800 placeholder:text-paper-300 focus:border-paper-500 focus:outline-none"
+                placeholder="root"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-paper-500 mb-1">
+                密码
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="block w-full rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-sm text-paper-800 placeholder:text-paper-300 focus:border-paper-500 focus:outline-none"
+                placeholder="password"
+              />
+            </div>
+          </div>
+        </details>
 
         <button
           type="submit"

@@ -18,7 +18,7 @@ export function setBackendToken(token: string) {
 }
 
 export function isAuthenticated(): boolean {
-  return getLuneToken() !== "" && getBackendToken() !== "";
+  return getLuneToken() !== "";
 }
 
 export function logout() {
