@@ -1,0 +1,66 @@
+{
+  "server": {
+    "port": 7788,
+    "stream_smoothing": true,
+    "stream_heartbeat": true,
+    "request_timeout_seconds": 120,
+    "shutdown_timeout_seconds": 10,
+    "data_dir": "data",
+    "platform_refresh_interval_seconds": 60
+  },
+  "auth": {
+    "admin_token": "change-me-admin-token",
+    "access_tokens": [
+      {
+        "name": "default",
+        "token": "sk-lune-local-dev",
+        "enabled": true,
+        "quota_calls": 1000,
+        "cost_per_request": 1
+      }
+    ]
+  },
+  "platforms": [
+    {
+      "id": "upstream",
+      "type": "openai",
+      "adapter": "openai-upstream",
+      "enabled": true,
+      "priority": 100,
+      "weight": 10,
+      "timeout_seconds": 120
+    }
+  ],
+  "accounts": [
+    {
+      "id": "upstream-default",
+      "platform": "upstream",
+      "label": "One-API Upstream",
+      "credential_type": "api_key",
+      "credential_env": "UPSTREAM_API_KEY",
+      "plan_type": "plus",
+      "enabled": true,
+      "status": "healthy",
+      "risk_score": 0
+    }
+  ],
+  "account_pools": [
+    {
+      "id": "default-pool",
+      "platform": "upstream",
+      "strategy": "sticky-first-healthy",
+      "enabled": true,
+      "members": [
+        "upstream-default"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "alias": "gpt-4o",
+      "account_pool": "default-pool",
+      "target_model": "gpt-4o",
+      "fallbacks": []
+    }
+  ]
+}

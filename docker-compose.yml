@@ -1,0 +1,49 @@
+services:
+  upstream:
+    image: justsong/one-api:latest
+    container_name: lune-upstream
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - upstream-data:/data
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  lune:
+    build: .
+    container_name: lune
+    restart: unless-stopped
+    ports:
+      - "7788:7788"
+    environment:
+      LUNE_CONFIG: /app/configs/config.json
+      LUNE_UPSTREAM_URL: "http://upstream:3000"
+      UPSTREAM_API_KEY: "${UPSTREAM_API_KEY:-sk-one-api-default}"
+    volumes:
+      - ./configs/config.json:/app/configs/config.json
+      - lune-data:/app/data
+    depends_on:
+      upstream:
+        condition: service_healthy
+
+  upstream-node:
+    image: eceasy/cli-proxy-api:latest
+    container_name: lune-upstream-node
+    restart: unless-stopped
+    environment:
+      - HTTP_PROXY=${CPA_PROXY}
+      - HTTPS_PROXY=${CPA_PROXY}
+      - ALL_PROXY=${CPA_PROXY}
+    volumes:
+      - ./cpa-config.yaml:/CLIProxyAPI/config.yaml
+      - ./cpa-auth:/root/.cli-proxy-api
+
+volumes:
+  upstream-data:
+  lune-data:

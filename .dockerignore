@@ -1,0 +1,10 @@
+.git
+reference/
+web/node_modules/
+cpa-auth/
+data/
+*.db
+*.db-journal
+.env
+lune
+.claude/

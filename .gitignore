@@ -1,0 +1,14 @@
+data/
+*.exe
+*.out
+*.test
+*.exe~
+configs/*.bak-*
+web/node_modules/
+sidecar/node_modules/
+web/*.tsbuildinfo
+web/*.js
+web/*.d.ts
+
+# Secrets
+.env
