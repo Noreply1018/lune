@@ -2,6 +2,7 @@ package runtimeconfig
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,12 +42,19 @@ func (m *Manager) ValidateOnly(candidate config.Config) (config.Config, error) {
 }
 
 func (m *Manager) Apply(ctx context.Context, candidate config.Config) (config.Config, error) {
-	prepared, err := config.Prepare(candidate)
+	// Use lenient validation during bootstrap, strict once fully configured.
+	var prepared config.Config
+	var err error
+	if candidate.NeedsBootstrap() {
+		prepared, err = config.PrepareBoot(candidate)
+	} else {
+		prepared, err = config.Prepare(candidate)
+	}
 	if err != nil {
 		return config.Config{}, err
 	}
 
-	raw, err := config.Marshal(prepared)
+	raw, err := json.MarshalIndent(prepared, "", "  ")
 	if err != nil {
 		return config.Config{}, err
 	}

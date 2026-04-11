@@ -23,9 +23,23 @@ import (
 func Run(logger *log.Logger) error {
 	cfgPath := config.PathFromEnv()
 
-	cfg, err := config.Load(cfgPath)
+	cfg, fresh, err := config.LoadOrDefault(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Resolve admin token: LUNE_ADMIN_TOKEN env > existing config > auto-generate
+	if cfg.Auth.AdminToken == "" {
+		if envToken := os.Getenv("LUNE_ADMIN_TOKEN"); envToken != "" {
+			cfg.Auth.AdminToken = envToken
+		} else {
+			cfg.Auth.AdminToken = config.GenerateAdminToken()
+			logger.Printf("=== Generated admin token: %s ===", cfg.Auth.AdminToken)
+		}
+	}
+
+	if fresh {
+		logger.Printf("No config file found — starting in setup mode. Open http://localhost:%d/admin to configure.", cfg.Server.Port)
 	}
 
 	if err := os.MkdirAll(cfg.Server.DataDir, 0o755); err != nil {

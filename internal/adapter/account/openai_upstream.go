@@ -37,7 +37,10 @@ func (a *OpenAIUpstreamAdapter) Prepare(_ context.Context, req execution.Request
 
 	headers := req.Headers.Clone()
 
-	apiKey := os.Getenv(account.CredentialEnv)
+	apiKey := account.Credential
+	if apiKey == "" && account.CredentialEnv != "" {
+		apiKey = os.Getenv(account.CredentialEnv)
+	}
 	if apiKey != "" {
 		headers.Set("Authorization", "Bearer "+apiKey)
 	}

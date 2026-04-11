@@ -34,8 +34,9 @@ type AccountRecord struct {
 	PlatformID     string     `json:"platform_id"`
 	Label          string     `json:"label"`
 	CredentialType string     `json:"credential_type"`
-	CredentialEnv  string     `json:"credential_env"`
-	EgressProxyEnv string     `json:"egress_proxy_env"`
+	Credential     string     `json:"credential,omitempty"`
+	CredentialEnv  string     `json:"credential_env,omitempty"`
+	EgressProxyEnv string     `json:"egress_proxy_env,omitempty"`
 	PlanType       string     `json:"plan_type"`
 	Enabled        bool       `json:"enabled"`
 	Status         string     `json:"status"`
@@ -221,6 +222,16 @@ CREATE INDEX IF NOT EXISTS idx_usage_ledger_created_at ON usage_ledger(created_a
 		}
 	}
 
+	hasCredential, err := s.columnExists("accounts", "credential")
+	if err != nil {
+		return err
+	}
+	if !hasCredential {
+		if _, err := s.db.Exec(`ALTER TABLE accounts ADD COLUMN credential TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -264,13 +275,14 @@ func (s *Store) SyncAccounts(ctx context.Context, accounts []config.Account) err
 	for _, account := range accounts {
 		_, err := s.db.ExecContext(ctx, `
 INSERT INTO accounts (
-  id, platform_id, label, credential_type, credential_env, egress_proxy_env, plan_type,
+  id, platform_id, label, credential_type, credential, credential_env, egress_proxy_env, plan_type,
   enabled, status, risk_score, cooldown_until, last_success_at, last_error, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   platform_id = excluded.platform_id,
   label = excluded.label,
   credential_type = excluded.credential_type,
+  credential = excluded.credential,
   credential_env = excluded.credential_env,
   egress_proxy_env = excluded.egress_proxy_env,
   plan_type = excluded.plan_type,
@@ -283,6 +295,7 @@ ON CONFLICT(id) DO UPDATE SET
 			account.Platform,
 			account.Label,
 			account.CredentialType,
+			account.Credential,
 			account.CredentialEnv,
 			account.EgressProxyEnv,
 			account.PlanType,
@@ -492,7 +505,7 @@ func (s *Store) ListAccounts(ctx context.Context) ([]AccountRecord, error) {
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, platform_id, label, credential_type, credential_env, egress_proxy_env, plan_type,
+SELECT id, platform_id, label, credential_type, credential, credential_env, egress_proxy_env, plan_type,
        enabled, status, risk_score, cooldown_until, last_success_at, last_error, updated_at
 FROM accounts
 ORDER BY id ASC`)
@@ -513,6 +526,7 @@ ORDER BY id ASC`)
 			&item.PlatformID,
 			&item.Label,
 			&item.CredentialType,
+			&item.Credential,
 			&item.CredentialEnv,
 			&item.EgressProxyEnv,
 			&item.PlanType,

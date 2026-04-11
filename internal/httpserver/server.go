@@ -65,7 +65,7 @@ func (s *Server) registerRoutes() {
 	))
 
 	// SPA deep-link fallbacks — more specific than /admin/ so they win
-	for _, p := range []string{"/admin/channels", "/admin/usage", "/admin/tokens", "/admin/login"} {
+	for _, p := range []string{"/admin/channels", "/admin/usage", "/admin/tokens", "/admin/login", "/admin/accounts", "/admin/pools", "/admin/settings", "/admin/setup"} {
 		s.mux.Handle(p, site.Handler())
 	}
 

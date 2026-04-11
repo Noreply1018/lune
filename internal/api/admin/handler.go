@@ -50,11 +50,25 @@ type upsertAccountRequest struct {
 	ID             string `json:"id"`
 	Label          string `json:"label"`
 	CredentialType string `json:"credential_type"`
+	Credential     string `json:"credential"`
 	CredentialEnv  string `json:"credential_env"`
 	EgressProxyEnv string `json:"egress_proxy_env"`
 	PlanType       string `json:"plan_type"`
 	Enabled        bool   `json:"enabled"`
 	Status         string `json:"status"`
+}
+
+type bootstrapRequest struct {
+	BackendURL  string `json:"backend_url"`
+	BackendKey  string `json:"backend_key"`
+	AccessToken string `json:"access_token"`
+	TokenName   string `json:"token_name"`
+}
+
+type settingsPayload struct {
+	BackendURL string `json:"backend_url"`
+	Port       int    `json:"port"`
+	DataDir    string `json:"data_dir"`
 }
 
 type upsertPoolRequest struct {
@@ -123,6 +137,10 @@ func (h *Handler) Route(w http.ResponseWriter, r *http.Request) {
 		auth.RequireAdminFunc(h.adminToken, http.HandlerFunc(h.Config)).ServeHTTP(w, r)
 	case clean == "/admin/api/config/validate":
 		auth.RequireAdminFunc(h.adminToken, http.HandlerFunc(h.ValidateConfig)).ServeHTTP(w, r)
+	case clean == "/admin/api/bootstrap":
+		auth.RequireAdminFunc(h.adminToken, http.HandlerFunc(h.Bootstrap)).ServeHTTP(w, r)
+	case clean == "/admin/api/settings":
+		auth.RequireAdminFunc(h.adminToken, http.HandlerFunc(h.Settings)).ServeHTTP(w, r)
 	case clean == "/admin/overview":
 		auth.RequireAdminFunc(h.adminToken, http.HandlerFunc(h.OverviewAPI)).ServeHTTP(w, r)
 	case clean == "/admin/platforms":
@@ -195,7 +213,7 @@ func (h *Handler) OverviewAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	overview := overviewPayload{
-		NeedsBootstrap:    len(cfg.Accounts) == 0 || len(cfg.AccountPools) == 0 || len(cfg.Auth.AccessTokens) == 0,
+		NeedsBootstrap:    cfg.NeedsBootstrap(),
 		AccountsTotal:     len(cfg.Accounts),
 		ActiveAccounts:    activeAccounts,
 		PoolsTotal:        len(cfg.AccountPools),
@@ -587,6 +605,7 @@ func (h *Handler) accountViews(ctx context.Context) ([]store.AccountRecord, erro
 			PlatformID:     account.Platform,
 			Label:          account.Label,
 			CredentialType: account.CredentialType,
+			Credential:     maskToken(account.Credential),
 			CredentialEnv:  account.CredentialEnv,
 			EgressProxyEnv: account.EgressProxyEnv,
 			PlanType:       account.PlanType,
@@ -669,8 +688,8 @@ func (h *Handler) applyAccountMutation(ctx context.Context, req upsertAccountReq
 	if strings.TrimSpace(req.Label) == "" {
 		return config.Config{}, fmt.Errorf("账号标签不能为空")
 	}
-	if strings.TrimSpace(req.CredentialEnv) == "" {
-		return config.Config{}, fmt.Errorf("凭据环境变量不能为空")
+	if strings.TrimSpace(req.Credential) == "" && strings.TrimSpace(req.CredentialEnv) == "" {
+		return config.Config{}, fmt.Errorf("凭据不能为空（credential 或 credential_env 至少填一个）")
 	}
 	return h.mutateConfig(ctx, func(cfg *config.Config) error {
 		cfg.Platforms = ensureDefaultPlatform(cfg.Platforms)
@@ -679,6 +698,7 @@ func (h *Handler) applyAccountMutation(ctx context.Context, req upsertAccountReq
 			Platform:       defaultPlatformID,
 			Label:          strings.TrimSpace(req.Label),
 			CredentialType: defaultString(req.CredentialType, "api_key"),
+			Credential:     strings.TrimSpace(req.Credential),
 			CredentialEnv:  strings.TrimSpace(req.CredentialEnv),
 			EgressProxyEnv: strings.TrimSpace(req.EgressProxyEnv),
 			PlanType:       defaultString(req.PlanType, "plus"),
@@ -696,6 +716,13 @@ func (h *Handler) applyAccountMutation(ctx context.Context, req upsertAccountReq
 		index := findAccountIndex(cfg.Accounts, account.ID)
 		if index < 0 {
 			return fmt.Errorf("账号 %s 不存在", account.ID)
+		}
+		// Preserve existing credential if not provided in update
+		if account.Credential == "" {
+			account.Credential = cfg.Accounts[index].Credential
+		}
+		if account.CredentialEnv == "" {
+			account.CredentialEnv = cfg.Accounts[index].CredentialEnv
 		}
 		cfg.Accounts[index] = account
 		return nil
@@ -989,6 +1016,123 @@ func (h *Handler) defaultModelAlias(cfg config.Config) string {
 		return defaultModelAlias
 	}
 	return cfg.Models[0].Alias
+}
+
+func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	cfg := h.currentConfig()
+	if !cfg.NeedsBootstrap() {
+		webutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "系统已配置完成，无需引导"})
+		return
+	}
+
+	var req bootstrapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON 不合法"})
+		return
+	}
+
+	if strings.TrimSpace(req.BackendKey) == "" {
+		webutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "后端 API Key 不能为空"})
+		return
+	}
+
+	if strings.TrimSpace(req.BackendURL) != "" {
+		cfg.Server.UpstreamURL = strings.TrimSpace(req.BackendURL)
+	}
+
+	cfg.Platforms = ensureDefaultPlatform(cfg.Platforms)
+	cfg.Accounts = []config.Account{{
+		ID:             "backend-default",
+		Platform:       defaultPlatformID,
+		Label:          "Default Backend",
+		CredentialType: "api_key",
+		Credential:     strings.TrimSpace(req.BackendKey),
+		Enabled:        true,
+		Status:         "healthy",
+		PlanType:       "plus",
+	}}
+	cfg.AccountPools = []config.AccountPool{{
+		ID:       "default-pool",
+		Platform: defaultPlatformID,
+		Strategy: defaultPoolStrategy,
+		Enabled:  true,
+		Members:  []string{"backend-default"},
+	}}
+	cfg.Models = []config.ModelRoute{{
+		Alias:       "gpt-4o",
+		AccountPool: "default-pool",
+		TargetKind:  "account_pool",
+		TargetID:    "default-pool",
+		TargetModel: "gpt-4o",
+		Fallbacks:   []string{},
+	}}
+
+	tokenName := strings.TrimSpace(req.TokenName)
+	if tokenName == "" {
+		tokenName = "default"
+	}
+	tokenValue := strings.TrimSpace(req.AccessToken)
+	if tokenValue == "" {
+		tokenValue = "sk-lune-" + config.GenerateAdminToken()[:16]
+	}
+	cfg.Auth.AccessTokens = []config.AccessToken{{
+		Name:           tokenName,
+		Token:          tokenValue,
+		Enabled:        true,
+		QuotaCalls:     0,
+		CostPerRequest: 1,
+	}}
+
+	applied, err := h.config.Apply(r.Context(), cfg)
+	if err != nil {
+		webutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": humanizeConfigError(err)})
+		return
+	}
+	h.refreshRegistry(r.Context())
+
+	webutil.WriteJSON(w, http.StatusOK, map[string]any{
+		"message":      "引导完成",
+		"access_token": tokenValue,
+		"config":       applied,
+	})
+}
+
+func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg := h.currentConfig()
+		webutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"settings": settingsPayload{
+				BackendURL: cfg.Server.UpstreamURL,
+				Port:       cfg.Server.Port,
+				DataDir:    cfg.Server.DataDir,
+			},
+		})
+	case http.MethodPut:
+		var req settingsPayload
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			webutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "JSON 不合法"})
+			return
+		}
+		applied, err := h.mutateConfig(r.Context(), func(cfg *config.Config) error {
+			if strings.TrimSpace(req.BackendURL) != "" {
+				cfg.Server.UpstreamURL = strings.TrimSpace(req.BackendURL)
+			}
+			return nil
+		})
+		if err != nil {
+			webutil.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		webutil.WriteJSON(w, http.StatusOK, map[string]any{"message": "设置已保存", "config": applied})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func humanizeConfigError(err error) string {

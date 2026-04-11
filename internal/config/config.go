@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -57,8 +59,9 @@ type Account struct {
 	Platform       string  `json:"platform"`
 	Label          string  `json:"label"`
 	CredentialType string  `json:"credential_type"`
-	CredentialEnv  string  `json:"credential_env"`
-	EgressProxyEnv string  `json:"egress_proxy_env"`
+	Credential     string  `json:"credential,omitempty"`
+	CredentialEnv  string  `json:"credential_env,omitempty"`
+	EgressProxyEnv string  `json:"egress_proxy_env,omitempty"`
 	PlanType       string  `json:"plan_type"`
 	Enabled        bool    `json:"enabled"`
 	Status         string  `json:"status"`
@@ -104,6 +107,26 @@ func Load(path string) (Config, error) {
 	return Prepare(cfg)
 }
 
+// LoadOrDefault loads config from path. If the file does not exist,
+// returns a zero Config with fresh=true so the caller can bootstrap.
+func LoadOrDefault(path string) (cfg Config, fresh bool, err error) {
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			cfg.applyDefaults()
+			return cfg, true, nil
+		}
+		return cfg, false, readErr
+	}
+
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return cfg, false, err
+	}
+
+	prepared, err := PrepareBoot(cfg)
+	return prepared, false, err
+}
+
 func Prepare(cfg Config) (Config, error) {
 	cfg.normalize()
 
@@ -115,12 +138,37 @@ func Prepare(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
+// PrepareBoot applies lenient validation suitable for startup.
+// It allows empty accounts/pools/tokens so the app can boot in setup mode.
+func PrepareBoot(cfg Config) (Config, error) {
+	cfg.normalize()
+
+	if err := cfg.ValidateBoot(); err != nil {
+		return cfg, err
+	}
+
+	cfg.applyDefaults()
+	return cfg, nil
+}
+
+// GenerateAdminToken creates a random admin token with a "lune-" prefix.
+func GenerateAdminToken() string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	return "lune-" + hex.EncodeToString(b)
+}
+
 func Marshal(cfg Config) ([]byte, error) {
 	prepared, err := Prepare(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return json.MarshalIndent(prepared, "", "  ")
+}
+
+// NeedsBootstrap returns true when the config lacks essential runtime entities.
+func (c Config) NeedsBootstrap() bool {
+	return len(c.Accounts) == 0 || len(c.AccountPools) == 0 || len(c.Auth.AccessTokens) == 0
 }
 
 func (c *Config) normalize() {
@@ -163,6 +211,76 @@ func (c *Config) applyDefaults() {
 			c.Server.UpstreamURL = "http://localhost:3000"
 		}
 	}
+}
+
+// ValidateBoot performs lenient validation for startup — checks structural
+// correctness (port range, no duplicate IDs, valid cross-references) but does
+// not require minimum counts for platforms/accounts/pools/tokens.
+func (c Config) ValidateBoot() error {
+	if c.Server.Port < 0 || c.Server.Port > 65535 {
+		return fmt.Errorf("invalid server.port: %d", c.Server.Port)
+	}
+
+	platforms := make(map[string]struct{}, len(c.Platforms))
+	for _, p := range c.Platforms {
+		if p.ID == "" {
+			return fmt.Errorf("platform id is required")
+		}
+		if _, exists := platforms[p.ID]; exists {
+			return fmt.Errorf("duplicate platform id: %s", p.ID)
+		}
+		platforms[p.ID] = struct{}{}
+	}
+
+	accounts := make(map[string]struct{}, len(c.Accounts))
+	for _, a := range c.Accounts {
+		if a.ID == "" {
+			return fmt.Errorf("account id is required")
+		}
+		if _, exists := accounts[a.ID]; exists {
+			return fmt.Errorf("duplicate account id: %s", a.ID)
+		}
+		accounts[a.ID] = struct{}{}
+		if a.Platform != "" {
+			if _, exists := platforms[a.Platform]; !exists {
+				return fmt.Errorf("account %s references unknown platform %s", a.ID, a.Platform)
+			}
+		}
+	}
+
+	pools := make(map[string]struct{}, len(c.AccountPools))
+	for _, p := range c.AccountPools {
+		if p.ID == "" {
+			return fmt.Errorf("account pool id is required")
+		}
+		if _, exists := pools[p.ID]; exists {
+			return fmt.Errorf("duplicate account pool id: %s", p.ID)
+		}
+		pools[p.ID] = struct{}{}
+		if p.Platform != "" {
+			if _, exists := platforms[p.Platform]; !exists {
+				return fmt.Errorf("account pool %s references unknown platform %s", p.ID, p.Platform)
+			}
+		}
+		for _, member := range p.Members {
+			if _, exists := accounts[member]; !exists {
+				return fmt.Errorf("account pool %s references unknown account %s", p.ID, member)
+			}
+		}
+	}
+
+	models := make(map[string]struct{}, len(c.Models))
+	for _, m := range c.Models {
+		if m.Alias == "" {
+			return fmt.Errorf("model alias is required")
+		}
+		if _, exists := models[m.Alias]; exists {
+			return fmt.Errorf("duplicate model alias: %s", m.Alias)
+		}
+		models[m.Alias] = struct{}{}
+	}
+
+	return nil
 }
 
 func (c Config) Validate() error {
