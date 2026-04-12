@@ -19,7 +19,7 @@ data/
 *.exe~
 *.out
 *.test
-lune
+/lune
 
 # Frontend dependencies / cache / build outputs
 web/node_modules/

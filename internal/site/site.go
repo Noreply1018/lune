@@ -5,7 +5,6 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"path"
 	"strings"
 )
 
@@ -21,20 +20,18 @@ func Handler() http.Handler {
 	fileServer := http.FileServer(http.FS(subtree))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cleanPath := path.Clean(r.URL.Path)
-		switch {
-		case cleanPath == "/":
-			serveIndex(subtree, w)
-			return
-		case cleanPath == "/admin":
-			serveIndex(subtree, w)
-			return
-		case strings.HasPrefix(cleanPath, "/assets/"):
+		// static assets
+		if strings.HasPrefix(r.URL.Path, "/admin/assets/") || strings.HasPrefix(r.URL.Path, "/assets/") {
+			// strip /admin prefix for asset serving
+			if strings.HasPrefix(r.URL.Path, "/admin/assets/") {
+				r.URL.Path = strings.TrimPrefix(r.URL.Path, "/admin")
+			}
 			fileServer.ServeHTTP(w, r)
 			return
-		default:
-			fileServer.ServeHTTP(w, r)
 		}
+
+		// all other /admin paths → SPA index.html
+		serveIndex(subtree, w)
 	})
 }
 

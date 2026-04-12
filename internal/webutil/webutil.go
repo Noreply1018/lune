@@ -24,3 +24,50 @@ func BearerToken(header string) string {
 
 	return strings.TrimSpace(parts[1])
 }
+
+// Admin API response helpers
+
+type adminErrorBody struct {
+	Error adminErrorDetail `json:"error"`
+}
+
+type adminErrorDetail struct {
+	Message string `json:"message"`
+	Code    string `json:"code"`
+}
+
+func WriteAdminError(w http.ResponseWriter, status int, code, message string) {
+	WriteJSON(w, status, adminErrorBody{
+		Error: adminErrorDetail{Message: message, Code: code},
+	})
+}
+
+func WriteData(w http.ResponseWriter, status int, data any) {
+	WriteJSON(w, status, map[string]any{"data": data})
+}
+
+func WriteList(w http.ResponseWriter, data any, total int) {
+	WriteJSON(w, http.StatusOK, map[string]any{"data": data, "total": total})
+}
+
+// Gateway error response (OpenAI format)
+
+type gatewayErrorBody struct {
+	Error gatewayErrorDetail `json:"error"`
+}
+
+type gatewayErrorDetail struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+}
+
+func WriteGatewayError(w http.ResponseWriter, status int, code, message string) {
+	WriteJSON(w, status, gatewayErrorBody{
+		Error: gatewayErrorDetail{
+			Message: message,
+			Type:    "gateway_error",
+			Code:    code,
+		},
+	})
+}
