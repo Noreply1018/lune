@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"lune/internal/store"
 	"lune/internal/webutil"
@@ -58,6 +59,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	// Settings
 	handle("GET /admin/api/settings", h.getSettings)
 	handle("PUT /admin/api/settings", h.updateSettings)
+
+	// Stats & Export
+	handle("GET /admin/api/overview", h.getOverview)
+	handle("GET /admin/api/usage", h.getUsage)
+	handle("GET /admin/api/export", h.getExport)
 }
 
 // --- Accounts ---
@@ -438,6 +444,63 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+// --- Overview, Usage, Export ---
+
+func (h *Handler) getOverview(w http.ResponseWriter, r *http.Request) {
+	overview, err := h.store.GetOverview()
+	if err != nil {
+		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		return
+	}
+	webutil.WriteData(w, 200, overview)
+}
+
+func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
+	filter := store.UsageFilter{
+		From:      r.URL.Query().Get("from"),
+		To:        r.URL.Query().Get("to"),
+		TokenName: r.URL.Query().Get("token_name"),
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		filter.Limit, _ = strconv.Atoi(v)
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		filter.Offset, _ = strconv.Atoi(v)
+	}
+	logs, total, err := h.store.GetUsage(filter)
+	if err != nil {
+		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		return
+	}
+	webutil.WriteList(w, logs, total)
+}
+
+func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
+	accounts, _ := h.store.ListAccounts()
+	for i := range accounts {
+		accounts[i].APIKey = maskKey(accounts[i].APIKey)
+	}
+	pools, _ := h.store.ListPools()
+	routes, _ := h.store.ListRoutes()
+	tokens, _ := h.store.ListTokens()
+	for i := range tokens {
+		tokens[i].Token = maskKey(tokens[i].Token)
+	}
+	settings, _ := h.store.GetSettings()
+	if _, ok := settings["admin_token"]; ok {
+		settings["admin_token"] = maskKey(settings["admin_token"])
+	}
+
+	webutil.WriteData(w, 200, map[string]any{
+		"exported_at":   time.Now().UTC().Format(time.RFC3339),
+		"accounts":      accounts,
+		"pools":         pools,
+		"model_routes":  routes,
+		"access_tokens": tokens,
+		"settings":      settings,
+	})
 }
 
 // --- helpers ---
