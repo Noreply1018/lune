@@ -48,7 +48,7 @@ export default function TokensPage() {
     setLoading(true);
     api
       .get<AccessToken[]>("/tokens")
-      .then(setTokens)
+      .then((d) => setTokens(d ?? []))
       .catch(() => toast("Failed to load tokens", "error"))
       .finally(() => setLoading(false));
   }

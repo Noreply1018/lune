@@ -66,7 +66,7 @@ export default function AccountsPage() {
     setLoading(true);
     api
       .get<Account[]>("/accounts")
-      .then(setAccounts)
+      .then((d) => setAccounts(d ?? []))
       .catch(() => toast("Failed to load accounts", "error"))
       .finally(() => setLoading(false));
   }
