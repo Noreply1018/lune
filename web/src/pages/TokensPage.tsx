@@ -3,11 +3,12 @@ import DataTable, { type Column } from "@/components/DataTable";
 import CopyButton from "@/components/CopyButton";
 import UsageBar from "@/components/UsageBar";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import PageHeader from "@/components/PageHeader";
+import SectionHeading from "@/components/SectionHeading";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
 import { relativeTime } from "@/lib/fmt";
 import type { AccessToken, AccessTokenCreated } from "@/lib/types";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -137,6 +138,7 @@ export default function TokensPage() {
       render: (r) => (
         <span className="font-medium text-moon-800">{r.name}</span>
       ),
+      tone: "primary",
     },
     {
       key: "token",
@@ -147,6 +149,7 @@ export default function TokensPage() {
           <CopyButton value={r.token_masked} />
         </div>
       ),
+      tone: "secondary",
     },
     {
       key: "usage",
@@ -155,6 +158,7 @@ export default function TokensPage() {
       render: (r) => (
         <UsageBar used={r.used_tokens} total={r.quota_tokens} />
       ),
+      tone: "numeric",
     },
     {
       key: "last_used",
@@ -164,6 +168,8 @@ export default function TokensPage() {
           {relativeTime(r.last_used_at)}
         </span>
       ),
+      align: "right",
+      tone: "secondary",
     },
     {
       key: "actions",
@@ -196,29 +202,44 @@ export default function TokensPage() {
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Tokens</h2>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="size-4" />
-          Create Token
-        </Button>
-      </div>
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Workspace"
+        title="Tokens"
+        description="Issue client access tokens, review quota burn, and manage token lifecycle from one table."
+        meta={
+          <span>
+            {tokens.length} token{tokens.length === 1 ? "" : "s"} •{" "}
+            {tokens.filter((token) => token.enabled).length} enabled
+          </span>
+        }
+        actions={
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="size-4" />
+            Create Token
+          </Button>
+        }
+      />
 
-      {loading ? (
-        <Skeleton className="h-48" />
-      ) : (
-        <Card className="ring-1 ring-moon-200/60">
-          <CardContent className="p-1">
+      <section className="space-y-4">
+        <SectionHeading
+          title="Token Registry"
+          description="Track issued credentials, masked values, and quota pressure by token."
+        />
+
+        {loading ? (
+          <Skeleton className="h-64 rounded-[1.5rem]" />
+        ) : (
+          <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
             <DataTable
               columns={columns}
               rows={tokens}
               rowKey={(r) => r.id}
               empty="No tokens created"
             />
-          </CardContent>
-        </Card>
-      )}
+          </div>
+        )}
+      </section>
 
       {/* Create / Edit dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>

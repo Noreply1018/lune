@@ -1,10 +1,11 @@
 import { type FormEvent, useEffect, useState } from "react";
 import DataTable, { type Column } from "@/components/DataTable";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import PageHeader from "@/components/PageHeader";
+import SectionHeading from "@/components/SectionHeading";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
 import type { ModelRoute, Pool, SystemSettings } from "@/lib/types";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -157,6 +158,7 @@ export default function RoutesPage() {
       render: (r) => (
         <span className="font-medium text-moon-800">{r.alias}</span>
       ),
+      tone: "primary",
     },
     {
       key: "target_model",
@@ -164,6 +166,7 @@ export default function RoutesPage() {
       render: (r) => (
         <code className="text-xs text-moon-500">{r.target_model}</code>
       ),
+      tone: "secondary",
     },
     {
       key: "pool",
@@ -171,6 +174,7 @@ export default function RoutesPage() {
       render: (r) => (
         <span className="text-moon-500">{r.pool_label || "-"}</span>
       ),
+      tone: "secondary",
     },
     {
       key: "enabled",
@@ -181,6 +185,8 @@ export default function RoutesPage() {
           onCheckedChange={() => toggleRoute(r)}
         />
       ),
+      align: "center",
+      tone: "status",
     },
     {
       key: "actions",
@@ -210,64 +216,84 @@ export default function RoutesPage() {
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Routes</h2>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="size-4" />
-          Add Route
-        </Button>
-      </div>
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Workspace"
+        title="Routes"
+        description="Map public model aliases to target models and pools, including the default catch-all path."
+        meta={
+          <span>
+            {routes.length} explicit route{routes.length === 1 ? "" : "s"} •{" "}
+            {enabledPools.length} enabled pool{enabledPools.length === 1 ? "" : "s"}
+          </span>
+        }
+        actions={
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="size-4" />
+            Add Route
+          </Button>
+        }
+      />
 
       {loading ? (
         <div className="space-y-4">
-          <Skeleton className="h-16" />
-          <Skeleton className="h-48" />
+          <Skeleton className="h-28 rounded-[1.5rem]" />
+          <Skeleton className="h-72 rounded-[1.5rem]" />
         </div>
       ) : (
         <>
-          <Card className="ring-1 ring-moon-200/60">
-            <CardContent className="flex items-center gap-4 px-5 py-4">
-              <Label className="shrink-0 text-sm font-medium text-moon-600">
-                Default Pool
-              </Label>
-              <Select
-                value={
-                  defaultPoolId !== null ? String(defaultPoolId) : "none"
-                }
-                onValueChange={updateDefaultPool}
-              >
-                <SelectTrigger className="w-56">
-                  <SelectValue placeholder="None" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">None</SelectItem>
-                  {enabledPools.map((p) => (
-                    <SelectItem key={p.id} value={String(p.id)}>
-                      {p.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <span className="text-xs text-moon-400">
-                Catch-all for unmatched models
-              </span>
-            </CardContent>
-          </Card>
+          <section className="space-y-4">
+            <SectionHeading
+              title="Default Route"
+              description="Fallback pool used when an alias does not match an explicit route."
+            />
+            <div className="rounded-[1.6rem] border border-moon-200/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(240,242,248,0.92))] p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
+                <Label className="shrink-0 text-sm font-medium text-moon-700">
+                  Default Pool
+                </Label>
+                <Select
+                  value={
+                    defaultPoolId !== null ? String(defaultPoolId) : "none"
+                  }
+                  onValueChange={updateDefaultPool}
+                >
+                  <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90 lg:w-72">
+                    <SelectValue placeholder="None" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None</SelectItem>
+                    {enabledPools.map((p) => (
+                      <SelectItem key={p.id} value={String(p.id)}>
+                        {p.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="text-sm text-moon-500">
+                  Catch-all for unmatched models.
+                </span>
+              </div>
+            </div>
+          </section>
 
-          <Card className="ring-1 ring-moon-200/60">
-            <CardContent className="p-1">
+          <section className="space-y-4">
+            <SectionHeading
+              title="Route Table"
+              description="Public aliases, target models, and the pool serving each route."
+            />
+            <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
               <DataTable
                 columns={columns}
                 rows={routes}
                 rowKey={(r) => r.id}
                 empty="No routes configured"
               />
-            </CardContent>
-          </Card>
+            </div>
+          </section>
 
-          <div className="flex items-start gap-2 text-xs text-moon-400">
-            <Info className="mt-0.5 size-3.5 shrink-0" />
+          <div className="flex items-start gap-2 text-sm text-moon-500">
+            <Info className="mt-0.5 size-4 shrink-0 text-moon-400" />
             <span>
               Models not listed above will route through the default pool
               with the original model name.

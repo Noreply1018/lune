@@ -109,7 +109,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       </Sidebar>
 
       <SidebarInset>
-        <main className="mx-auto max-w-6xl flex-1 overflow-y-auto px-8 py-8 lg:px-10">
+        <main className="min-h-screen flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8 2xl:px-10">
           {children}
         </main>
       </SidebarInset>

@@ -2,10 +2,11 @@ import { type FormEvent, useEffect, useState } from "react";
 import StatusBadge from "@/components/StatusBadge";
 import DataTable, { type Column } from "@/components/DataTable";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import PageHeader from "@/components/PageHeader";
+import SectionHeading from "@/components/SectionHeading";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
 import type { Account } from "@/lib/types";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -160,6 +161,7 @@ export default function AccountsPage() {
       key: "label",
       header: "Label",
       render: (r) => <span className="font-medium text-moon-800">{r.label}</span>,
+      tone: "primary",
     },
     {
       key: "base_url",
@@ -167,6 +169,7 @@ export default function AccountsPage() {
       render: (r) => (
         <code className="text-xs text-moon-500">{r.base_url}</code>
       ),
+      tone: "secondary",
     },
     {
       key: "status",
@@ -174,6 +177,7 @@ export default function AccountsPage() {
       render: (r) => (
         <StatusBadge status={r.enabled ? r.status : "disabled"} />
       ),
+      tone: "status",
     },
     {
       key: "quota",
@@ -187,6 +191,8 @@ export default function AccountsPage() {
         ) : (
           <span className="text-sm text-moon-400">-</span>
         ),
+      align: "right",
+      tone: "numeric",
     },
     {
       key: "actions",
@@ -219,29 +225,44 @@ export default function AccountsPage() {
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Accounts</h2>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="size-4" />
-          Add Account
-        </Button>
-      </div>
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Workspace"
+        title="Accounts"
+        description="Manage upstream provider accounts, their current health, and spending constraints."
+        meta={
+          <span>
+            {accounts.length} configured account{accounts.length === 1 ? "" : "s"} •{" "}
+            {accounts.filter((account) => account.enabled).length} enabled
+          </span>
+        }
+        actions={
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="size-4" />
+            Add Account
+          </Button>
+        }
+      />
 
-      {loading ? (
-        <Skeleton className="h-48" />
-      ) : (
-        <Card className="ring-1 ring-moon-200/60">
-          <CardContent className="p-1">
+      <section className="space-y-4">
+        <SectionHeading
+          title="Account Registry"
+          description="Each row represents one upstream credential set and its operational quota."
+        />
+
+        {loading ? (
+          <Skeleton className="h-64 rounded-[1.5rem]" />
+        ) : (
+          <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
             <DataTable
               columns={columns}
               rows={accounts}
               rowKey={(r) => r.id}
               empty="No accounts configured"
             />
-          </CardContent>
-        </Card>
-      )}
+          </div>
+        )}
+      </section>
 
       <Dialog open={showForm} onOpenChange={setShowForm}>
         <DialogContent className="max-w-lg">
