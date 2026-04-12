@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"lune/internal/health"
 	"lune/internal/httpserver"
 	"lune/internal/store"
 
@@ -104,6 +105,10 @@ func (a *App) Run() error {
 	// graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// start health checker
+	hc := health.NewChecker(a.store, a.cache, a.logger)
+	go hc.Run(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {

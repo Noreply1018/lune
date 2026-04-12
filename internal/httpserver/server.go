@@ -7,6 +7,8 @@ import (
 
 	"lune/internal/admin"
 	"lune/internal/auth"
+	"lune/internal/gateway"
+	"lune/internal/router"
 	"lune/internal/site"
 	"lune/internal/store"
 )
@@ -56,6 +58,19 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusFound)
 	})
+
+	// gateway
+	rt := router.New(s.cache)
+	gw := gateway.NewHandler(rt, s.cache, s.store)
+	gwAuth := auth.GatewayAuth(gw, s.cache)
+
+	// GET /v1/models — no auth required
+	s.mux.Handle("GET /v1/models", gw)
+	s.mux.Handle("GET /openai/v1/models", gw)
+
+	// all other /v1/* and /openai/v1/* — require gateway auth
+	s.mux.Handle("/v1/", gwAuth)
+	s.mux.Handle("/openai/v1/", gwAuth)
 }
 
 func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
