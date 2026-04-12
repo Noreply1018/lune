@@ -1,14 +1,37 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Local tooling / editors
+.claude/
+.idea/
+.vscode/
+.DS_Store
+
+# Runtime data
 data/
+*.db
+*.log
+
+# Go build outputs
 *.exe
+*.exe~
 *.out
 *.test
-*.exe~
-configs/*.bak-*
+lune
+
+# Frontend dependencies / cache / build outputs
 web/node_modules/
 sidecar/node_modules/
 web/*.tsbuildinfo
+web/dist/
+internal/site/dist/
+.vite/
+
+# Generated JS typings in TS workspace
 web/*.js
 web/*.d.ts
 
-# Secrets
-.env
+# Local backup files
+configs/*.bak-*

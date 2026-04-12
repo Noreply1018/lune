@@ -32,7 +32,33 @@ Lune 是一个面向个人自用的 **LLM API 网关**。
 
 ## 快速开始
 
-### 1. 启动后端引擎
+### 1. 准备环境变量
+
+在 `.env` 中至少配置：
+
+```bash
+LUNE_BACKEND_KEY=sk-xxxxx
+LUNE_BACKEND_ADMIN_USERNAME=root
+LUNE_BACKEND_ADMIN_PASSWORD=你的后端管理密码
+```
+
+`LUNE_ADMIN_TOKEN` 可选；如果未提供，启动脚本会优先读取 `configs/config.json` 中的 `admin_token`，再没有则自动生成并写入 `.env`。
+
+### 2. 一键启动
+
+```bash
+./scripts/up.sh
+```
+
+脚本会统一启动后端引擎和 Lune，并输出：
+
+- 后端地址：`http://localhost:3000`
+- 管理前端：`http://localhost:7788/admin`
+- 当前 `Lune Admin Token`
+
+登录后台时只需要输入 `Lune Admin Token`，后端管理会话由 Lune 服务端自动处理。
+
+### 3. 手动启动后端引擎
 
 ```bash
 docker compose up -d backend
@@ -40,14 +66,14 @@ docker compose up -d backend
 
 访问 `http://localhost:3000`，创建 Channel → 配置 LLM Provider → 生成 API Key。
 
-### 2. 配置并启动 Lune
+### 4. 手动配置并启动 Lune
 
 ```bash
 export LUNE_BACKEND_KEY=sk-xxxxx   # 后端引擎生成的 key
 docker compose up -d lune
 ```
 
-### 3. 使用
+### 5. 使用
 
 ```bash
 # 停止旧服务

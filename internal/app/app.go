@@ -29,13 +29,11 @@ func Run(logger *log.Logger) error {
 	}
 
 	// Resolve admin token: LUNE_ADMIN_TOKEN env > existing config > auto-generate
-	if cfg.Auth.AdminToken == "" {
-		if envToken := os.Getenv("LUNE_ADMIN_TOKEN"); envToken != "" {
-			cfg.Auth.AdminToken = envToken
-		} else {
-			cfg.Auth.AdminToken = config.GenerateAdminToken()
-			logger.Printf("=== Generated admin token: %s ===", cfg.Auth.AdminToken)
-		}
+	if envToken := os.Getenv("LUNE_ADMIN_TOKEN"); envToken != "" {
+		cfg.Auth.AdminToken = envToken
+	} else if cfg.Auth.AdminToken == "" {
+		cfg.Auth.AdminToken = config.GenerateAdminToken()
+		logger.Printf("=== Generated admin token: %s ===", cfg.Auth.AdminToken)
 	}
 
 	if fresh {

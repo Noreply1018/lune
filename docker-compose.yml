@@ -25,6 +25,9 @@ services:
       LUNE_CONFIG: /app/configs/config.json
       LUNE_BACKEND_URL: "http://backend:3000"
       LUNE_BACKEND_KEY: "${LUNE_BACKEND_KEY:-sk-default}"
+      LUNE_ADMIN_TOKEN: "${LUNE_ADMIN_TOKEN:-}"
+      LUNE_BACKEND_ADMIN_USERNAME: "${LUNE_BACKEND_ADMIN_USERNAME:-root}"
+      LUNE_BACKEND_ADMIN_PASSWORD: "${LUNE_BACKEND_ADMIN_PASSWORD:-}"
     volumes:
       - ./configs/config.json:/app/configs/config.json
       - lune-data:/app/data

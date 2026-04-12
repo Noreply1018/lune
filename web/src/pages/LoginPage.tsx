@@ -1,7 +1,6 @@
 import { FormEvent, useState } from "react";
 import { setLuneToken } from "../lib/auth";
 import { luneGet } from "../lib/api";
-import { backendLogin } from "../lib/backend";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,8 +9,6 @@ import { Loader2 } from "lucide-react";
 
 export default function LoginPage() {
   const [luneToken, setLuneTokenLocal] = useState("");
-  const [username, setUsername] = useState("root");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -22,17 +19,9 @@ export default function LoginPage() {
 
     try {
       setLuneToken(luneToken);
-      const data = await luneGet<{
+      await luneGet<{
         overview: { needs_bootstrap: boolean };
       }>("/admin/api/overview");
-
-      if (!data.overview.needs_bootstrap && password) {
-        try {
-          await backendLogin(username, password);
-        } catch {
-          // Backend login failure is non-fatal
-        }
-      }
 
       window.location.href = "/admin";
     } catch (err) {
@@ -76,33 +65,10 @@ export default function LoginPage() {
               />
             </div>
 
-            <details className="mb-4">
-              <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors">
-                后端引擎登录（可选）
-              </summary>
-              <div className="mt-3 space-y-3">
-                <div className="space-y-2">
-                  <Label htmlFor="username">用户名</Label>
-                  <Input
-                    id="username"
-                    type="text"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    placeholder="root"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="password">密码</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="password"
-                  />
-                </div>
-              </div>
-            </details>
+            <p className="mb-4 text-sm text-muted-foreground">
+              输入 Lune Admin Token 后即可访问全部管理功能。后端管理会话由
+              Lune 在服务端自动处理。
+            </p>
 
             <Button type="submit" disabled={loading} className="w-full">
               {loading && <Loader2 className="animate-spin" />}
