@@ -1,20 +1,4 @@
 services:
-  backend:
-    image: justsong/one-api:latest
-    container_name: lune-backend
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    volumes:
-      - backend-data:/data
-    environment:
-      - TZ=Asia/Shanghai
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
   lune:
     build: .
     container_name: lune
@@ -22,31 +6,11 @@ services:
     ports:
       - "7788:7788"
     environment:
-      LUNE_CONFIG: /app/configs/config.json
-      LUNE_BACKEND_URL: "http://backend:3000"
-      LUNE_BACKEND_KEY: "${LUNE_BACKEND_KEY:-sk-default}"
+      LUNE_PORT: "7788"
+      LUNE_DATA_DIR: "/app/data"
       LUNE_ADMIN_TOKEN: "${LUNE_ADMIN_TOKEN:-}"
-      LUNE_BACKEND_ADMIN_USERNAME: "${LUNE_BACKEND_ADMIN_USERNAME:-root}"
-      LUNE_BACKEND_ADMIN_PASSWORD: "${LUNE_BACKEND_ADMIN_PASSWORD:-}"
     volumes:
-      - ./configs/config.json:/app/configs/config.json
       - lune-data:/app/data
-    depends_on:
-      backend:
-        condition: service_healthy
-
-  proxy-node:
-    image: eceasy/cli-proxy-api:latest
-    container_name: lune-proxy-node
-    restart: unless-stopped
-    environment:
-      - HTTP_PROXY=${PROXY_NODE_PROXY}
-      - HTTPS_PROXY=${PROXY_NODE_PROXY}
-      - ALL_PROXY=${PROXY_NODE_PROXY}
-    volumes:
-      - ./proxy-node-config.yaml:/CLIProxyAPI/config.yaml
-      - ./proxy-node-auth:/root/.cli-proxy-api
 
 volumes:
-  backend-data:
   lune-data:

@@ -1,9 +1,7 @@
 import type { ReactNode } from "react";
-import { logout } from "../lib/auth";
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarHeader,
@@ -17,23 +15,19 @@ import {
   LayoutDashboard,
   Users,
   Layers,
-  Radio,
   BarChart3,
   Key,
-  Settings,
-  LogOut,
+  Route,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 
 const navItems = [
-  { label: "总览", href: "/admin", icon: LayoutDashboard },
-  { label: "账号", href: "/admin/accounts", icon: Users },
-  { label: "号池", href: "/admin/pools", icon: Layers },
-  { label: "渠道", href: "/admin/channels", icon: Radio },
-  { label: "用量", href: "/admin/usage", icon: BarChart3 },
-  { label: "令牌", href: "/admin/tokens", icon: Key },
-  { label: "设置", href: "/admin/settings", icon: Settings },
+  { label: "Overview", href: "/admin", icon: LayoutDashboard },
+  { label: "Accounts", href: "/admin/accounts", icon: Users },
+  { label: "Pools", href: "/admin/pools", icon: Layers },
+  { label: "Tokens", href: "/admin/tokens", icon: Key },
+  { label: "Usage", href: "/admin/usage", icon: BarChart3 },
+  { label: "Routes", href: "/admin/routes", icon: Route },
 ];
 
 export default function Shell({ children }: { children: ReactNode }) {
@@ -75,18 +69,6 @@ export default function Shell({ children }: { children: ReactNode }) {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-
-        <SidebarFooter>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start text-muted-foreground hover:text-destructive"
-            onClick={logout}
-          >
-            <LogOut className="size-4" />
-            <span>退出登录</span>
-          </Button>
-        </SidebarFooter>
       </Sidebar>
 
       <SidebarInset>

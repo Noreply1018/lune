@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import StatusBadge from "../components/StatusBadge";
 import DataTable, { type Column } from "../components/DataTable";
-import { backendGet, backendPost, backendPut, backendDelete } from "../lib/backend";
+import { luneGet, lunePost, lunePut, luneDelete } from "../lib/api";
 import { toast } from "../components/Feedback";
 import { compact, shortDate } from "../lib/fmt";
 import { Card, CardContent } from "@/components/ui/card";
@@ -63,7 +63,7 @@ export default function TokensPage() {
 
   function load() {
     setLoading(true);
-    backendGet<{ data: Token[] }>("/api/token/?p=0&page_size=100")
+    luneGet<{ data: Token[] }>("/api/token/?p=0&page_size=100")
       .then((d) => setTokens(d.data ?? []))
       .catch(() => toast("加载令牌失败", "error"))
       .finally(() => setLoading(false));
@@ -91,10 +91,10 @@ export default function TokensPage() {
     e.preventDefault();
     try {
       if (editId) {
-        await backendPut("/api/token/", { id: editId, ...form });
+        await lunePut("/api/token/", { id: editId, ...form });
         toast("令牌已更新");
       } else {
-        await backendPost("/api/token/", form);
+        await lunePost("/api/token/", form);
         toast("令牌已创建");
       }
       setShowForm(false);
@@ -107,7 +107,7 @@ export default function TokensPage() {
   async function confirmDelete() {
     if (deleteTarget === null) return;
     try {
-      await backendDelete(`/api/token/${deleteTarget}`);
+      await luneDelete(`/api/token/${deleteTarget}`);
       toast("已删除");
       load();
     } catch {
@@ -120,7 +120,7 @@ export default function TokensPage() {
   async function toggleToken(t: Token) {
     try {
       const newStatus = t.status === 1 ? 2 : 1;
-      await backendPut("/api/token/", { ...t, status: newStatus });
+      await lunePut("/api/token/", { ...t, status: newStatus });
       toast(newStatus === 1 ? "已启用" : "已停用");
       load();
     } catch {

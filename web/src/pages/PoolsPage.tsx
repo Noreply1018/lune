@@ -28,7 +28,6 @@ import { Plus, RefreshCw } from "lucide-react";
 
 type Pool = {
   id: string;
-  platform_id: string;
   strategy: string;
   enabled: boolean;
   members: string[];

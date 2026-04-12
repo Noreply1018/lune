@@ -1,13 +1,9 @@
-import { getLuneToken, logout } from "./auth";
-
-async function luneRequest<T>(
+async function request<T>(
   method: string,
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${getLuneToken()}`,
-  };
+  const headers: Record<string, string> = {};
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
@@ -16,10 +12,6 @@ async function luneRequest<T>(
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) {
-    logout();
-    throw new Error("unauthorized");
-  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `${res.status} ${res.statusText}`);
@@ -27,18 +19,9 @@ async function luneRequest<T>(
   return res.json();
 }
 
-export function luneGet<T>(path: string) {
-  return luneRequest<T>("GET", path);
-}
-
-export function lunePost<T>(path: string, body?: unknown) {
-  return luneRequest<T>("POST", path, body);
-}
-
-export function lunePut<T>(path: string, body?: unknown) {
-  return luneRequest<T>("PUT", path, body);
-}
-
-export function luneDelete<T>(path: string) {
-  return luneRequest<T>("DELETE", path);
-}
+export const luneGet = <T>(path: string) => request<T>("GET", path);
+export const lunePost = <T>(path: string, body?: unknown) =>
+  request<T>("POST", path, body);
+export const lunePut = <T>(path: string, body?: unknown) =>
+  request<T>("PUT", path, body);
+export const luneDelete = <T>(path: string) => request<T>("DELETE", path);
