@@ -28,8 +28,8 @@ export default function DataTable<T>({
 }) {
   if (rows.length === 0) {
     return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        {empty ?? "暂无数据"}
+      <p className="py-10 text-center text-sm text-moon-400">
+        {empty ?? "No data"}
       </p>
     );
   }
@@ -38,7 +38,10 @@ export default function DataTable<T>({
       <TableHeader>
         <TableRow>
           {columns.map((col) => (
-            <TableHead key={col.key} className={col.className}>
+            <TableHead
+              key={col.key}
+              className={`text-xs font-medium uppercase tracking-wider text-moon-400 ${col.className ?? ""}`}
+            >
               {col.header}
             </TableHead>
           ))}
@@ -46,7 +49,10 @@ export default function DataTable<T>({
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
-          <TableRow key={rowKey(row)}>
+          <TableRow
+            key={rowKey(row)}
+            className="transition-colors hover:bg-moon-100/50"
+          >
             {columns.map((col) => (
               <TableCell key={col.key} className={col.className}>
                 {col.render(row)}

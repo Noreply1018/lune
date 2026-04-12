@@ -1,25 +1,42 @@
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
-const styles: Record<string, string> = {
-  ok: "bg-sage-500/15 text-sage-600 border-sage-500/30",
-  error: "bg-clay-500/15 text-clay-600 border-clay-500/30",
-  disabled: "bg-muted text-muted-foreground border-border",
+type Status = "healthy" | "degraded" | "error" | "disabled";
+
+const dotColor: Record<Status, string> = {
+  healthy: "bg-status-green",
+  degraded: "bg-status-yellow animate-pulse",
+  error: "bg-status-red",
+  disabled: "bg-moon-400",
+};
+
+const badgeStyle: Record<Status, string> = {
+  healthy: "bg-status-green/10 text-status-green border-status-green/20",
+  degraded: "bg-status-yellow/10 text-status-yellow border-status-yellow/20",
+  error: "bg-status-red/10 text-status-red border-status-red/20",
+  disabled: "bg-moon-200/50 text-moon-400 border-moon-200",
 };
 
 export default function StatusBadge({
   status,
   label,
 }: {
-  status: "ok" | "error" | "disabled";
+  status: Status;
   label?: string;
 }) {
   return (
-    <Badge
-      variant="outline"
-      className={cn("text-xs font-medium", styles[status] ?? styles.disabled)}
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium",
+        badgeStyle[status] ?? badgeStyle.disabled,
+      )}
     >
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          dotColor[status] ?? dotColor.disabled,
+        )}
+      />
       {label ?? status}
-    </Badge>
+    </span>
   );
 }

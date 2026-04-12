@@ -9,9 +9,14 @@
 .vscode/
 .DS_Store
 
+# Local config
+lune.yaml
+
 # Runtime data
 data/
 *.db
+*.db-journal
+*.db-wal
 *.log
 
 # Go build outputs
@@ -23,7 +28,6 @@ data/
 
 # Frontend dependencies / cache / build outputs
 web/node_modules/
-sidecar/node_modules/
 web/*.tsbuildinfo
 web/dist/
 internal/site/dist/
@@ -32,6 +36,3 @@ internal/site/dist/
 # Generated JS typings in TS workspace
 web/*.js
 web/*.d.ts
-
-# Local backup files
-configs/*.bak-*

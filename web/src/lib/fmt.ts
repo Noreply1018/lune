@@ -1,18 +1,18 @@
-/** Format a number as percentage string, e.g. 0.956 → "95.6%" */
+/** Format a number as percentage string, e.g. 0.956 -> "95.6%" */
 export function pct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
-/** Format milliseconds as a human-readable latency, e.g. 1234 → "1.23s" */
+/** Format milliseconds as a human-readable latency, e.g. 1234 -> "1.23s" */
 export function latency(ms: number): string {
   if (ms < 1) return "< 1ms";
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
-/** Format a quota number: negative means unlimited. */
+/** Format a quota number: 0 means unlimited. */
 export function quota(n: number): string {
-  if (n < 0) return "unlimited";
+  if (n === 0) return "unlimited";
   return n.toLocaleString();
 }
 
@@ -29,4 +29,25 @@ export function compact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+/** Format an ISO date string as relative time, e.g. "2 min ago" */
+export function relativeTime(iso: string | null): string {
+  if (!iso) return "never";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const seconds = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+/** Format token count with unit, e.g. 456000 -> "456K tokens" */
+export function tokenCount(n: number): string {
+  return `${compact(n)} tokens`;
 }
