@@ -6,11 +6,12 @@ import (
 )
 
 type CacheSnapshot struct {
-	Accounts []Account
-	Pools    []Pool
-	Routes   []ModelRoute
-	Tokens   []AccessToken
-	Settings map[string]string
+	Accounts    []Account
+	Pools       []Pool
+	Routes      []ModelRoute
+	Tokens      []AccessToken
+	Settings    map[string]string
+	CpaServices map[int64]*CpaService
 }
 
 type RoutingCache struct {
@@ -59,7 +60,8 @@ func (c *RoutingCache) Get() *CacheSnapshot {
 
 func (c *RoutingCache) loadFromDB() *CacheSnapshot {
 	snap := &CacheSnapshot{
-		Settings: make(map[string]string),
+		Settings:    make(map[string]string),
+		CpaServices: make(map[int64]*CpaService),
 	}
 
 	if accs, err := c.store.ListAccounts(); err == nil {
@@ -76,6 +78,12 @@ func (c *RoutingCache) loadFromDB() *CacheSnapshot {
 	}
 	if settings, err := c.store.GetSettings(); err == nil {
 		snap.Settings = settings
+	}
+	if svcs, err := c.store.ListCpaServices(); err == nil {
+		for i := range svcs {
+			svc := svcs[i]
+			snap.CpaServices[svc.ID] = &svc
+		}
 	}
 
 	return snap
@@ -148,4 +156,22 @@ func (c *RoutingCache) GetEnabledModelAliases() []string {
 		}
 	}
 	return aliases
+}
+
+func (c *RoutingCache) GetCpaService(id int64) *CpaService {
+	snap := c.Get()
+	if svc, ok := snap.CpaServices[id]; ok {
+		s := *svc
+		return &s
+	}
+	return nil
+}
+
+func (c *RoutingCache) GetCpaServiceSingle() *CpaService {
+	snap := c.Get()
+	for _, svc := range snap.CpaServices {
+		s := *svc
+		return &s
+	}
+	return nil
 }

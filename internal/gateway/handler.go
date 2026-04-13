@@ -84,20 +84,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if errors.Is(err, router.ErrPoolDisabled) {
 				webutil.WriteGatewayError(w, 503, "pool_disabled", "pool is disabled")
-				h.logRequest(requestID, accessToken, modelAlias, resolved, 0, 0, start, isStream, r, false, err.Error(), Usage{})
+				h.logRequest(requestID, accessToken, modelAlias, resolved, 0, 0, start, isStream, r, false, err.Error(), Usage{}, "")
 				return
 			}
 			if errors.Is(err, router.ErrNoHealthyAccount) {
 				webutil.WriteGatewayError(w, 503, "no_healthy_account", "no healthy account available")
-				h.logRequest(requestID, accessToken, modelAlias, resolved, 0, 0, start, isStream, r, false, err.Error(), Usage{})
+				h.logRequest(requestID, accessToken, modelAlias, resolved, 0, 0, start, isStream, r, false, err.Error(), Usage{}, "")
 				return
 			}
 			webutil.WriteGatewayError(w, 500, "internal", err.Error())
 			return
 		}
 
+		// resolve upstream target based on source_kind
+		target := h.resolveTarget(selected.Account)
+
 		timeout := h.getRequestTimeout()
-		result := Forward(w, r, selected.Account, pathSuffix, requestBody, isStream, requestID, timeout)
+		result := Forward(w, r, target, pathSuffix, requestBody, isStream, requestID, timeout)
 
 		if result.Err != nil {
 			// network/connection error
@@ -107,7 +110,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if !IsRetryable(result.Err) {
 				webutil.WriteGatewayError(w, 502, "upstream_failed", result.Err.Error())
-				h.logRequest(requestID, accessToken, modelAlias, resolved, selected.Account.ID, 0, start, isStream, r, false, result.Err.Error(), Usage{})
+				h.logRequest(requestID, accessToken, modelAlias, resolved, selected.Account.ID, 0, start, isStream, r, false, result.Err.Error(), Usage{}, selected.Account.SourceKind)
 				return
 			}
 			continue
@@ -116,7 +119,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if IsRetryableStatus(result.StatusCode) && attempt < maxRetries-1 {
 			// response already written for streaming, can't retry
 			if isStream {
-				h.logRequest(requestID, accessToken, modelAlias, resolved, selected.Account.ID, result.StatusCode, start, isStream, r, false, "upstream error", result.Usage)
+				h.logRequest(requestID, accessToken, modelAlias, resolved, selected.Account.ID, result.StatusCode, start, isStream, r, false, "upstream error", result.Usage, selected.Account.SourceKind)
 				return
 			}
 			exclude = append(exclude, selected.Account.ID)
@@ -140,7 +143,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}()
 		}
 
-		h.logRequest(requestID, accessToken, modelAlias, resolved, selected.Account.ID, result.StatusCode, start, isStream, r, success, "", result.Usage)
+		h.logRequest(requestID, accessToken, modelAlias, resolved, selected.Account.ID, result.StatusCode, start, isStream, r, success, "", result.Usage, selected.Account.SourceKind)
 		return
 	}
 
@@ -152,7 +155,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errMsg = fmt.Sprintf("upstream returned HTTP %d", lastStatusCode)
 	}
 	webutil.WriteGatewayError(w, 502, "upstream_failed", errMsg)
-	h.logRequest(requestID, accessToken, modelAlias, resolved, 0, lastStatusCode, start, isStream, r, false, errMsg, Usage{})
+	h.logRequest(requestID, accessToken, modelAlias, resolved, 0, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, "")
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter) {
@@ -176,7 +179,25 @@ func (h *Handler) handleModels(w http.ResponseWriter) {
 	})
 }
 
-func (h *Handler) logRequest(requestID string, token *store.AccessToken, alias string, resolved *router.ResolvedRoute, accountID int64, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage) {
+func (h *Handler) resolveTarget(account store.Account) UpstreamTarget {
+	if account.SourceKind == "cpa" && account.CpaServiceID != nil {
+		svc := h.cache.GetCpaService(*account.CpaServiceID)
+		if svc != nil {
+			return UpstreamTarget{
+				BaseURL:   strings.TrimRight(svc.BaseURL, "/") + "/api/provider/" + account.CpaProvider + "/v1",
+				APIKey:    svc.APIKey,
+				AccountID: account.ID,
+			}
+		}
+	}
+	return UpstreamTarget{
+		BaseURL:   account.BaseURL,
+		APIKey:    account.APIKey,
+		AccountID: account.ID,
+	}
+}
+
+func (h *Handler) logRequest(requestID string, token *store.AccessToken, alias string, resolved *router.ResolvedRoute, accountID int64, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string) {
 	tokenName := ""
 	if token != nil {
 		tokenName = token.Name
@@ -203,6 +224,7 @@ func (h *Handler) logRequest(requestID string, token *store.AccessToken, alias s
 		RequestIP:       clientIP(r),
 		Success:         success,
 		ErrorMessage:    errMsg,
+		SourceKind:      sourceKind,
 	}
 	go func() { _ = h.store.InsertLog(log) }()
 }

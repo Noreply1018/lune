@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"lune/internal/store"
 )
 
 var hopByHopHeaders = map[string]bool{
@@ -24,15 +22,21 @@ var hopByHopHeaders = map[string]bool{
 	"Upgrade":             true,
 }
 
+type UpstreamTarget struct {
+	BaseURL   string
+	APIKey    string
+	AccountID int64
+}
+
 type ProxyResult struct {
 	StatusCode int
 	Usage      Usage
 	Err        error
 }
 
-func Forward(w http.ResponseWriter, r *http.Request, account store.Account, pathSuffix string, body []byte, isStream bool, requestID string, timeout time.Duration) *ProxyResult {
+func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, pathSuffix string, body []byte, isStream bool, requestID string, timeout time.Duration) *ProxyResult {
 	// build upstream URL
-	baseURL := strings.TrimRight(account.BaseURL, "/")
+	baseURL := strings.TrimRight(target.BaseURL, "/")
 	upstreamURL := baseURL + "/" + pathSuffix
 
 	// create upstream request
@@ -56,7 +60,7 @@ func Forward(w http.ResponseWriter, r *http.Request, account store.Account, path
 			upstreamReq.Header.Add(k, v)
 		}
 	}
-	upstreamReq.Header.Set("Authorization", "Bearer "+account.APIKey)
+	upstreamReq.Header.Set("Authorization", "Bearer "+target.APIKey)
 	upstreamReq.Header.Set("Host", upstreamReq.URL.Host)
 
 	client := &http.Client{Timeout: timeout}
@@ -79,7 +83,7 @@ func Forward(w http.ResponseWriter, r *http.Request, account store.Account, path
 		}
 	}
 	w.Header().Set("X-Lune-Request-Id", requestID)
-	w.Header().Set("X-Lune-Account", fmt.Sprintf("%d", account.ID))
+	w.Header().Set("X-Lune-Account", fmt.Sprintf("%d", target.AccountID))
 
 	if isStream {
 		result.Usage = forwardStream(w, resp)

@@ -1,9 +1,13 @@
 package store
 
 func (s *Store) InsertLog(l *RequestLog) error {
+	sourceKind := l.SourceKind
+	if sourceKind == "" {
+		sourceKind = "openai_compat"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO request_logs (request_id, access_token_name, model_alias, target_model, pool_id, account_id, status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.RequestID, l.AccessTokenName, l.ModelAlias, l.TargetModel, l.PoolID, l.AccountID, l.StatusCode, l.LatencyMs, l.InputTokens, l.OutputTokens, l.Stream, l.RequestIP, l.Success, l.ErrorMessage,
+		`INSERT INTO request_logs (request_id, access_token_name, model_alias, target_model, pool_id, account_id, status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success, error_message, source_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.RequestID, l.AccessTokenName, l.ModelAlias, l.TargetModel, l.PoolID, l.AccountID, l.StatusCode, l.LatencyMs, l.InputTokens, l.OutputTokens, l.Stream, l.RequestIP, l.Success, l.ErrorMessage, sourceKind,
 	)
 	return err
 }
@@ -15,7 +19,7 @@ func (s *Store) ListLogs(limit, offset int) ([]RequestLog, int, error) {
 	}
 
 	rows, err := s.db.Query(
-		`SELECT id, request_id, access_token_name, model_alias, target_model, pool_id, account_id, status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success, error_message, created_at FROM request_logs ORDER BY id DESC LIMIT ? OFFSET ?`,
+		`SELECT id, request_id, access_token_name, model_alias, target_model, pool_id, account_id, status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success, error_message, source_kind, created_at FROM request_logs ORDER BY id DESC LIMIT ? OFFSET ?`,
 		limit, offset,
 	)
 	if err != nil {
@@ -27,7 +31,7 @@ func (s *Store) ListLogs(limit, offset int) ([]RequestLog, int, error) {
 	for rows.Next() {
 		var l RequestLog
 		var stream, success int
-		if err := rows.Scan(&l.ID, &l.RequestID, &l.AccessTokenName, &l.ModelAlias, &l.TargetModel, &l.PoolID, &l.AccountID, &l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP, &success, &l.ErrorMessage, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.RequestID, &l.AccessTokenName, &l.ModelAlias, &l.TargetModel, &l.PoolID, &l.AccountID, &l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP, &success, &l.ErrorMessage, &l.SourceKind, &l.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		l.Stream = stream != 0

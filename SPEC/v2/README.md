@@ -1,232 +1,117 @@
-# Lune v2 Ideas (Draft)
+# Lune v2 Spec
 
-> 这是 v2 创新点的草稿收集。所有内容都以 v1 完成为前提，不阻塞 v1 交付。
+> v2 的主线是把 account 从"手填上游凭据"扩展为"可被路由层选中的上游执行单元"，正式支持 CPA 承载的多 provider 能力。
 
-## 状态：草稿 / 头脑风暴
+## 核心原则
 
-以下功能按预估价值和复杂度排列，不代表实现顺序。
+- 保留 v1 的用户心智模型：accounts -> pools -> routes -> tokens
+- 不回退到旧版 platform / account_pool 架构
+- account 扩展为支持多来源（openai_compat / cpa）
+- CPA 是外部镜像（eceasy/cli-proxy-api），不可修改源码
+- 需要与 CPA 交互的管理能力（登录、导入）由 Lune 自己实现
+- 前端新增功能与现有设计风格保持一致
 
----
+## 关键决策
 
-## 1. Provider 模板
+| 决策项 | 结论 | 理由 |
+|---|---|---|
+| CPA Service ID 类型 | 整数自增 | 与 v1 所有资源一致 |
+| CPA 前端管理 | 侧边栏独立页面（单实例设置页） | 层次清晰，首版只支持 1 个 CPA |
+| 首版 CPA 数量 | 仅 1 个，数据模型预留多个 | 简化首版实现，前端+后端均做校验 |
+| Phase A CPA 账号粒度 | provider channel 维度 | CPA 内部管理多凭据并自行均衡，Lune 看到的是 provider 通道能力 |
+| Phase B CPA 账号粒度 | email/account 维度 | Lune adapter 直接读取 cpa-auth 凭据文件 |
+| CPA 管理能力实现者 | Lune 自己（adapter 模式） | CPA 是外部镜像不可改，Lune 实现 device code 登录和凭据扫描 |
+| Login session 存储 | 内存，同一时刻仅允许 1 个 active session | 短期会话，重启自动失效 |
+| Account API 路径 | 统一 /admin/api/accounts，body 区分 source_kind | 最小化路由变更 |
+| runtime 块 | 响应时动态计算，不存 DB | 避免数据冗余和同步问题 |
 
-**问题**：添加账号时需要手动输入 `base_url`，容易打错，还要去查各家的 API 地址。
+## 实施阶段
 
-**方案**：内置主流 provider 模板，创建账号时一键选择，自动填充 `base_url`。
+### [Phase A: CPA 作为 Provider](./phase-a.md)
 
-预置模板：
+**前置条件：无（基于 CPA 现有推理接口）**
 
-| Provider | base_url |
-|---|---|
-| OpenAI | `https://api.openai.com/v1` |
-| Anthropic (OpenAI compat) | `https://api.anthropic.com/v1` |
-| DeepSeek | `https://api.deepseek.com/v1` |
-| Groq | `https://api.groq.com/openai/v1` |
-| Mistral | `https://api.mistral.ai/v1` |
-| Together AI | `https://api.together.xyz/v1` |
-| OpenRouter | `https://openrouter.ai/api/v1` |
-| Moonshot | `https://api.moonshot.cn/v1` |
-| 自定义 | 用户手动输入 |
+利用 CPA 已有的 `/api/provider/{provider}/v1/` 路由能力，让 Lune 原生支持 CPA provider channel。核心变更：
 
-**实现复杂度**：低。纯前端下拉框 + 预填充逻辑，后端无改动。
+- account 增加 source_kind 字段
+- 新增 cpa_services 表（首版限 1 条）
+- CPA 账号 = CPA Service + provider（provider-backed logical account）
+- 前端新增 CPA Service 单实例设置页
+- Accounts 页按来源创建，CPA 类型明确标注为 provider channel
+- 运行时透明转发到 CPA 的 provider 接口
+- 部署层面定义 cpa-auth 共享目录
 
-**UI 草图**：
+### [Phase B: CPA 管理 Adapter](./phase-b.md)
 
-```
-Provider:  [OpenAI ▼]          ← 选择后自动填充下面的 base_url
-Base URL:  [https://api.openai.com/v1]  (可编辑覆盖)
-API Key:   [sk-...                    ]
-```
+**前置条件：Phase A 完成 + cpa-auth 共享卷就绪**
 
----
+CPA 是外部镜像不可改。所有管理能力由 Lune 自己实现（Lune CPA Management Adapter）：
 
-## 2. 环境变量代码片段
+- Lune 直接实现 OpenAI OAuth Device Code Flow
+- Lune 将凭据写入 cpa-auth/ 共享目录，CPA 热加载识别
+- Lune 扫描 cpa-auth/ 目录导入已有账号
+- 账号粒度从 provider 扩展到单个 email/account
+- 到期预警、元数据同步
 
-**问题**：创建 token 后，用户还要手动拼 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`，容易遗漏。
+### [Phase C: 体验增强与分析](./phase-c.md)
 
-**方案**：Token 创建成功后，一键复制完整的环境变量配置。
+**前置条件：无（独立于 CPA 改造）**
 
-**注意**：这个功能已经写进了 v1 的 frontend spec（Token 创建对话框里的 "Quick Setup" 代码块）。如果 v1 来不及做或需要增强，v2 可以扩展更多格式。
+- OpenAI-compatible 侧 provider 模板
+- 一键测试连接
+- 环境变量代码片段增强
+- 内置 Playground
+- 成本估算与延迟追踪
 
-v2 扩展方向：
+## CPA 现状（eceasy/cli-proxy-api）
 
-- 多种格式输出：`.env` 文件格式、`export` shell 命令、Python `os.environ` 赋值、JSON config
-- 针对不同框架的模板：Next.js、Python、Node.js
-- 复制为 curl 测试命令
+v2 设计基于 CPA 的实际接口能力：
 
-```
-格式: [.env ▼]
+| 接口 | 状态 | 说明 |
+|---|---|---|
+| /healthz | 可用 | 健康检查 |
+| /v1/models | 可用 | 全部可用模型列表 |
+| /v1/chat/completions | 可用 | OpenAI 兼容推理 |
+| /v1/completions | 可用 | Text Completions |
+| /v1/responses | 可用 | OpenAI Responses API |
+| /api/provider/{provider}/v1/... | 可用 | **按 provider 路由（Phase A 核心依赖）** |
+| /management.html | 可用 | 管理面板（HTML，非 REST API） |
+| /admin/accounts | 不存在 | CPA 无管理 API，Phase B 由 Lune adapter 取代 |
+| /admin/login/device/start | 不存在 | Lune adapter 直接对接 OpenAI OAuth |
 
-# .env
-OPENAI_BASE_URL=http://127.0.0.1:7788/v1
-OPENAI_API_KEY=sk-lune-a8f2c1d9e3b7...4f2a
+已验证可用的 CPA provider：
 
-[Copy]
-```
+- codex - ChatGPT Plus/Pro 账号
+- claude - Claude
+- gemini / gemini-cli - Gemini
+- vertex - Vertex AI
+- aistudio - AI Studio
+- openai - OpenAI 原生
+- qwen - 通义千问
+- kimi - Kimi
+- iflow - iFlow (GLM)
+- antigravity - Antigravity
 
-**实现复杂度**：低。纯前端。
-
----
-
-## 3. 内置 Playground
-
-**问题**：配好账号和路由后，不确定能不能用。要开另一个工具（curl、ChatGPT 客户端）发请求测试。
-
-**方案**：Admin UI 里内嵌一个极简聊天界面，选模型、发消息、看响应。
-
-**功能范围**：
-
-- 模型选择器（下拉，来自 /v1/models）
-- 单轮对话输入框
-- 流式响应展示
-- 显示 token 用量（从 usage 字段）
-- 显示延迟
-- 使用内部直连，不走 access token 鉴权（admin 级别权限）
-
-**UI 草图**：
-
-```
-┌─────────────────────────────────────────────────┐
-│  Playground                                     │
-│                                                 │
-│  Model: [gpt-4o ▼]                              │
-│                                                 │
-│  ┌─────────────────────────────────────────┐    │
-│  │                                         │    │
-│  │ User: 你好，请用一句话介绍自己           │    │
-│  │                                         │    │
-│  │ Assistant: 我是一个AI助手，可以帮助你    │    │
-│  │ 回答问题、写代码和完成各种任务。         │    │
-│  │                                         │    │
-│  │ ─────────────────────────────────        │    │
-│  │ Tokens: 12 in / 28 out  Latency: 1.2s   │    │
-│  │                                         │    │
-│  └─────────────────────────────────────────┘    │
-│                                                 │
-│  ┌────────────────────────────────┐ [Send]      │
-│  │ Type a message...              │             │
-│  └────────────────────────────────┘             │
-└─────────────────────────────────────────────────┘
-```
-
-**实现复杂度**：中。需要前端 SSE 流式渲染 + 后端新增一个不走 token 鉴权的内部 chat 端点。
-
----
-
-## 4. 成本估算仪表盘
-
-**问题**：知道用了多少 token，但不知道花了多少钱。各家 provider 定价不同，手动算很麻烦。
-
-**方案**：
-
-1. 在 Account 上增加一个可选的 `pricing` 配置（每百万 token 单价，区分 input/output）
-2. Usage 页面基于 pricing 自动计算成本
-
-**Account 新增字段**：
-
-```json
-{
-  "pricing": {
-    "input_per_million": 2.50,
-    "output_per_million": 10.00,
-    "currency": "USD"
-  }
-}
-```
-
-**UI 增强**：
-
-- Usage 页面增加 "Estimated Cost" 列
-- Overview 页面增加 "Estimated cost (24h)" 统计卡片
+## 部署拓扑
 
 ```
-┌──────────┐ ┌──────────┐ ┌──────────┐
-│  Token   │ │ Est.     │ │ Est.     │
-│  Usage   │ │ Cost     │ │ Cost     │
-│  842K    │ │  $1.23   │ │  $34.56  │
-│  24h     │ │  24h     │ │  30d     │
-└──────────┘ └──────────┘ └──────────┘
+Host / Docker Compose
+ +-- lune container (port 7788)
+ |   +-- /app/data        -> lune-data volume (SQLite)
+ |   +-- /app/cpa-auth    -> cpa-auth volume (shared, r/w)
+ |
+ +-- lune-upstream-node container (CPA, port 8317)
+ |   +-- /app/cpa-auth    -> cpa-auth volume (shared, r/w)
+ |   +-- /app/cpa-config   -> CPA config
+ |
+ +-- cpa-auth volume (named, shared between lune & CPA)
+     +-- codex-user@mail.com-plus.json
+     +-- codex-user2@mail.com-pro.json
+     +-- ...
 ```
 
-**实现复杂度**：中。后端需要新字段 + 聚合查询；前端需要计算展示。
-
----
-
-## 5. 延迟 Sparkline
-
-**问题**：只看到账号"健康"还是"异常"，但不知道延迟趋势——是在变慢还是恢复中。
-
-**方案**：账号列表里每个账号旁边显示一条微型折线图，展示最近 24h 的 P50 延迟。
-
-**数据来源**：从 `request_logs` 按小时聚合 P50 延迟。
-
-```
-Accounts
-┌──────────────────────────────────────────────────────┐
-│ ● OpenAI Main    healthy   ▁▂▃▂▁▂▃▅▃▂▁▁  avg 1.2s  │
-│ ● DeepSeek       healthy   ▁▁▂▁▁▂▁▂▁▁▁▁  avg 0.8s  │
-│ ✕ OpenAI Backup  error     ▂▃▅▇█▇▅▃▅▇██  avg 5.1s  │
-└──────────────────────────────────────────────────────┘
-```
-
-**实现复杂度**：中。后端需要新的聚合查询 API；前端需要简易 SVG sparkline 组件（无需引入图表库，手写 SVG path 即可）。
-
----
-
-## 6. 一键测试连接
-
-**问题**：添加账号后不确定 API key 是否有效、base_url 是否正确，要等下一轮健康检查才知道。
-
-**方案**：账号创建/编辑表单里加一个 "Test Connection" 按钮，即时调用上游 `/models` 验证连通性。
-
-**流程**：
-
-```
-用户点击 [Test Connection]
-  → 前端调用 POST /admin/api/accounts/test
-  → 后端用提供的 base_url + api_key 调 GET {base_url}/models
-  → 返回结果：成功（列出可用模型数量）/ 失败（错误信息）
-```
-
-**UI**：
-
-```
-┌────────────────────────────────────────────┐
-│  Add Account                               │
-│                                            │
-│  Label     [OpenAI Main           ]        │
-│  Base URL  [https://api.openai.com/v1]     │
-│  API Key   [sk-...                   ]     │
-│                                            │
-│  [Test Connection]                         │
-│                                            │
-│  ✓ Connected! 42 models available.         │
-│    Response time: 320ms                    │
-│                                            │
-│  [Cancel]                      [Save]      │
-└────────────────────────────────────────────┘
-```
-
-失败时：
-
-```
-│  ✕ Connection failed:                      │
-│    401 Unauthorized - Invalid API key      │
-```
-
-**实现复杂度**：低。后端一个新端点（接收临时 base_url + api_key，不需要先保存到数据库）；前端一个按钮 + 状态展示。
-
----
-
-## 优先级排序建议
-
-| # | 功能 | 价值 | 复杂度 | 建议优先级 |
-|---|---|---|---|---|
-| 6 | 一键测试连接 | 高（配置流程中的即时反馈） | 低 | ★★★★★ |
-| 1 | Provider 模板 | 高（减少手动输入错误） | 低 | ★★★★★ |
-| 2 | 环境变量片段增强 | 中（v1 已有基础版） | 低 | ★★★★ |
-| 3 | 内置 Playground | 高（端到端验证闭环） | 中 | ★★★★ |
-| 4 | 成本估算 | 中（日常运营洞察） | 中 | ★★★ |
-| 5 | 延迟 Sparkline | 低（锦上添花） | 中 | ★★ |
-
-建议 v2 第一批做 #6 + #1（都是低复杂度高价值），第二批做 #3 + #4，#5 最后。
+关键约束：
+- Lune 和 CPA 必须挂载同一个 cpa-auth 目录
+- Phase A 只读（扫描元信息），Phase B 读写（登录写入新凭据）
+- CPA 热加载 cpa-auth 目录变更，无需重启
+- 配置项：LUNE_CPA_AUTH_DIR 环境变量或 lune.yaml 中的 cpa_auth_dir

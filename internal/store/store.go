@@ -124,6 +124,33 @@ CREATE TABLE IF NOT EXISTS request_logs (
 
 CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
 `,
+	// v2: CPA as Provider
+	`
+CREATE TABLE IF NOT EXISTS cpa_services (
+	id              INTEGER PRIMARY KEY,
+	label           TEXT NOT NULL,
+	base_url        TEXT NOT NULL,
+	api_key         TEXT NOT NULL DEFAULT '',
+	enabled         INTEGER NOT NULL DEFAULT 1,
+	status          TEXT NOT NULL DEFAULT 'unknown',
+	last_checked_at TEXT,
+	last_error      TEXT NOT NULL DEFAULT '',
+	created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+	updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+ALTER TABLE accounts ADD COLUMN source_kind     TEXT NOT NULL DEFAULT 'openai_compat';
+ALTER TABLE accounts ADD COLUMN provider         TEXT NOT NULL DEFAULT '';
+ALTER TABLE accounts ADD COLUMN cpa_service_id   INTEGER REFERENCES cpa_services(id);
+ALTER TABLE accounts ADD COLUMN cpa_provider     TEXT NOT NULL DEFAULT '';
+ALTER TABLE accounts ADD COLUMN cpa_account_key  TEXT NOT NULL DEFAULT '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_cpa_unique
+	ON accounts(cpa_service_id, cpa_provider)
+	WHERE source_kind = 'cpa' AND cpa_provider != '';
+
+ALTER TABLE request_logs ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'openai_compat';
+`,
 }
 
 func (s *Store) migrate() error {

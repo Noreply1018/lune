@@ -104,6 +104,7 @@ export default function UsagePage() {
   const [filterToken, setFilterToken] = useState("all");
   const [filterAccount, setFilterAccount] = useState("all");
   const [filterModel, setFilterModel] = useState("all");
+  const [filterSource, setFilterSource] = useState("all");
   const [page, setPage] = useState(1);
 
   function buildQuery() {
@@ -114,6 +115,7 @@ export default function UsagePage() {
     if (filterToken !== "all") params.set("token", filterToken);
     if (filterAccount !== "all") params.set("account", filterAccount);
     if (filterModel !== "all") params.set("model", filterModel);
+    if (filterSource !== "all") params.set("source_kind", filterSource);
     return params.toString();
   }
 
@@ -138,7 +140,7 @@ export default function UsagePage() {
   useEffect(() => {
     setLoading(true);
     loadStats();
-  }, [range, filterToken, filterAccount, filterModel, page]);
+  }, [range, filterToken, filterAccount, filterModel, filterSource, page]);
 
   const models = Array.from(
     new Set(stats?.logs?.items?.map((l) => l.model_alias).filter(Boolean) ?? []),
@@ -231,6 +233,7 @@ export default function UsagePage() {
     filterToken !== "all",
     filterAccount !== "all",
     filterModel !== "all",
+    filterSource !== "all",
   ].filter(Boolean).length;
 
   return (
@@ -268,7 +271,7 @@ export default function UsagePage() {
           </div>
         </div>
 
-        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <Select value={range} onValueChange={(v) => { if (v) { setRange(v); setPage(1); } }}>
             <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
               <SelectValue />
@@ -321,6 +324,17 @@ export default function UsagePage() {
                   {m}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={filterSource} onValueChange={(v) => { if (v) { setFilterSource(v); setPage(1); } }}>
+            <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
+              <SelectValue placeholder="Source" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Sources</SelectItem>
+              <SelectItem value="openai_compat">OpenAI Compatible</SelectItem>
+              <SelectItem value="cpa">CPA</SelectItem>
             </SelectContent>
           </Select>
         </div>

@@ -19,6 +19,7 @@ import {
   Route,
   Key,
   BarChart3,
+  Server,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePathname, useRouter } from "@/lib/router";
@@ -39,6 +40,7 @@ const navGroups = [
       { label: "Pools", href: "/admin/pools", icon: Layers },
       { label: "Routes", href: "/admin/routes", icon: Route },
       { label: "Tokens", href: "/admin/tokens", icon: Key },
+      { label: "CPA Service", href: "/admin/cpa-service", icon: Server },
     ],
   },
 ];

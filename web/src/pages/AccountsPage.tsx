@@ -6,7 +6,7 @@ import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
-import type { Account } from "@/lib/types";
+import type { Account, CpaService } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -31,10 +31,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, MoreHorizontal } from "lucide-react";
+import { Plus, MoreHorizontal, Globe, Server } from "lucide-react";
 
-interface AccountForm {
+
+const CPA_PROVIDERS = [
+  { value: "codex", label: "Codex (ChatGPT Plus/Pro)" },
+  { value: "claude", label: "Claude" },
+  { value: "gemini", label: "Gemini" },
+  { value: "gemini-cli", label: "Gemini CLI" },
+  { value: "vertex", label: "Vertex AI" },
+  { value: "aistudio", label: "AI Studio" },
+  { value: "openai", label: "OpenAI" },
+  { value: "qwen", label: "Qwen" },
+  { value: "kimi", label: "Kimi" },
+  { value: "iflow", label: "iFlow (GLM)" },
+  { value: "antigravity", label: "Antigravity" },
+];
+
+interface OpenAIForm {
   label: string;
+  provider: string;
   base_url: string;
   api_key: string;
   model_allowlist: string;
@@ -44,8 +60,16 @@ interface AccountForm {
   notes: string;
 }
 
-const emptyForm: AccountForm = {
+interface CpaForm {
+  label: string;
+  cpa_provider: string;
+  model_allowlist: string;
+  notes: string;
+}
+
+const emptyOpenAIForm: OpenAIForm = {
   label: "",
+  provider: "",
   base_url: "",
   api_key: "",
   model_allowlist: "",
@@ -55,19 +79,39 @@ const emptyForm: AccountForm = {
   notes: "",
 };
 
+const emptyCpaForm: CpaForm = {
+  label: "",
+  cpa_provider: "",
+  model_allowlist: "",
+  notes: "",
+};
+
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [cpaService, setCpaService] = useState<CpaService | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // source selection
+  const [showSourcePicker, setShowSourcePicker] = useState(false);
+
+  // forms
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
-  const [form, setForm] = useState<AccountForm>(emptyForm);
+  const [editSourceKind, setEditSourceKind] = useState<"openai_compat" | "cpa">("openai_compat");
+  const [openaiForm, setOpenaiForm] = useState<OpenAIForm>(emptyOpenAIForm);
+  const [cpaForm, setCpaForm] = useState<CpaForm>(emptyCpaForm);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
 
   function load() {
     setLoading(true);
-    api
-      .get<Account[]>("/accounts")
-      .then((d) => setAccounts(d ?? []))
+    Promise.all([
+      api.get<Account[]>("/accounts"),
+      api.get<CpaService | null>("/cpa/service"),
+    ])
+      .then(([accs, svc]) => {
+        setAccounts(accs ?? []);
+        setCpaService(svc ?? null);
+      })
       .catch(() => toast("Failed to load accounts", "error"))
       .finally(() => setLoading(false));
   }
@@ -76,50 +120,100 @@ export default function AccountsPage() {
 
   function openCreate() {
     setEditId(null);
-    setForm(emptyForm);
+    setShowSourcePicker(true);
+  }
+
+  function pickSource(kind: "openai_compat" | "cpa") {
+    setEditSourceKind(kind);
+    setShowSourcePicker(false);
+
+    if (kind === "cpa" && !cpaService) {
+      toast("Please configure a CPA Service first", "error");
+      return;
+    }
+
+    if (kind === "openai_compat") {
+      setOpenaiForm(emptyOpenAIForm);
+    } else {
+      setCpaForm(emptyCpaForm);
+    }
     setShowForm(true);
   }
 
   function openEdit(a: Account) {
     setEditId(a.id);
-    setForm({
-      label: a.label,
-      base_url: a.base_url,
-      api_key: "",
-      model_allowlist: a.model_allowlist?.join(", ") ?? "",
-      quota_total: a.quota_total,
-      quota_used: a.quota_used,
-      quota_unit: a.quota_unit || "USD",
-      notes: a.notes,
-    });
+    setEditSourceKind(a.source_kind);
+
+    if (a.source_kind === "cpa") {
+      setCpaForm({
+        label: a.label,
+        cpa_provider: a.cpa_provider,
+        model_allowlist: a.model_allowlist?.join(", ") ?? "",
+        notes: a.notes,
+      });
+    } else {
+      setOpenaiForm({
+        label: a.label,
+        provider: a.provider ?? "",
+        base_url: a.base_url,
+        api_key: "",
+        model_allowlist: a.model_allowlist?.join(", ") ?? "",
+        quota_total: a.quota_total,
+        quota_used: a.quota_used,
+        quota_unit: a.quota_unit || "USD",
+        notes: a.notes,
+      });
+    }
     setShowForm(true);
   }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const body: Record<string, unknown> = {
-      label: form.label,
-      base_url: form.base_url,
-      model_allowlist: form.model_allowlist
-        ? form.model_allowlist.split(",").map((s) => s.trim()).filter(Boolean)
-        : [],
-      quota_total: form.quota_total,
-      quota_used: form.quota_used,
-      quota_unit: form.quota_unit,
-      notes: form.notes,
-    };
-    if (form.api_key) {
-      body.api_key = form.api_key;
-    }
 
     try {
-      if (editId) {
-        await api.put(`/accounts/${editId}`, body);
-        toast("Account updated");
+      if (editSourceKind === "cpa") {
+        const body: Record<string, unknown> = {
+          source_kind: "cpa",
+          label: cpaForm.label,
+          cpa_service_id: cpaService?.id,
+          cpa_provider: cpaForm.cpa_provider,
+          model_allowlist: cpaForm.model_allowlist
+            ? cpaForm.model_allowlist.split(",").map((s) => s.trim()).filter(Boolean)
+            : [],
+          notes: cpaForm.notes,
+        };
+        if (editId) {
+          await api.put(`/accounts/${editId}`, body);
+          toast("Account updated");
+        } else {
+          await api.post("/accounts", body);
+          toast("Account created");
+        }
       } else {
-        body.api_key = form.api_key;
-        await api.post("/accounts", body);
-        toast("Account created");
+        const body: Record<string, unknown> = {
+          source_kind: "openai_compat",
+          label: openaiForm.label,
+          provider: openaiForm.provider,
+          base_url: openaiForm.base_url,
+          model_allowlist: openaiForm.model_allowlist
+            ? openaiForm.model_allowlist.split(",").map((s) => s.trim()).filter(Boolean)
+            : [],
+          quota_total: openaiForm.quota_total,
+          quota_used: openaiForm.quota_used,
+          quota_unit: openaiForm.quota_unit,
+          notes: openaiForm.notes,
+        };
+        if (openaiForm.api_key) {
+          body.api_key = openaiForm.api_key;
+        }
+        if (editId) {
+          await api.put(`/accounts/${editId}`, body);
+          toast("Account updated");
+        } else {
+          body.api_key = openaiForm.api_key;
+          await api.post("/accounts", body);
+          toast("Account created");
+        }
       }
       setShowForm(false);
       load();
@@ -164,10 +258,26 @@ export default function AccountsPage() {
       tone: "primary",
     },
     {
-      key: "base_url",
-      header: "Base URL",
+      key: "source",
+      header: "Source",
+      render: (r) =>
+        r.source_kind === "cpa" ? (
+          <span className="rounded-md bg-lunar-100/60 px-2 py-0.5 text-xs font-medium text-lunar-700">
+            CPA - {r.cpa_provider}
+          </span>
+        ) : (
+          <span className="rounded-md bg-moon-100/60 px-2 py-0.5 text-xs font-medium text-moon-600">
+            OpenAI compat
+          </span>
+        ),
+    },
+    {
+      key: "endpoint",
+      header: "Endpoint",
       render: (r) => (
-        <code className="text-xs text-moon-500">{r.base_url}</code>
+        <code className="text-xs text-moon-500">
+          {r.runtime?.base_url ?? r.base_url}
+        </code>
       ),
       tone: "secondary",
     },
@@ -183,7 +293,9 @@ export default function AccountsPage() {
       key: "quota",
       header: "Quota",
       render: (r) =>
-        r.quota_total > 0 ? (
+        r.source_kind === "cpa" ? (
+          <span className="text-sm text-moon-400">-</span>
+        ) : r.quota_total > 0 ? (
           <span className="text-sm text-moon-500">
             {r.quota_unit === "USD" ? "$" : r.quota_unit === "CNY" ? "\u00a5" : ""}
             {r.quota_used} / {r.quota_total}
@@ -264,125 +376,266 @@ export default function AccountsPage() {
         )}
       </section>
 
+      {/* Source picker dialog */}
+      <Dialog open={showSourcePicker} onOpenChange={setShowSourcePicker}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Choose Source</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3 py-4">
+            <button
+              type="button"
+              onClick={() => pickSource("openai_compat")}
+              className="flex flex-col items-center gap-3 rounded-xl border border-moon-200 p-5 text-center transition hover:border-lunar-400 hover:bg-lunar-50/30"
+            >
+              <Globe className="size-8 text-moon-400" />
+              <div>
+                <p className="font-medium text-moon-800">OpenAI-Compatible</p>
+                <p className="mt-1 text-xs text-moon-500">
+                  Direct connection to any OpenAI-compatible API.
+                </p>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => pickSource("cpa")}
+              className="flex flex-col items-center gap-3 rounded-xl border border-moon-200 p-5 text-center transition hover:border-lunar-400 hover:bg-lunar-50/30"
+            >
+              <Server className="size-8 text-moon-400" />
+              <div>
+                <p className="font-medium text-moon-800">CPA Provider Channel</p>
+                <p className="mt-1 text-xs text-moon-500">
+                  Route through a CPA service provider.
+                </p>
+              </div>
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Account form dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
         <DialogContent className="max-w-lg">
           <form onSubmit={handleSubmit}>
             <DialogHeader>
               <DialogTitle>
-                {editId ? "Edit Account" : "Add Account"}
+                {editId
+                  ? "Edit Account"
+                  : editSourceKind === "cpa"
+                    ? "Add CPA Provider Channel"
+                    : "Add Account"}
               </DialogTitle>
             </DialogHeader>
 
             <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label htmlFor="acc-label">Label</Label>
-                <Input
-                  id="acc-label"
-                  value={form.label}
-                  onChange={(e) => setForm({ ...form, label: e.target.value })}
-                  required
-                  placeholder="OpenAI Main"
-                />
-              </div>
+              {editSourceKind === "cpa" ? (
+                /* CPA form */
+                <>
+                  <div className="space-y-2">
+                    <Label>CPA Service</Label>
+                    <Input
+                      value={cpaService?.label ?? "Not configured"}
+                      disabled
+                      className="bg-moon-50"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="cpa-provider">Provider</Label>
+                    {editId ? (
+                      <Input value={cpaForm.cpa_provider} disabled className="bg-moon-50" />
+                    ) : (
+                      <Select
+                        value={cpaForm.cpa_provider}
+                        onValueChange={(v) => {
+                          if (!v) return;
+                          setCpaForm({
+                            ...cpaForm,
+                            cpa_provider: v,
+                            label: cpaForm.label || `CPA - ${CPA_PROVIDERS.find((p) => p.value === v)?.label?.split(" ")[0] ?? v}`,
+                          });
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select provider..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {CPA_PROVIDERS.map((p) => (
+                            <SelectItem key={p.value} value={p.value}>
+                              {p.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="cpa-label">Label</Label>
+                    <Input
+                      id="cpa-label"
+                      value={cpaForm.label}
+                      onChange={(e) =>
+                        setCpaForm({ ...cpaForm, label: e.target.value })
+                      }
+                      required
+                      placeholder="CPA - Codex"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="cpa-models">Model Allowlist</Label>
+                    <Input
+                      id="cpa-models"
+                      value={cpaForm.model_allowlist}
+                      onChange={(e) =>
+                        setCpaForm({
+                          ...cpaForm,
+                          model_allowlist: e.target.value,
+                        })
+                      }
+                      placeholder="gpt-4o, gpt-4.1 (comma-separated, empty = all)"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="cpa-notes">Notes</Label>
+                    <textarea
+                      id="cpa-notes"
+                      className="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      value={cpaForm.notes}
+                      onChange={(e) =>
+                        setCpaForm({ ...cpaForm, notes: e.target.value })
+                      }
+                      placeholder="Codex models via local CPA"
+                    />
+                  </div>
+                </>
+              ) : (
+                /* OpenAI-Compatible form */
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="acc-label">Label</Label>
+                    <Input
+                      id="acc-label"
+                      value={openaiForm.label}
+                      onChange={(e) =>
+                        setOpenaiForm({ ...openaiForm, label: e.target.value })
+                      }
+                      required
+                      placeholder="OpenAI Main"
+                    />
+                  </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="acc-url">Base URL</Label>
-                <Input
-                  id="acc-url"
-                  value={form.base_url}
-                  onChange={(e) =>
-                    setForm({ ...form, base_url: e.target.value })
-                  }
-                  required
-                  placeholder="https://api.openai.com/v1"
-                />
-              </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="acc-url">Base URL</Label>
+                    <Input
+                      id="acc-url"
+                      value={openaiForm.base_url}
+                      onChange={(e) =>
+                        setOpenaiForm({
+                          ...openaiForm,
+                          base_url: e.target.value,
+                        })
+                      }
+                      required
+                      placeholder="https://api.openai.com/v1"
+                    />
+                  </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="acc-key">API Key</Label>
-                <Input
-                  id="acc-key"
-                  type="password"
-                  value={form.api_key}
-                  onChange={(e) =>
-                    setForm({ ...form, api_key: e.target.value })
-                  }
-                  placeholder={
-                    editId ? "Leave empty to keep current" : "sk-..."
-                  }
-                  required={!editId}
-                />
-              </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="acc-key">API Key</Label>
+                    <Input
+                      id="acc-key"
+                      type="password"
+                      value={openaiForm.api_key}
+                      onChange={(e) =>
+                        setOpenaiForm({
+                          ...openaiForm,
+                          api_key: e.target.value,
+                        })
+                      }
+                      placeholder={
+                        editId ? "Leave empty to keep current" : "sk-..."
+                      }
+                      required={!editId}
+                    />
+                  </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="acc-models">Model Allowlist</Label>
-                <Input
-                  id="acc-models"
-                  value={form.model_allowlist}
-                  onChange={(e) =>
-                    setForm({ ...form, model_allowlist: e.target.value })
-                  }
-                  placeholder="gpt-4o, gpt-4o-mini (comma-separated, empty = all)"
-                />
-              </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="acc-models">Model Allowlist</Label>
+                    <Input
+                      id="acc-models"
+                      value={openaiForm.model_allowlist}
+                      onChange={(e) =>
+                        setOpenaiForm({
+                          ...openaiForm,
+                          model_allowlist: e.target.value,
+                        })
+                      }
+                      placeholder="gpt-4o, gpt-4o-mini (comma-separated, empty = all)"
+                    />
+                  </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="acc-quota-total">Total Quota</Label>
-                  <Input
-                    id="acc-quota-total"
-                    type="number"
-                    value={form.quota_total}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        quota_total: Number(e.target.value),
-                      })
-                    }
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="acc-quota-used">Used</Label>
-                  <Input
-                    id="acc-quota-used"
-                    type="number"
-                    value={form.quota_used}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        quota_used: Number(e.target.value),
-                      })
-                    }
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Unit</Label>
-                  <Select
-                    value={form.quota_unit}
-                    onValueChange={(v) => v && setForm({ ...form, quota_unit: v })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="USD">USD</SelectItem>
-                      <SelectItem value="CNY">CNY</SelectItem>
-                      <SelectItem value="tokens">tokens</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="acc-quota-total">Total Quota</Label>
+                      <Input
+                        id="acc-quota-total"
+                        type="number"
+                        value={openaiForm.quota_total}
+                        onChange={(e) =>
+                          setOpenaiForm({
+                            ...openaiForm,
+                            quota_total: Number(e.target.value),
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="acc-quota-used">Used</Label>
+                      <Input
+                        id="acc-quota-used"
+                        type="number"
+                        value={openaiForm.quota_used}
+                        onChange={(e) =>
+                          setOpenaiForm({
+                            ...openaiForm,
+                            quota_used: Number(e.target.value),
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Unit</Label>
+                      <Select
+                        value={openaiForm.quota_unit}
+                        onValueChange={(v) =>
+                          v && setOpenaiForm({ ...openaiForm, quota_unit: v })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="USD">USD</SelectItem>
+                          <SelectItem value="CNY">CNY</SelectItem>
+                          <SelectItem value="tokens">tokens</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="acc-notes">Notes</Label>
-                <textarea
-                  id="acc-notes"
-                  className="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  value={form.notes}
-                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                  placeholder="Personal account, $20/month plan"
-                />
-              </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="acc-notes">Notes</Label>
+                    <textarea
+                      id="acc-notes"
+                      className="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      value={openaiForm.notes}
+                      onChange={(e) =>
+                        setOpenaiForm({ ...openaiForm, notes: e.target.value })
+                      }
+                      placeholder="Personal account, $20/month plan"
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             <DialogFooter>

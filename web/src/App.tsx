@@ -9,6 +9,7 @@ import PoolsPage from "./pages/PoolsPage";
 import RoutesPage from "./pages/RoutesPage";
 import TokensPage from "./pages/TokensPage";
 import UsagePage from "./pages/UsagePage";
+import CpaServicePage from "./pages/CpaServicePage";
 
 function PageRouter() {
   const path = usePathname();
@@ -23,6 +24,8 @@ function PageRouter() {
       return <TokensPage />;
     case "/admin/usage":
       return <UsagePage />;
+    case "/admin/cpa-service":
+      return <CpaServicePage />;
     default:
       return <OverviewPage />;
   }

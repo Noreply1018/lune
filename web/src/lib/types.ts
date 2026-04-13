@@ -15,6 +15,15 @@ export interface Account {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+  source_kind: "openai_compat" | "cpa";
+  provider: string;
+  cpa_service_id: number | null;
+  cpa_provider: string;
+  cpa_account_key: string;
+  runtime: {
+    base_url: string;
+    auth_mode: string;
+  } | null;
 }
 
 export interface Pool {
@@ -83,6 +92,7 @@ export interface RequestLog {
   request_ip: string;
   success: boolean;
   error_message: string | null;
+  source_kind: string;
   created_at: string;
 }
 
@@ -105,6 +115,19 @@ export interface Overview {
     last_error: string | null;
   }>;
   recent_requests: RequestLog[];
+  cpa_status: {
+    connected: boolean;
+    label: string;
+    status: string;
+    accounts_total: number;
+    accounts_healthy: number;
+    accounts_error: number;
+    last_checked_at: string | null;
+  } | null;
+  accounts_by_source: {
+    openai_compat: number;
+    cpa: number;
+  };
 }
 
 export interface UsageStats {
@@ -138,4 +161,25 @@ export interface SystemSettings {
   health_check_interval: number;
   request_timeout: number;
   max_retry_attempts: number;
+}
+
+export interface CpaService {
+  id: number;
+  label: string;
+  base_url: string;
+  api_key_set: boolean;
+  api_key_masked: string;
+  enabled: boolean;
+  status: "unknown" | "healthy" | "error";
+  last_checked_at: string | null;
+  last_error: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CpaServiceTestResult {
+  reachable: boolean;
+  latency_ms: number;
+  providers: string[];
+  error: string;
 }

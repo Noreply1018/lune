@@ -6,8 +6,10 @@ import (
 	"time"
 )
 
+var accountColumns = `id, label, base_url, api_key, enabled, status, quota_total, quota_used, quota_unit, notes, model_allowlist, last_checked_at, last_error, created_at, updated_at, source_kind, provider, cpa_service_id, cpa_provider, cpa_account_key`
+
 func (s *Store) ListAccounts() ([]Account, error) {
-	rows, err := s.db.Query(`SELECT id, label, base_url, api_key, enabled, status, quota_total, quota_used, quota_unit, notes, model_allowlist, last_checked_at, last_error, created_at, updated_at FROM accounts ORDER BY id`)
+	rows, err := s.db.Query(`SELECT ` + accountColumns + ` FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -16,7 +18,7 @@ func (s *Store) ListAccounts() ([]Account, error) {
 }
 
 func (s *Store) GetAccount(id int64) (*Account, error) {
-	row := s.db.QueryRow(`SELECT id, label, base_url, api_key, enabled, status, quota_total, quota_used, quota_unit, notes, model_allowlist, last_checked_at, last_error, created_at, updated_at FROM accounts WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT `+accountColumns+` FROM accounts WHERE id = ?`, id)
 	a, err := scanAccount(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -29,9 +31,13 @@ func (s *Store) CreateAccount(a *Account) (int64, error) {
 	if a.ModelAllowlist == nil {
 		allowlist = []byte("[]")
 	}
+	if a.SourceKind == "" {
+		a.SourceKind = "openai_compat"
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO accounts (label, base_url, api_key, enabled, status, quota_total, quota_used, quota_unit, notes, model_allowlist) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO accounts (label, base_url, api_key, enabled, status, quota_total, quota_used, quota_unit, notes, model_allowlist, source_kind, provider, cpa_service_id, cpa_provider, cpa_account_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Label, a.BaseURL, a.APIKey, a.Enabled, "healthy", a.QuotaTotal, a.QuotaUsed, a.QuotaUnit, a.Notes, string(allowlist),
+		a.SourceKind, a.Provider, a.CpaServiceID, a.CpaProvider, a.CpaAccountKey,
 	)
 	if err != nil {
 		return 0, err
@@ -45,8 +51,8 @@ func (s *Store) UpdateAccount(id int64, a *Account) error {
 		allowlist = []byte("[]")
 	}
 	_, err := s.db.Exec(
-		`UPDATE accounts SET label=?, base_url=?, api_key=?, enabled=?, quota_total=?, quota_used=?, quota_unit=?, notes=?, model_allowlist=?, updated_at=datetime('now') WHERE id=?`,
-		a.Label, a.BaseURL, a.APIKey, a.Enabled, a.QuotaTotal, a.QuotaUsed, a.QuotaUnit, a.Notes, string(allowlist), id,
+		`UPDATE accounts SET label=?, base_url=?, api_key=?, enabled=?, quota_total=?, quota_used=?, quota_unit=?, notes=?, model_allowlist=?, provider=?, updated_at=datetime('now') WHERE id=?`,
+		a.Label, a.BaseURL, a.APIKey, a.Enabled, a.QuotaTotal, a.QuotaUsed, a.QuotaUnit, a.Notes, string(allowlist), a.Provider, id,
 	)
 	return err
 }
@@ -93,6 +99,30 @@ func (s *Store) CountAccounts() (total int, byStatus map[string]int, err error) 
 	return total, byStatus, rows.Err()
 }
 
+func (s *Store) CountAccountsByCpaService(serviceID int64) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE cpa_service_id = ?`, serviceID).Scan(&count)
+	return count, err
+}
+
+func (s *Store) CountAccountsBySource() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT source_kind, COUNT(*) FROM accounts GROUP BY source_kind`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := make(map[string]int)
+	for rows.Next() {
+		var kind string
+		var c int
+		if err := rows.Scan(&kind, &c); err != nil {
+			return nil, err
+		}
+		m[kind] = c
+	}
+	return m, rows.Err()
+}
+
 // --- scan helpers ---
 
 func scanAccounts(rows *sql.Rows) ([]Account, error) {
@@ -116,7 +146,9 @@ func scanAccountRow(row rowScanner) (*Account, error) {
 	var enabled int
 	var allowlistJSON string
 	var createdAt, updatedAt string
-	err := row.Scan(&a.ID, &a.Label, &a.BaseURL, &a.APIKey, &enabled, &a.Status, &a.QuotaTotal, &a.QuotaUsed, &a.QuotaUnit, &a.Notes, &allowlistJSON, &a.LastCheckedAt, &a.LastError, &createdAt, &updatedAt)
+	var cpaServiceID sql.NullInt64
+	err := row.Scan(&a.ID, &a.Label, &a.BaseURL, &a.APIKey, &enabled, &a.Status, &a.QuotaTotal, &a.QuotaUsed, &a.QuotaUnit, &a.Notes, &allowlistJSON, &a.LastCheckedAt, &a.LastError, &createdAt, &updatedAt,
+		&a.SourceKind, &a.Provider, &cpaServiceID, &a.CpaProvider, &a.CpaAccountKey)
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +159,13 @@ func scanAccountRow(row rowScanner) (*Account, error) {
 	}
 	a.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
 	a.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
+	if cpaServiceID.Valid {
+		id := cpaServiceID.Int64
+		a.CpaServiceID = &id
+	}
+	if a.SourceKind == "" {
+		a.SourceKind = "openai_compat"
+	}
 	return &a, nil
 }
 

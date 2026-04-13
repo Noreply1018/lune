@@ -15,6 +15,7 @@ import {
   Activity,
   Zap,
   TrendingUp,
+  Server,
 } from "lucide-react";
 
 const requestColumns: Column<RequestLog>[] = [
@@ -212,6 +213,47 @@ export default function OverviewPage() {
           variant="compact"
         />
       </section>
+
+      {o?.cpa_status && (
+        <section className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
+          <div className="flex items-start justify-between p-5">
+            <div className="flex items-center gap-3">
+              <span className="flex size-9 items-center justify-center rounded-full bg-lunar-100/60 text-lunar-600">
+                <Server className="size-4" />
+              </span>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-moon-800">
+                    {o.cpa_status.label}
+                  </h3>
+                  <StatusBadge
+                    status={
+                      o.cpa_status.status === "healthy"
+                        ? "healthy"
+                        : o.cpa_status.status === "error"
+                          ? "error"
+                          : "degraded"
+                    }
+                    label={o.cpa_status.status}
+                  />
+                </div>
+                <p className="mt-0.5 text-xs text-moon-400">
+                  CPA Service &mdash; {o.cpa_status.accounts_total} provider
+                  channel{o.cpa_status.accounts_total === 1 ? "" : "s"},{" "}
+                  {o.cpa_status.accounts_healthy} healthy
+                  {o.cpa_status.accounts_error > 0 &&
+                    `, ${o.cpa_status.accounts_error} error`}
+                </p>
+              </div>
+            </div>
+            {o.cpa_status.last_checked_at && (
+              <span className="text-xs text-moon-400">
+                Checked {relativeTime(o.cpa_status.last_checked_at)}
+              </span>
+            )}
+          </div>
+        </section>
+      )}
 
       <section className="grid gap-6 xl:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.25fr)]">
         <div className="space-y-4">
