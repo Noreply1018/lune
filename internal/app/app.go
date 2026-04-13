@@ -91,8 +91,10 @@ func (a *App) Run() error {
 
 	srv := httpserver.New(a.logger, a.store, a.cache, a.cfg.CpaAuthDir)
 
-	addr := fmt.Sprintf(":%d", a.cfg.Port)
-	ln, err := net.Listen("tcp", addr)
+	// Prefer an explicit IPv4 listener so WSL localhost forwarding can
+	// consistently expose the service to Windows browsers.
+	addr := fmt.Sprintf("0.0.0.0:%d", a.cfg.Port)
+	ln, err := net.Listen("tcp4", addr)
 	if err != nil {
 		return fmt.Errorf("port %d is already in use", a.cfg.Port)
 	}
