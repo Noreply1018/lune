@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
 import {
   Sidebar,
   SidebarContent,
@@ -21,6 +21,7 @@ import {
   BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { usePathname, useRouter } from "@/lib/router";
 import { Separator } from "@/components/ui/separator";
 
 const navGroups = [
@@ -55,7 +56,17 @@ function CrescentIcon({ className }: { className?: string }) {
 }
 
 export default function Shell({ children }: { children: ReactNode }) {
-  const path = window.location.pathname.replace(/\/$/, "") || "/admin";
+  const path = usePathname();
+  const { onLinkClick } = useRouter();
+  const mainRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+  }, [path]);
+
+  function handleNavClick(event: MouseEvent<HTMLAnchorElement>, href: string) {
+    onLinkClick(event, href);
+  }
 
   return (
     <>
@@ -66,6 +77,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         <SidebarHeader className="px-3 pb-3 pt-4">
           <a
             href="/admin"
+            onClick={(event) => handleNavClick(event, "/admin")}
             className="group/brand flex items-center gap-3 overflow-hidden rounded-[1.35rem] border border-white/65 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(240,242,248,0.82))] px-3 py-3 text-sidebar-foreground shadow-[0_18px_40px_-34px_rgba(36,43,74,0.55)] transition-all duration-200 hover:border-lunar-500/30 hover:shadow-[0_18px_45px_-32px_rgba(36,43,74,0.62)] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-[1rem] group-data-[collapsible=icon]:px-0"
           >
             <span className="relative flex size-10 shrink-0 items-center justify-center rounded-full border border-lunar-500/25 bg-[radial-gradient(circle_at_35%_30%,rgba(255,255,255,0.96),rgba(226,230,240,0.88)_55%,rgba(201,207,223,0.72))] text-lunar-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_10px_25px_-18px_rgba(36,43,74,0.8)] transition-transform duration-200 group-hover/brand:scale-[1.03]">
@@ -106,7 +118,12 @@ export default function Shell({ children }: { children: ReactNode }) {
                         <SidebarMenuButton
                           isActive={active}
                           tooltip={item.label}
-                          render={<a href={item.href} />}
+                          render={
+                            <a
+                              href={item.href}
+                              onClick={(event) => handleNavClick(event, item.href)}
+                            />
+                          }
                           className={cn(
                             "relative h-10 rounded-[1rem] px-3 text-[13px] font-medium tracking-[0.01em] transition-all duration-200 before:absolute before:inset-x-2 before:top-0 before:h-px before:rounded-full before:bg-white/70 before:opacity-0 before:transition-opacity before:duration-200 group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:rounded-[0.95rem] group-data-[collapsible=icon]:px-0!",
                             active
@@ -148,7 +165,10 @@ export default function Shell({ children }: { children: ReactNode }) {
       </Sidebar>
 
       <SidebarInset>
-        <main className="min-h-screen flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8 2xl:px-10">
+        <main
+          ref={mainRef}
+          className="min-h-screen flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8 2xl:px-10"
+        >
           {children}
         </main>
       </SidebarInset>

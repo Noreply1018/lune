@@ -1,6 +1,7 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { RouterProvider, usePathname } from "@/lib/router";
 import Shell from "./components/Shell";
 import OverviewPage from "./pages/OverviewPage";
 import AccountsPage from "./pages/AccountsPage";
@@ -10,7 +11,7 @@ import TokensPage from "./pages/TokensPage";
 import UsagePage from "./pages/UsagePage";
 
 function PageRouter() {
-  const path = window.location.pathname.replace(/\/$/, "");
+  const path = usePathname();
   switch (path) {
     case "/admin/accounts":
       return <AccountsPage />;
@@ -31,11 +32,13 @@ export default function App() {
   return (
     <TooltipProvider>
       <Toaster richColors position="top-right" />
-      <SidebarProvider>
-        <Shell>
-          <PageRouter />
-        </Shell>
-      </SidebarProvider>
+      <RouterProvider>
+        <SidebarProvider>
+          <Shell>
+            <PageRouter />
+          </Shell>
+        </SidebarProvider>
+      </RouterProvider>
     </TooltipProvider>
   );
 }
