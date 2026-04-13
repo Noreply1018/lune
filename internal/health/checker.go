@@ -5,27 +5,31 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"lune/internal/cpa"
 	"lune/internal/store"
 )
 
 type Checker struct {
-	store  *store.Store
-	cache  *store.RoutingCache
-	logger *log.Logger
-	client *http.Client
+	store      *store.Store
+	cache      *store.RoutingCache
+	logger     *log.Logger
+	client     *http.Client
+	cpaAuthDir string
 }
 
-func NewChecker(st *store.Store, cache *store.RoutingCache, logger *log.Logger) *Checker {
+func NewChecker(st *store.Store, cache *store.RoutingCache, logger *log.Logger, cpaAuthDir string) *Checker {
 	return &Checker{
-		store:  st,
-		cache:  cache,
-		logger: logger,
-		client: &http.Client{Timeout: 10 * time.Second},
+		store:      st,
+		cache:      cache,
+		logger:     logger,
+		client:     &http.Client{Timeout: 10 * time.Second},
+		cpaAuthDir: cpaAuthDir,
 	}
 }
 
@@ -72,6 +76,10 @@ func (c *Checker) checkAll(ctx context.Context) {
 		}(acc)
 	}
 	wg.Wait()
+
+	// sync CPA metadata from auth files
+	c.syncCpaMetadata()
+
 	c.cache.Invalidate()
 }
 
@@ -151,6 +159,38 @@ func (c *Checker) checkCpaService(ctx context.Context, svc *store.CpaService) {
 
 	c.store.UpdateCpaServiceHealth(svc.ID, "healthy", "")
 	c.cache.Invalidate()
+}
+
+func (c *Checker) syncCpaMetadata() {
+	if c.cpaAuthDir == "" {
+		return
+	}
+
+	accounts, err := c.store.ListCpaAccountsWithKey()
+	if err != nil {
+		c.logger.Printf("sync cpa metadata: list accounts: %v", err)
+		return
+	}
+
+	for _, acc := range accounts {
+		f, err := cpa.ReadAuthFile(c.cpaAuthDir, acc.CpaAccountKey)
+		if err != nil {
+			if os.IsNotExist(err) {
+				c.store.UpdateAccountHealth(acc.ID, "error", "Credential file not found")
+			} else {
+				c.store.UpdateAccountHealth(acc.ID, "error", "Credential file corrupt")
+			}
+			continue
+		}
+		var expiredAt, lastRefreshAt *string
+		if f.Expired != "" {
+			expiredAt = &f.Expired
+		}
+		if f.LastRefresh != "" {
+			lastRefreshAt = &f.LastRefresh
+		}
+		c.store.UpdateAccountCpaMetadata(acc.ID, expiredAt, lastRefreshAt, f.Disabled)
+	}
 }
 
 func (c *Checker) getInterval() time.Duration {

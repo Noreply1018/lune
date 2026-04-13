@@ -1,27 +1,40 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"lune/internal/cpa"
 	"lune/internal/store"
 	"lune/internal/webutil"
 )
 
 type Handler struct {
-	store *store.Store
-	cache *store.RoutingCache
+	store      *store.Store
+	cache      *store.RoutingCache
+	cpaAuthDir string
+	sessions   *cpa.SessionStore
+	logger     *log.Logger
 }
 
-func NewHandler(s *store.Store, c *store.RoutingCache) *Handler {
-	return &Handler{store: s, cache: c}
+func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir string) *Handler {
+	return &Handler{
+		store:      s,
+		cache:      c,
+		cpaAuthDir: cpaAuthDir,
+		sessions:   cpa.NewSessionStore(),
+		logger:     log.Default(),
+	}
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
@@ -75,6 +88,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("POST /admin/api/cpa/service/test", h.testCpaService)
 	handle("POST /admin/api/cpa/service/enable", h.enableCpaService)
 	handle("POST /admin/api/cpa/service/disable", h.disableCpaService)
+
+	// CPA Login Sessions
+	handle("POST /admin/api/accounts/cpa/login-sessions", h.createLoginSession)
+	handle("GET /admin/api/accounts/cpa/login-sessions/{id}", h.getLoginSession)
+	handle("POST /admin/api/accounts/cpa/login-sessions/{id}/cancel", h.cancelLoginSession)
+
+	// CPA Import
+	handle("GET /admin/api/cpa/service/remote-accounts", h.listRemoteAccounts)
+	handle("POST /admin/api/accounts/cpa/import", h.importCpaAccount)
+	handle("POST /admin/api/accounts/cpa/import/batch", h.batchImportCpaAccounts)
 }
 
 // --- Accounts ---
@@ -864,4 +887,455 @@ func generateToken() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return "sk-lune-" + hex.EncodeToString(b)
+}
+
+// --- CPA Login Sessions ---
+
+func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ServiceID int64 `json:"service_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+
+	if h.cpaAuthDir == "" {
+		webutil.WriteAdminError(w, 400, "not_configured", "cpa_auth_dir is not configured")
+		return
+	}
+
+	svc, err := h.store.GetCpaServiceByID(req.ServiceID)
+	if err != nil || svc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "CPA service not found")
+		return
+	}
+
+	dcr, err := cpa.RequestDeviceCode(r.Context())
+	if err != nil {
+		webutil.WriteAdminError(w, 502, "upstream_error", fmt.Sprintf("device code request failed: %v", err))
+		return
+	}
+
+	session, err := h.sessions.CreateSession(req.ServiceID, dcr)
+	if err != nil {
+		webutil.WriteAdminError(w, 409, "active_session", err.Error())
+		return
+	}
+
+	// start background polling goroutine
+	ctx, cancel := context.WithDeadline(context.Background(), session.ExpiresAt)
+	session.CancelFunc = cancel
+
+	go h.pollLoginSession(ctx, session, svc)
+
+	webutil.WriteData(w, 201, map[string]any{
+		"id":                   session.ID,
+		"status":               session.Status,
+		"verification_uri":     session.VerificationURI,
+		"user_code":            session.UserCode,
+		"expires_at":           session.ExpiresAt.Format(time.RFC3339),
+		"poll_interval_seconds": session.PollInterval,
+	})
+}
+
+func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSession, svc *store.CpaService) {
+	interval := time.Duration(session.PollInterval) * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// check if cancelled or expired
+			s := h.sessions.GetSession(session.ID)
+			if s != nil && s.Status == "pending" {
+				h.sessions.UpdateStatus(session.ID, "expired", "expired_token", "Device code expired")
+			}
+			return
+		case <-ticker.C:
+			s := h.sessions.GetSession(session.ID)
+			if s == nil || s.Status == "cancelled" {
+				return
+			}
+
+			tokenResp, err := cpa.PollForToken(ctx, session.DeviceCode)
+			if err != nil {
+				if errors.Is(err, cpa.ErrAuthorizationPending) {
+					continue
+				}
+				if errors.Is(err, cpa.ErrSlowDown) {
+					ticker.Reset(interval + 5*time.Second)
+					continue
+				}
+				if errors.Is(err, cpa.ErrExpiredToken) {
+					h.sessions.UpdateStatus(session.ID, "expired", "expired_token", "Device code expired")
+					return
+				}
+				if errors.Is(err, cpa.ErrAccessDenied) {
+					h.sessions.UpdateStatus(session.ID, "failed", "access_denied", "User denied authorization")
+					return
+				}
+				h.sessions.UpdateStatus(session.ID, "failed", "poll_error", err.Error())
+				return
+			}
+
+			// success — process the token
+			h.sessions.UpdateStatus(session.ID, "authorized", "", "")
+			h.finalizeLogin(session, svc, tokenResp)
+			return
+		}
+	}
+}
+
+func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService, tokenResp *cpa.TokenResponse) {
+	info, err := cpa.ParseAccountInfo(tokenResp.AccessToken)
+	if err != nil {
+		h.sessions.UpdateStatus(session.ID, "failed", "jwt_parse_error", fmt.Sprintf("Failed to parse JWT: %v", err))
+		return
+	}
+
+	planType := info.PlanType
+	if planType == "" {
+		planType = "unknown"
+	}
+	accountKey := fmt.Sprintf("codex-%s-%s", info.Email, planType)
+
+	expiredAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
+	lastRefresh := time.Now().Format(time.RFC3339)
+
+	// write credential file to cpa-auth directory
+	authFile := &cpa.CpaAuthFile{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		IDToken:      tokenResp.IDToken,
+		AccountID:    info.AccountID,
+		Email:        info.Email,
+		Disabled:     false,
+		Expired:      expiredAt,
+		LastRefresh:  lastRefresh,
+		Type:         "codex",
+	}
+	if err := cpa.WriteAuthFile(h.cpaAuthDir, authFile, accountKey); err != nil {
+		h.sessions.UpdateStatus(session.ID, "failed", "file_write_error", fmt.Sprintf("Failed to write credential file: %v", err))
+		return
+	}
+
+	// create local account record (no tokens stored in DB)
+	label := fmt.Sprintf("codex - %s (%s)", info.Email, planType)
+	account := &store.Account{
+		Label:         label,
+		SourceKind:    "cpa",
+		CpaServiceID:  &svc.ID,
+		CpaProvider:   "codex",
+		CpaAccountKey: accountKey,
+		CpaEmail:      info.Email,
+		CpaPlanType:   planType,
+		CpaOpenaiID:   info.AccountID,
+		CpaExpiredAt:  &expiredAt,
+		CpaLastRefreshAt: &lastRefresh,
+		Enabled:       true,
+	}
+
+	id, err := h.store.CreateAccount(account)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			// account already exists — update session with existing account
+			existing, _ := h.store.FindAccountByCpaKey(svc.ID, accountKey)
+			if existing != nil {
+				h.fillAccountResponse(existing)
+				h.sessions.CompleteSession(session.ID, existing.ID, existing)
+				h.cache.Invalidate()
+				return
+			}
+		}
+		h.sessions.UpdateStatus(session.ID, "failed", "account_create_error", fmt.Sprintf("Failed to create account: %v", err))
+		return
+	}
+
+	account.ID = id
+	h.fillAccountResponse(account)
+	h.sessions.CompleteSession(session.ID, id, account)
+	h.cache.Invalidate()
+}
+
+func (h *Handler) getLoginSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	session := h.sessions.GetSession(id)
+	if session == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "login session not found")
+		return
+	}
+
+	resp := map[string]any{
+		"id":     session.ID,
+		"status": session.Status,
+	}
+
+	switch session.Status {
+	case "pending":
+		resp["verification_uri"] = session.VerificationURI
+		resp["user_code"] = session.UserCode
+		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
+		resp["poll_interval_seconds"] = session.PollInterval
+	case "succeeded":
+		if session.AccountID != nil {
+			resp["account_id"] = *session.AccountID
+		}
+		if session.Account != nil {
+			resp["account"] = session.Account
+		}
+	case "failed", "expired":
+		resp["error_code"] = session.ErrorCode
+		resp["error_message"] = session.ErrorMessage
+	}
+
+	webutil.WriteData(w, 200, resp)
+}
+
+func (h *Handler) cancelLoginSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := h.sessions.CancelSession(id); err != nil {
+		webutil.WriteAdminError(w, 404, "not_found", err.Error())
+		return
+	}
+	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+// --- CPA Import ---
+
+func (h *Handler) listRemoteAccounts(w http.ResponseWriter, r *http.Request) {
+	if h.cpaAuthDir == "" {
+		webutil.WriteAdminError(w, 400, "not_configured", "cpa_auth_dir is not configured")
+		return
+	}
+
+	svc, err := h.store.GetCpaService()
+	if err != nil || svc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "no CPA service configured")
+		return
+	}
+
+	scanned, err := cpa.ScanAuthDirKeyed(h.cpaAuthDir)
+	if err != nil {
+		webutil.WriteAdminError(w, 500, "scan_error", fmt.Sprintf("Failed to scan cpa-auth directory: %v", err))
+		return
+	}
+
+	type remoteAccount struct {
+		AccountKey      string  `json:"account_key"`
+		Email           string  `json:"email"`
+		PlanType        string  `json:"plan_type"`
+		Provider        string  `json:"provider"`
+		AccountID       string  `json:"account_id"`
+		ExpiredAt       *string `json:"expired_at"`
+		Disabled        bool    `json:"disabled"`
+		AlreadyImported bool    `json:"already_imported"`
+	}
+
+	var result []remoteAccount
+	for _, s := range scanned {
+		var expiredAt *string
+		if s.File.Expired != "" {
+			expiredAt = &s.File.Expired
+		}
+
+		alreadyImported := false
+		if existing, _ := h.store.FindAccountByCpaKey(svc.ID, s.Key); existing != nil {
+			alreadyImported = true
+		}
+
+		// derive plan_type from JWT or filename
+		planType := ""
+		if info, err := cpa.ParseAccountInfo(s.File.AccessToken); err == nil {
+			planType = info.PlanType
+		}
+
+		result = append(result, remoteAccount{
+			AccountKey:      s.Key,
+			Email:           s.File.Email,
+			PlanType:        planType,
+			Provider:        s.File.Type,
+			AccountID:       s.File.AccountID,
+			ExpiredAt:       expiredAt,
+			Disabled:        s.File.Disabled,
+			AlreadyImported: alreadyImported,
+		})
+	}
+
+	webutil.WriteData(w, 200, result)
+}
+
+func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
+	if h.cpaAuthDir == "" {
+		webutil.WriteAdminError(w, 400, "not_configured", "cpa_auth_dir is not configured")
+		return
+	}
+
+	var req struct {
+		ServiceID      int64    `json:"service_id"`
+		AccountKey     string   `json:"account_key"`
+		Label          string   `json:"label"`
+		Enabled        bool     `json:"enabled"`
+		Notes          string   `json:"notes"`
+		ModelAllowlist []string `json:"model_allowlist"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	if req.AccountKey == "" {
+		webutil.WriteAdminError(w, 400, "bad_request", "account_key is required")
+		return
+	}
+
+	svc, err := h.store.GetCpaServiceByID(req.ServiceID)
+	if err != nil || svc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "CPA service not found")
+		return
+	}
+
+	f, err := cpa.ReadAuthFile(h.cpaAuthDir, req.AccountKey)
+	if err != nil {
+		webutil.WriteAdminError(w, 404, "not_found", fmt.Sprintf("Credential file not found: %v", err))
+		return
+	}
+
+	// parse plan_type from JWT if available
+	planType := ""
+	openaiID := f.AccountID
+	if info, err := cpa.ParseAccountInfo(f.AccessToken); err == nil {
+		planType = info.PlanType
+		if info.AccountID != "" {
+			openaiID = info.AccountID
+		}
+	}
+
+	label := req.Label
+	if label == "" {
+		label = fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType)
+	}
+
+	var expiredAt, lastRefreshAt *string
+	if f.Expired != "" {
+		expiredAt = &f.Expired
+	}
+	if f.LastRefresh != "" {
+		lastRefreshAt = &f.LastRefresh
+	}
+
+	account := &store.Account{
+		Label:            label,
+		SourceKind:       "cpa",
+		CpaServiceID:     &svc.ID,
+		CpaProvider:      f.Type,
+		CpaAccountKey:    req.AccountKey,
+		CpaEmail:         f.Email,
+		CpaPlanType:      planType,
+		CpaOpenaiID:      openaiID,
+		CpaExpiredAt:     expiredAt,
+		CpaLastRefreshAt: lastRefreshAt,
+		CpaDisabled:      f.Disabled,
+		Enabled:          req.Enabled,
+		Notes:            req.Notes,
+		ModelAllowlist:   req.ModelAllowlist,
+	}
+
+	id, err := h.store.CreateAccount(account)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			webutil.WriteAdminError(w, 409, "duplicate", "This account has already been imported")
+			return
+		}
+		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		return
+	}
+
+	h.cache.Invalidate()
+	account.ID = id
+	h.fillAccountResponse(account)
+	webutil.WriteData(w, 201, account)
+}
+
+func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request) {
+	if h.cpaAuthDir == "" {
+		webutil.WriteAdminError(w, 400, "not_configured", "cpa_auth_dir is not configured")
+		return
+	}
+
+	var req struct {
+		ServiceID   int64    `json:"service_id"`
+		AccountKeys []string `json:"account_keys"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+
+	svc, err := h.store.GetCpaServiceByID(req.ServiceID)
+	if err != nil || svc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "CPA service not found")
+		return
+	}
+
+	var imported, skipped int
+	var errs []string
+
+	for _, key := range req.AccountKeys {
+		f, err := cpa.ReadAuthFile(h.cpaAuthDir, key)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", key, err))
+			continue
+		}
+
+		planType := ""
+		openaiID := f.AccountID
+		if info, err := cpa.ParseAccountInfo(f.AccessToken); err == nil {
+			planType = info.PlanType
+			if info.AccountID != "" {
+				openaiID = info.AccountID
+			}
+		}
+
+		var expiredAt, lastRefreshAt *string
+		if f.Expired != "" {
+			expiredAt = &f.Expired
+		}
+		if f.LastRefresh != "" {
+			lastRefreshAt = &f.LastRefresh
+		}
+
+		account := &store.Account{
+			Label:            fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType),
+			SourceKind:       "cpa",
+			CpaServiceID:     &svc.ID,
+			CpaProvider:      f.Type,
+			CpaAccountKey:    key,
+			CpaEmail:         f.Email,
+			CpaPlanType:      planType,
+			CpaOpenaiID:      openaiID,
+			CpaExpiredAt:     expiredAt,
+			CpaLastRefreshAt: lastRefreshAt,
+			CpaDisabled:      f.Disabled,
+			Enabled:          true,
+		}
+
+		_, err = h.store.CreateAccount(account)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint") {
+				skipped++
+			} else {
+				errs = append(errs, fmt.Sprintf("%s: %v", key, err))
+			}
+			continue
+		}
+		imported++
+	}
+
+	h.cache.Invalidate()
+	webutil.WriteData(w, 200, map[string]any{
+		"imported": imported,
+		"skipped":  skipped,
+		"errors":   errs,
+	})
 }

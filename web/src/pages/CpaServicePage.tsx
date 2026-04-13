@@ -19,7 +19,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Server, TestTube2, Trash2 } from "lucide-react";
+import type { RemoteAccount } from "@/lib/types";
+import { Server, TestTube2, Trash2, RefreshCw, AlertTriangle, Loader2 } from "lucide-react";
 
 interface ServiceForm {
   label: string;
@@ -32,6 +33,18 @@ const emptyForm: ServiceForm = {
   base_url: "",
   api_key: "",
 };
+
+function expiryBadge(date: string | null) {
+  if (!date) return null;
+  const now = Date.now();
+  const exp = new Date(date).getTime();
+  if (Number.isNaN(exp)) return null;
+  const diff = exp - now;
+  if (diff <= 0) return <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700"><AlertTriangle className="size-3" />Expired</span>;
+  if (diff <= 24 * 60 * 60 * 1000) return <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700"><AlertTriangle className="size-3" />Expiring today</span>;
+  if (diff <= 7 * 24 * 60 * 60 * 1000) return <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-yellow-100 px-1.5 py-0.5 text-[10px] font-medium text-yellow-700"><AlertTriangle className="size-3" />Expiring soon</span>;
+  return null;
+}
 
 const linkedColumns: Column<Account>[] = [
   {
@@ -50,10 +63,23 @@ const linkedColumns: Column<Account>[] = [
     ),
   },
   {
+    key: "email",
+    header: "Email",
+    render: (r) => r.cpa_email ? <span className="text-sm text-moon-600">{r.cpa_email}</span> : <span className="text-sm text-moon-400">-</span>,
+  },
+  {
+    key: "plan",
+    header: "Plan",
+    render: (r) => r.cpa_plan_type ? <span className="text-sm text-moon-600">{r.cpa_plan_type}</span> : <span className="text-sm text-moon-400">-</span>,
+  },
+  {
     key: "status",
     header: "Status",
     render: (r) => (
-      <StatusBadge status={r.enabled ? r.status : "disabled"} />
+      <span className="inline-flex items-center">
+        <StatusBadge status={r.enabled ? r.status : "disabled"} />
+        {r.cpa_expired_at && expiryBadge(r.cpa_expired_at)}
+      </span>
     ),
     tone: "status",
   },
@@ -67,6 +93,10 @@ export default function CpaServicePage() {
   const [form, setForm] = useState<ServiceForm>(emptyForm);
   const [testing, setTesting] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  const [showSync, setShowSync] = useState(false);
+  const [remoteAccounts, setRemoteAccounts] = useState<RemoteAccount[]>([]);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
 
   function load() {
     setLoading(true);
@@ -271,6 +301,10 @@ export default function CpaServicePage() {
                   <TestTube2 className="size-4" />
                   {testing ? "Testing..." : "Test Connection"}
                 </Button>
+                <Button size="sm" variant="outline" onClick={openSyncDialog}>
+                  <RefreshCw className="size-4" />
+                  Sync from CPA
+                </Button>
                 <Button size="sm" variant="outline" onClick={openEdit}>
                   Edit
                 </Button>
@@ -382,6 +416,95 @@ export default function CpaServicePage() {
         description="Are you sure you want to remove the CPA service? This cannot be undone."
         onConfirm={confirmDelete}
       />
+
+      {/* Sync from CPA Dialog */}
+      <Dialog open={showSync} onOpenChange={setShowSync}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Sync from CPA</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {syncLoading && remoteAccounts.length === 0 ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="size-6 animate-spin text-moon-400" />
+              </div>
+            ) : remoteAccounts.length === 0 ? (
+              <p className="py-4 text-center text-sm text-moon-500">No accounts found in cpa-auth directory.</p>
+            ) : (
+              <div className="max-h-64 space-y-2 overflow-y-auto">
+                {remoteAccounts.map((ra) => (
+                  <label
+                    key={ra.account_key}
+                    className={`flex items-center gap-3 rounded-lg border p-3 transition ${ra.already_imported ? "cursor-not-allowed border-moon-100 bg-moon-50 opacity-60" : "cursor-pointer border-moon-200 hover:border-lunar-400"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={ra.already_imported}
+                      checked={selectedKeys.has(ra.account_key)}
+                      onChange={(e) => {
+                        const next = new Set(selectedKeys);
+                        if (e.target.checked) next.add(ra.account_key);
+                        else next.delete(ra.account_key);
+                        setSelectedKeys(next);
+                      }}
+                      className="size-4"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-moon-800">{ra.email}</p>
+                      <p className="text-xs text-moon-500">
+                        {ra.provider} - {ra.plan_type || "unknown"}
+                        {ra.expired_at && ` | Expires: ${new Date(ra.expired_at).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                    {ra.already_imported && (
+                      <span className="rounded-md bg-moon-100 px-2 py-0.5 text-[10px] font-medium text-moon-500">Imported</span>
+                    )}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSync(false)}>Cancel</Button>
+            <Button
+              disabled={selectedKeys.size === 0 || syncLoading}
+              onClick={handleBatchImport}
+            >
+              {syncLoading ? <Loader2 className="size-4 animate-spin" /> : `Import (${selectedKeys.size})`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
+
+  function openSyncDialog() {
+    setRemoteAccounts([]);
+    setSelectedKeys(new Set());
+    setSyncLoading(true);
+    setShowSync(true);
+
+    api.get<RemoteAccount[]>("/cpa/service/remote-accounts")
+      .then((accs) => setRemoteAccounts(accs ?? []))
+      .catch((err) => toast(err instanceof Error ? err.message : "Failed to scan accounts", "error"))
+      .finally(() => setSyncLoading(false));
+  }
+
+  async function handleBatchImport() {
+    if (!service || selectedKeys.size === 0) return;
+    setSyncLoading(true);
+    try {
+      const result = await api.post<{ imported: number; skipped: number; errors: string[] }>("/accounts/cpa/import/batch", {
+        service_id: service.id,
+        account_keys: [...selectedKeys],
+      });
+      toast(`Imported ${result.imported}, skipped ${result.skipped}${result.errors?.length ? `, ${result.errors.length} errors` : ""}`);
+      setShowSync(false);
+      load();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Import failed", "error");
+    } finally {
+      setSyncLoading(false);
+    }
+  }
 }

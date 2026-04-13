@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-var accountColumns = `id, label, base_url, api_key, enabled, status, quota_total, quota_used, quota_unit, notes, model_allowlist, last_checked_at, last_error, created_at, updated_at, source_kind, provider, cpa_service_id, cpa_provider, cpa_account_key`
+var accountColumns = `id, label, base_url, api_key, enabled, status, quota_total, quota_used, quota_unit, notes, model_allowlist, last_checked_at, last_error, created_at, updated_at, source_kind, provider, cpa_service_id, cpa_provider, cpa_account_key, cpa_email, cpa_plan_type, cpa_openai_id, cpa_expired_at, cpa_last_refresh_at, cpa_disabled`
 
 func (s *Store) ListAccounts() ([]Account, error) {
 	rows, err := s.db.Query(`SELECT ` + accountColumns + ` FROM accounts ORDER BY id`)
@@ -35,9 +35,10 @@ func (s *Store) CreateAccount(a *Account) (int64, error) {
 		a.SourceKind = "openai_compat"
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO accounts (label, base_url, api_key, enabled, status, quota_total, quota_used, quota_unit, notes, model_allowlist, source_kind, provider, cpa_service_id, cpa_provider, cpa_account_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO accounts (label, base_url, api_key, enabled, status, quota_total, quota_used, quota_unit, notes, model_allowlist, source_kind, provider, cpa_service_id, cpa_provider, cpa_account_key, cpa_email, cpa_plan_type, cpa_openai_id, cpa_expired_at, cpa_last_refresh_at, cpa_disabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Label, a.BaseURL, a.APIKey, a.Enabled, "healthy", a.QuotaTotal, a.QuotaUsed, a.QuotaUnit, a.Notes, string(allowlist),
 		a.SourceKind, a.Provider, a.CpaServiceID, a.CpaProvider, a.CpaAccountKey,
+		a.CpaEmail, a.CpaPlanType, a.CpaOpenaiID, a.CpaExpiredAt, a.CpaLastRefreshAt, a.CpaDisabled,
 	)
 	if err != nil {
 		return 0, err
@@ -143,16 +144,19 @@ type rowScanner interface {
 
 func scanAccountRow(row rowScanner) (*Account, error) {
 	var a Account
-	var enabled int
+	var enabled, cpaDisabled int
 	var allowlistJSON string
 	var createdAt, updatedAt string
 	var cpaServiceID sql.NullInt64
+	var cpaExpiredAt, cpaLastRefreshAt sql.NullString
 	err := row.Scan(&a.ID, &a.Label, &a.BaseURL, &a.APIKey, &enabled, &a.Status, &a.QuotaTotal, &a.QuotaUsed, &a.QuotaUnit, &a.Notes, &allowlistJSON, &a.LastCheckedAt, &a.LastError, &createdAt, &updatedAt,
-		&a.SourceKind, &a.Provider, &cpaServiceID, &a.CpaProvider, &a.CpaAccountKey)
+		&a.SourceKind, &a.Provider, &cpaServiceID, &a.CpaProvider, &a.CpaAccountKey,
+		&a.CpaEmail, &a.CpaPlanType, &a.CpaOpenaiID, &cpaExpiredAt, &cpaLastRefreshAt, &cpaDisabled)
 	if err != nil {
 		return nil, err
 	}
 	a.Enabled = enabled != 0
+	a.CpaDisabled = cpaDisabled != 0
 	_ = json.Unmarshal([]byte(allowlistJSON), &a.ModelAllowlist)
 	if a.ModelAllowlist == nil {
 		a.ModelAllowlist = []string{}
@@ -163,6 +167,12 @@ func scanAccountRow(row rowScanner) (*Account, error) {
 		id := cpaServiceID.Int64
 		a.CpaServiceID = &id
 	}
+	if cpaExpiredAt.Valid {
+		a.CpaExpiredAt = &cpaExpiredAt.String
+	}
+	if cpaLastRefreshAt.Valid {
+		a.CpaLastRefreshAt = &cpaLastRefreshAt.String
+	}
 	if a.SourceKind == "" {
 		a.SourceKind = "openai_compat"
 	}
@@ -171,4 +181,30 @@ func scanAccountRow(row rowScanner) (*Account, error) {
 
 func scanAccount(row *sql.Row) (*Account, error) {
 	return scanAccountRow(row)
+}
+
+func (s *Store) UpdateAccountCpaMetadata(id int64, expiredAt, lastRefreshAt *string, disabled bool) error {
+	_, err := s.db.Exec(
+		`UPDATE accounts SET cpa_expired_at=?, cpa_last_refresh_at=?, cpa_disabled=?, updated_at=datetime('now') WHERE id=?`,
+		expiredAt, lastRefreshAt, disabled, id,
+	)
+	return err
+}
+
+func (s *Store) ListCpaAccountsWithKey() ([]Account, error) {
+	rows, err := s.db.Query(`SELECT `+accountColumns+` FROM accounts WHERE source_kind = 'cpa' AND cpa_account_key != '' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAccounts(rows)
+}
+
+func (s *Store) FindAccountByCpaKey(serviceID int64, accountKey string) (*Account, error) {
+	row := s.db.QueryRow(`SELECT `+accountColumns+` FROM accounts WHERE cpa_service_id = ? AND cpa_account_key = ?`, serviceID, accountKey)
+	a, err := scanAccountRow(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
 }

@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import StatusBadge from "@/components/StatusBadge";
 import DataTable, { type Column } from "@/components/DataTable";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -6,7 +6,7 @@ import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
-import type { Account, CpaService } from "@/lib/types";
+import type { Account, CpaService, LoginSession, RemoteAccount } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, MoreHorizontal, Globe, Server } from "lucide-react";
+import { Plus, MoreHorizontal, Globe, Server, KeyRound, Download, Copy, ExternalLink, Loader2, AlertTriangle, Clock } from "lucide-react";
 
 
 const CPA_PROVIDERS = [
@@ -86,6 +86,33 @@ const emptyCpaForm: CpaForm = {
   notes: "",
 };
 
+function expiryStatus(isoDate: string | null): "ok" | "soon" | "today" | "expired" | null {
+  if (!isoDate) return null;
+  const now = Date.now();
+  const exp = new Date(isoDate).getTime();
+  if (Number.isNaN(exp)) return null;
+  const diff = exp - now;
+  if (diff <= 0) return "expired";
+  if (diff <= 24 * 60 * 60 * 1000) return "today";
+  if (diff <= 7 * 24 * 60 * 60 * 1000) return "soon";
+  return "ok";
+}
+
+function ExpiryBadge({ date }: { date: string | null }) {
+  const status = expiryStatus(date);
+  if (!status || status === "ok") return null;
+  const label = status === "expired" ? "Expired" : status === "today" ? "Expiring today" : "Expiring soon";
+  const cls = status === "expired" || status === "today"
+    ? "bg-red-100 text-red-700"
+    : "bg-yellow-100 text-yellow-700";
+  return (
+    <span className={`ml-2 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
+      <AlertTriangle className="size-3" />
+      {label}
+    </span>
+  );
+}
+
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [cpaService, setCpaService] = useState<CpaService | null>(null);
@@ -101,6 +128,19 @@ export default function AccountsPage() {
   const [openaiForm, setOpenaiForm] = useState<OpenAIForm>(emptyOpenAIForm);
   const [cpaForm, setCpaForm] = useState<CpaForm>(emptyCpaForm);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
+
+  // device code login
+  const [showDeviceCode, setShowDeviceCode] = useState(false);
+  const [loginSession, setLoginSession] = useState<LoginSession | null>(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // import
+  const [showImport, setShowImport] = useState(false);
+  const [remoteAccounts, setRemoteAccounts] = useState<RemoteAccount[]>([]);
+  const [importLoading, setImportLoading] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [importLabel, setImportLabel] = useState("");
 
   function load() {
     setLoading(true);
@@ -285,7 +325,12 @@ export default function AccountsPage() {
       key: "status",
       header: "Status",
       render: (r) => (
-        <StatusBadge status={r.enabled ? r.status : "disabled"} />
+        <span className="inline-flex items-center">
+          <StatusBadge status={r.enabled ? r.status : "disabled"} />
+          {r.source_kind === "cpa" && r.cpa_expired_at && (
+            <ExpiryBadge date={r.cpa_expired_at} />
+          )}
+        </span>
       ),
       tone: "status",
     },
@@ -378,7 +423,7 @@ export default function AccountsPage() {
 
       {/* Source picker dialog */}
       <Dialog open={showSourcePicker} onOpenChange={setShowSourcePicker}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Choose Source</DialogTitle>
           </DialogHeader>
@@ -406,6 +451,32 @@ export default function AccountsPage() {
                 <p className="font-medium text-moon-800">CPA Provider Channel</p>
                 <p className="mt-1 text-xs text-moon-500">
                   Route through a CPA service provider.
+                </p>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setShowSourcePicker(false); startDeviceCodeLogin(); }}
+              className="flex flex-col items-center gap-3 rounded-xl border border-moon-200 p-5 text-center transition hover:border-lunar-400 hover:bg-lunar-50/30"
+            >
+              <KeyRound className="size-8 text-moon-400" />
+              <div>
+                <p className="font-medium text-moon-800">Login with Device Code</p>
+                <p className="mt-1 text-xs text-moon-500">
+                  Authenticate via OpenAI OAuth device flow.
+                </p>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setShowSourcePicker(false); openImportDialog(); }}
+              className="flex flex-col items-center gap-3 rounded-xl border border-moon-200 p-5 text-center transition hover:border-lunar-400 hover:bg-lunar-50/30"
+            >
+              <Download className="size-8 text-moon-400" />
+              <div>
+                <p className="font-medium text-moon-800">Import from CPA</p>
+                <p className="mt-1 text-xs text-moon-500">
+                  Import existing accounts from cpa-auth directory.
                 </p>
               </div>
             </button>
@@ -659,6 +730,271 @@ export default function AccountsPage() {
         description={`Are you sure you want to delete "${deleteTarget?.label ?? ""}"? This action cannot be undone.`}
         onConfirm={confirmDelete}
       />
+
+      {/* Device Code Login Dialog */}
+      <Dialog open={showDeviceCode} onOpenChange={(open) => {
+        if (!open) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+        setShowDeviceCode(open);
+      }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Device Code Login</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {loginLoading && !loginSession && (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="size-6 animate-spin text-moon-400" />
+              </div>
+            )}
+            {loginSession?.status === "pending" && (
+              <>
+                <div className="space-y-2">
+                  <p className="text-sm text-moon-600">Open this URL:</p>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 rounded-md bg-moon-50 px-3 py-2 text-sm">{loginSession.verification_uri}</code>
+                    <Button size="icon" variant="outline" onClick={() => window.open(loginSession.verification_uri, "_blank")}>
+                      <ExternalLink className="size-4" />
+                    </Button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-sm text-moon-600">Enter this code:</p>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 rounded-lg bg-moon-50 px-4 py-3 text-center text-lg font-mono font-bold tracking-widest">{loginSession.user_code}</code>
+                    <Button size="icon" variant="outline" onClick={() => {
+                      navigator.clipboard.writeText(loginSession.user_code ?? "");
+                      toast("Code copied");
+                    }}>
+                      <Copy className="size-4" />
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-sm text-moon-500">
+                  <Loader2 className="size-4 animate-spin" />
+                  <span>Waiting for authorization...</span>
+                  {loginSession.expires_at && (
+                    <span className="ml-auto">
+                      <CountdownTimer expiresAt={loginSession.expires_at} />
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+            {loginSession?.status === "authorized" && (
+              <div className="flex items-center gap-2 py-4 text-sm text-moon-600">
+                <Loader2 className="size-4 animate-spin" />
+                Authorized, finalizing account...
+              </div>
+            )}
+            {loginSession?.status === "succeeded" && (
+              <div className="space-y-3">
+                <div className="rounded-lg bg-green-50 p-4 text-sm text-green-800">
+                  Account created successfully!
+                </div>
+                {loginSession.account && (
+                  <div className="space-y-1 text-sm text-moon-600">
+                    <p><span className="font-medium">Label:</span> {loginSession.account.label}</p>
+                    <p><span className="font-medium">Email:</span> {loginSession.account.cpa_email}</p>
+                    <p><span className="font-medium">Plan:</span> {loginSession.account.cpa_plan_type}</p>
+                  </div>
+                )}
+              </div>
+            )}
+            {(loginSession?.status === "failed" || loginSession?.status === "expired") && (
+              <div className="space-y-3">
+                <div className="rounded-lg bg-red-50 p-4 text-sm text-red-800">
+                  {loginSession.error_message || "Login failed"}
+                </div>
+                <Button variant="outline" onClick={startDeviceCodeLogin}>Retry</Button>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            {loginSession?.status === "succeeded" ? (
+              <Button onClick={() => { setShowDeviceCode(false); load(); }}>Done</Button>
+            ) : (
+              <Button variant="outline" onClick={() => {
+                if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
+                  api.post(`/accounts/cpa/login-sessions/${loginSession.id}/cancel`).catch(() => {});
+                }
+                if (pollRef.current) clearInterval(pollRef.current);
+                pollRef.current = null;
+                setShowDeviceCode(false);
+              }}>Cancel</Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Import Dialog */}
+      <Dialog open={showImport} onOpenChange={setShowImport}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Import CPA Accounts</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {importLoading && remoteAccounts.length === 0 ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="size-6 animate-spin text-moon-400" />
+              </div>
+            ) : remoteAccounts.length === 0 ? (
+              <p className="py-4 text-center text-sm text-moon-500">No accounts found in cpa-auth directory.</p>
+            ) : (
+              <div className="max-h-64 space-y-2 overflow-y-auto">
+                {remoteAccounts.map((ra) => (
+                  <label
+                    key={ra.account_key}
+                    className={`flex items-center gap-3 rounded-lg border p-3 transition ${ra.already_imported ? "cursor-not-allowed border-moon-100 bg-moon-50 opacity-60" : "cursor-pointer border-moon-200 hover:border-lunar-400"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={ra.already_imported}
+                      checked={selectedKeys.has(ra.account_key)}
+                      onChange={(e) => {
+                        const next = new Set(selectedKeys);
+                        if (e.target.checked) next.add(ra.account_key);
+                        else next.delete(ra.account_key);
+                        setSelectedKeys(next);
+                      }}
+                      className="size-4"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-moon-800">{ra.email}</p>
+                      <p className="text-xs text-moon-500">
+                        {ra.provider} - {ra.plan_type || "unknown"}
+                        {ra.expired_at && ` | Expires: ${new Date(ra.expired_at).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                    {ra.already_imported && (
+                      <span className="rounded-md bg-moon-100 px-2 py-0.5 text-[10px] font-medium text-moon-500">
+                        Already imported
+                      </span>
+                    )}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowImport(false)}>Cancel</Button>
+            <Button
+              disabled={selectedKeys.size === 0 || importLoading}
+              onClick={handleImport}
+            >
+              {importLoading ? <Loader2 className="size-4 animate-spin" /> : `Import (${selectedKeys.size})`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
+
+  // --- Device Code Login ---
+  function startDeviceCodeLogin() {
+    if (!cpaService) {
+      toast("Please configure a CPA Service first", "error");
+      return;
+    }
+    setLoginSession(null);
+    setLoginLoading(true);
+    setShowDeviceCode(true);
+
+    api.post<LoginSession>("/accounts/cpa/login-sessions", { service_id: cpaService.id })
+      .then((session) => {
+        setLoginSession(session);
+        setLoginLoading(false);
+        // start polling
+        if (pollRef.current) clearInterval(pollRef.current);
+        const interval = (session.poll_interval_seconds ?? 5) * 1000;
+        pollRef.current = setInterval(() => {
+          api.get<LoginSession>(`/accounts/cpa/login-sessions/${session.id}`)
+            .then((updated) => {
+              setLoginSession(updated);
+              if (updated.status !== "pending" && updated.status !== "authorized") {
+                if (pollRef.current) clearInterval(pollRef.current);
+                pollRef.current = null;
+              }
+            })
+            .catch(() => {
+              setLoginSession((prev) =>
+                prev ? { ...prev, status: "failed", error_message: "Session lost. Please start again." } : null
+              );
+              if (pollRef.current) clearInterval(pollRef.current);
+              pollRef.current = null;
+            });
+        }, interval);
+      })
+      .catch((err) => {
+        setLoginLoading(false);
+        toast(err instanceof Error ? err.message : "Failed to start login", "error");
+        setShowDeviceCode(false);
+      });
+  }
+
+  // --- Import ---
+  function openImportDialog() {
+    if (!cpaService) {
+      toast("Please configure a CPA Service first", "error");
+      return;
+    }
+    setRemoteAccounts([]);
+    setSelectedKeys(new Set());
+    setImportLabel("");
+    setImportLoading(true);
+    setShowImport(true);
+
+    api.get<RemoteAccount[]>("/cpa/service/remote-accounts")
+      .then((accs) => setRemoteAccounts(accs ?? []))
+      .catch((err) => toast(err instanceof Error ? err.message : "Failed to scan accounts", "error"))
+      .finally(() => setImportLoading(false));
+  }
+
+  async function handleImport() {
+    if (!cpaService || selectedKeys.size === 0) return;
+    setImportLoading(true);
+    try {
+      if (selectedKeys.size === 1) {
+        const key = [...selectedKeys][0];
+        await api.post("/accounts/cpa/import", {
+          service_id: cpaService.id,
+          account_key: key,
+          label: importLabel,
+          enabled: true,
+        });
+        toast("Account imported");
+      } else {
+        const result = await api.post<{ imported: number; skipped: number; errors: string[] }>("/accounts/cpa/import/batch", {
+          service_id: cpaService.id,
+          account_keys: [...selectedKeys],
+        });
+        toast(`Imported ${result.imported}, skipped ${result.skipped}${result.errors?.length ? `, ${result.errors.length} errors` : ""}`);
+      }
+      setShowImport(false);
+      load();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Import failed", "error");
+    } finally {
+      setImportLoading(false);
+    }
+  }
+}
+
+function CountdownTimer({ expiresAt }: { expiresAt: string }) {
+  const [remaining, setRemaining] = useState("");
+  useEffect(() => {
+    function update() {
+      const diff = new Date(expiresAt).getTime() - Date.now();
+      if (diff <= 0) { setRemaining("Expired"); return; }
+      const min = Math.floor(diff / 60000);
+      const sec = Math.floor((diff % 60000) / 1000);
+      setRemaining(`${min}:${sec.toString().padStart(2, "0")}`);
+    }
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [expiresAt]);
+  return <span className="inline-flex items-center gap-1 font-mono text-xs"><Clock className="size-3" />{remaining}</span>;
 }

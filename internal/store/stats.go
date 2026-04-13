@@ -30,13 +30,14 @@ type OverviewPeriod struct {
 }
 
 type OverviewCpaStatus struct {
-	Connected      bool    `json:"connected"`
-	Label          string  `json:"label"`
-	Status         string  `json:"status"`
-	AccountsTotal  int     `json:"accounts_total"`
-	AccountsHealthy int    `json:"accounts_healthy"`
-	AccountsError  int     `json:"accounts_error"`
-	LastCheckedAt  *string `json:"last_checked_at"`
+	Connected        bool    `json:"connected"`
+	Label            string  `json:"label"`
+	Status           string  `json:"status"`
+	AccountsTotal    int     `json:"accounts_total"`
+	AccountsHealthy  int     `json:"accounts_healthy"`
+	AccountsError    int     `json:"accounts_error"`
+	AccountsExpiring int     `json:"accounts_expiring"`
+	LastCheckedAt    *string `json:"last_checked_at"`
 }
 
 func (s *Store) GetOverview() (*Overview, error) {
@@ -106,6 +107,11 @@ func (s *Store) GetOverview() (*Overview, error) {
 			}
 			rows.Close()
 		}
+		// count expiring accounts (expired_at within 7 days)
+		var expiring int
+		s.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE source_kind = 'cpa' AND cpa_expired_at IS NOT NULL AND cpa_expired_at != '' AND cpa_expired_at <= datetime('now', '+7 days')`).Scan(&expiring)
+		cpaStatus.AccountsExpiring = expiring
+
 		o.CpaStatus = cpaStatus
 	}
 

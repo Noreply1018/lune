@@ -28,6 +28,14 @@ type Account struct {
 	CpaProvider   string `json:"cpa_provider,omitempty"`
 	CpaAccountKey string `json:"cpa_account_key,omitempty"`
 
+	// v3: CPA management adapter metadata
+	CpaEmail         string  `json:"cpa_email,omitempty"`
+	CpaPlanType      string  `json:"cpa_plan_type,omitempty"`
+	CpaOpenaiID      string  `json:"cpa_openai_id,omitempty"`
+	CpaExpiredAt     *string `json:"cpa_expired_at,omitempty"`
+	CpaLastRefreshAt *string `json:"cpa_last_refresh_at,omitempty"`
+	CpaDisabled      bool    `json:"cpa_disabled,omitempty"`
+
 	// computed at response time, not stored in DB
 	Runtime *AccountRuntime `json:"runtime,omitempty"`
 }

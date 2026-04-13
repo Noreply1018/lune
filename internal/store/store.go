@@ -151,6 +151,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_cpa_unique
 
 ALTER TABLE request_logs ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'openai_compat';
 `,
+	// v3: CPA Management Adapter
+	`
+ALTER TABLE accounts ADD COLUMN cpa_email           TEXT NOT NULL DEFAULT '';
+ALTER TABLE accounts ADD COLUMN cpa_plan_type       TEXT NOT NULL DEFAULT '';
+ALTER TABLE accounts ADD COLUMN cpa_openai_id       TEXT NOT NULL DEFAULT '';
+ALTER TABLE accounts ADD COLUMN cpa_expired_at      TEXT;
+ALTER TABLE accounts ADD COLUMN cpa_last_refresh_at TEXT;
+ALTER TABLE accounts ADD COLUMN cpa_disabled        INTEGER NOT NULL DEFAULT 0;
+
+DROP INDEX IF EXISTS idx_accounts_cpa_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_cpa_key_unique
+    ON accounts(cpa_service_id, cpa_account_key)
+    WHERE source_kind = 'cpa' AND cpa_account_key != '';
+`,
 }
 
 func (s *Store) migrate() error {

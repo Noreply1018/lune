@@ -23,8 +23,9 @@ import (
 )
 
 type Config struct {
-	Port    int    `yaml:"port"`
-	DataDir string `yaml:"data_dir"`
+	Port       int    `yaml:"port"`
+	DataDir    string `yaml:"data_dir"`
+	CpaAuthDir string `yaml:"cpa_auth_dir"`
 }
 
 func LoadConfig() Config {
@@ -46,6 +47,9 @@ func LoadConfig() Config {
 	}
 	if v := os.Getenv("LUNE_DATA_DIR"); v != "" {
 		cfg.DataDir = v
+	}
+	if v := os.Getenv("LUNE_CPA_AUTH_DIR"); v != "" {
+		cfg.CpaAuthDir = v
 	}
 
 	return cfg
@@ -85,7 +89,7 @@ func (a *App) Run() error {
 	// resolve admin token
 	adminToken, tokenSource := a.resolveAdminToken()
 
-	srv := httpserver.New(a.logger, a.store, a.cache)
+	srv := httpserver.New(a.logger, a.store, a.cache, a.cfg.CpaAuthDir)
 
 	addr := fmt.Sprintf(":%d", a.cfg.Port)
 	ln, err := net.Listen("tcp", addr)
@@ -107,7 +111,7 @@ func (a *App) Run() error {
 	defer stop()
 
 	// start health checker
-	hc := health.NewChecker(a.store, a.cache, a.logger)
+	hc := health.NewChecker(a.store, a.cache, a.logger, a.cfg.CpaAuthDir)
 	go hc.Run(ctx)
 
 	errCh := make(chan error, 1)

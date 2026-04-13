@@ -9,8 +9,11 @@ services:
       LUNE_PORT: "7788"
       LUNE_DATA_DIR: "/app/data"
       LUNE_ADMIN_TOKEN: "${LUNE_ADMIN_TOKEN:-}"
+      LUNE_CPA_AUTH_DIR: "/app/cpa-auth"
     volumes:
       - lune-data:/app/data
+      - cpa-auth:/app/cpa-auth
 
 volumes:
   lune-data:
+  cpa-auth:

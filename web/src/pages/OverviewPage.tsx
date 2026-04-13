@@ -243,6 +243,8 @@ export default function OverviewPage() {
                   {o.cpa_status.accounts_healthy} healthy
                   {o.cpa_status.accounts_error > 0 &&
                     `, ${o.cpa_status.accounts_error} error`}
+                  {o.cpa_status.accounts_expiring > 0 &&
+                    `, ${o.cpa_status.accounts_expiring} expiring`}
                 </p>
               </div>
             </div>

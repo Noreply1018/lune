@@ -20,6 +20,12 @@ export interface Account {
   cpa_service_id: number | null;
   cpa_provider: string;
   cpa_account_key: string;
+  cpa_email: string;
+  cpa_plan_type: string;
+  cpa_openai_id: string;
+  cpa_expired_at: string | null;
+  cpa_last_refresh_at: string | null;
+  cpa_disabled: boolean;
   runtime: {
     base_url: string;
     auth_mode: string;
@@ -122,6 +128,7 @@ export interface Overview {
     accounts_total: number;
     accounts_healthy: number;
     accounts_error: number;
+    accounts_expiring: number;
     last_checked_at: string | null;
   } | null;
   accounts_by_source: {
@@ -182,4 +189,40 @@ export interface CpaServiceTestResult {
   latency_ms: number;
   providers: string[];
   error: string;
+}
+
+export interface LoginSession {
+  id: string;
+  status:
+    | "pending"
+    | "authorized"
+    | "succeeded"
+    | "expired"
+    | "failed"
+    | "cancelled";
+  verification_uri?: string;
+  user_code?: string;
+  expires_at?: string;
+  poll_interval_seconds?: number;
+  account_id?: number;
+  account?: Account;
+  error_code?: string;
+  error_message?: string;
+}
+
+export interface RemoteAccount {
+  account_key: string;
+  email: string;
+  plan_type: string;
+  provider: string;
+  account_id: string;
+  expired_at: string | null;
+  disabled: boolean;
+  already_imported: boolean;
+}
+
+export interface BatchImportResult {
+  imported: number;
+  skipped: number;
+  errors: string[];
 }
