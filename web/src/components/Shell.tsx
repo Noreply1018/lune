@@ -20,6 +20,7 @@ import {
   Key,
   BarChart3,
   Server,
+  MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePathname, useRouter } from "@/lib/router";
@@ -31,6 +32,7 @@ const navGroups = [
     items: [
       { label: "Overview", href: "/admin", icon: LayoutDashboard },
       { label: "Usage", href: "/admin/usage", icon: BarChart3 },
+      { label: "Playground", href: "/admin/playground", icon: MessageSquare },
     ],
   },
   {

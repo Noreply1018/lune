@@ -49,6 +49,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("POST /admin/api/accounts/{id}/enable", h.enableAccount)
 	handle("POST /admin/api/accounts/{id}/disable", h.disableAccount)
 	handle("DELETE /admin/api/accounts/{id}", h.deleteAccount)
+	handle("POST /admin/api/accounts/test-connection", h.testConnection)
 
 	// Pools
 	handle("GET /admin/api/pools", h.listPools)
@@ -80,6 +81,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("GET /admin/api/overview", h.getOverview)
 	handle("GET /admin/api/usage", h.getUsage)
 	handle("GET /admin/api/export", h.getExport)
+	handle("GET /admin/api/usage/latency", h.getLatencyStats)
 
 	// CPA Service
 	handle("GET /admin/api/cpa/service", h.getCpaService)
@@ -599,6 +601,25 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) getLatencyStats(w http.ResponseWriter, r *http.Request) {
+	model := r.URL.Query().Get("model")
+	period := r.URL.Query().Get("period")
+	bucket := r.URL.Query().Get("bucket")
+	if period == "" {
+		period = "24h"
+	}
+	if bucket == "" {
+		bucket = "1h"
+	}
+
+	stats, err := h.store.GetLatencyStats(model, period, bucket)
+	if err != nil {
+		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		return
+	}
+	webutil.WriteData(w, 200, stats)
+}
+
 // --- CPA Service ---
 
 func (h *Handler) getCpaService(w http.ResponseWriter, r *http.Request) {
@@ -717,6 +738,67 @@ func (h *Handler) deleteCpaService(w http.ResponseWriter, r *http.Request) {
 	}
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) testConnection(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	if req.BaseURL == "" {
+		webutil.WriteAdminError(w, 400, "bad_request", "base_url is required")
+		return
+	}
+
+	baseURL := strings.TrimRight(req.BaseURL, "/")
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	result := struct {
+		Reachable bool     `json:"reachable"`
+		LatencyMs int64    `json:"latency_ms"`
+		Models    []string `json:"models"`
+		Error     string   `json:"error"`
+	}{}
+
+	start := time.Now()
+	modelsReq, _ := http.NewRequest("GET", baseURL+"/models", nil)
+	if req.APIKey != "" {
+		modelsReq.Header.Set("Authorization", "Bearer "+req.APIKey)
+	}
+	modelsResp, err := client.Do(modelsReq)
+	result.LatencyMs = time.Since(start).Milliseconds()
+
+	if err != nil {
+		result.Error = err.Error()
+		webutil.WriteData(w, 200, result)
+		return
+	}
+	defer modelsResp.Body.Close()
+
+	if modelsResp.StatusCode != 200 {
+		result.Error = fmt.Sprintf("HTTP %d", modelsResp.StatusCode)
+		webutil.WriteData(w, 200, result)
+		return
+	}
+
+	result.Reachable = true
+
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(modelsResp.Body).Decode(&body); err == nil {
+		for _, m := range body.Data {
+			result.Models = append(result.Models, m.ID)
+		}
+	}
+
+	webutil.WriteData(w, 200, result)
 }
 
 func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {

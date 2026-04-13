@@ -7,7 +7,7 @@ import SectionHeading from "@/components/SectionHeading";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
 import { compact, latency, shortDate } from "@/lib/fmt";
-import type { UsageStats, RequestLog, Account, AccessToken } from "@/lib/types";
+import type { UsageStats, RequestLog, Account, AccessToken, LatencyBucket } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,7 +17,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Activity, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
+import { Activity, ArrowDownToLine, ArrowUpFromLine, DollarSign } from "lucide-react";
+import { estimateCost, formatCost } from "@/lib/pricing";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 const TIME_RANGES = [
   { value: "1h", label: "Last 1h" },
@@ -92,6 +94,20 @@ const logColumns: Column<RequestLog>[] = [
     align: "right",
     tone: "numeric",
   },
+  {
+    key: "cost",
+    header: "Est. Cost",
+    render: (r) => {
+      const cost = r.input_tokens != null
+        ? estimateCost(r.target_model || r.model_alias, r.input_tokens, r.output_tokens ?? 0)
+        : null;
+      return cost !== null
+        ? <span className="text-moon-500">{formatCost(cost)}</span>
+        : <span className="text-moon-400">-</span>;
+    },
+    align: "right",
+    tone: "numeric",
+  },
 ];
 
 export default function UsagePage() {
@@ -106,6 +122,10 @@ export default function UsagePage() {
   const [filterModel, setFilterModel] = useState("all");
   const [filterSource, setFilterSource] = useState("all");
   const [page, setPage] = useState(1);
+  const [viewTab, setViewTab] = useState<"requests" | "latency">("requests");
+  const [latencyData, setLatencyData] = useState<LatencyBucket[]>([]);
+  const [latencyBucket, setLatencyBucket] = useState("1h");
+  const [latencyLoading, setLatencyLoading] = useState(false);
 
   function buildQuery() {
     const params = new URLSearchParams();
@@ -141,6 +161,18 @@ export default function UsagePage() {
     setLoading(true);
     loadStats();
   }, [range, filterToken, filterAccount, filterModel, filterSource, page]);
+
+  useEffect(() => {
+    if (viewTab !== "latency") return;
+    setLatencyLoading(true);
+    const params = new URLSearchParams({ period: range, bucket: latencyBucket });
+    if (filterModel !== "all") params.set("model", filterModel);
+    api
+      .get<LatencyBucket[]>(`/usage/latency?${params}`)
+      .then((d) => setLatencyData(d ?? []))
+      .catch(() => toast("Failed to load latency data", "error"))
+      .finally(() => setLatencyLoading(false));
+  }, [viewTab, range, filterModel, latencyBucket]);
 
   const models = Array.from(
     new Set(stats?.logs?.items?.map((l) => l.model_alias).filter(Boolean) ?? []),
@@ -226,8 +258,11 @@ export default function UsagePage() {
     },
   ];
 
-  const totalTokens =
-    (stats?.total_input_tokens ?? 0) + (stats?.total_output_tokens ?? 0);
+  const totalCost = (stats?.logs?.items ?? []).reduce((sum, r) => {
+    if (r.input_tokens == null) return sum;
+    const c = estimateCost(r.target_model || r.model_alias, r.input_tokens, r.output_tokens ?? 0);
+    return sum + (c ?? 0);
+  }, 0);
   const activeFilters = [
     range !== "24h",
     filterToken !== "all",
@@ -376,10 +411,10 @@ export default function UsagePage() {
               icon={ArrowUpFromLine}
             />
             <StatCard
-              label="Total Throughput"
-              value={compact(totalTokens)}
-              sub={`Page ${page} of ${totalPages}`}
-              icon={Activity}
+              label="Est. Cost"
+              value={totalCost > 0 ? formatCost(totalCost) : "-"}
+              sub="Estimated cost for this page."
+              icon={DollarSign}
             />
           </section>
 
@@ -415,51 +450,126 @@ export default function UsagePage() {
             </div>
           </section>
 
-          <section className="space-y-4">
-            <SectionHeading
-              title="Request Log"
-              description="Detailed request samples with latency, token flow, and upstream account outcomes."
-              action={
-                totalPages > 1 ? (
+          {/* Tab switcher */}
+          <div className="flex gap-1">
+            {(["requests", "latency"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setViewTab(tab)}
+                className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                  viewTab === tab
+                    ? "bg-moon-800 text-moon-100"
+                    : "bg-moon-100 text-moon-500 hover:bg-moon-200"
+                }`}
+              >
+                {tab === "requests" ? "Requests" : "Latency"}
+              </button>
+            ))}
+          </div>
+
+          {viewTab === "requests" ? (
+            <section className="space-y-4">
+              <SectionHeading
+                title="Request Log"
+                description="Detailed request samples with latency, token flow, and upstream account outcomes."
+                action={
+                  totalPages > 1 ? (
+                    <span className="text-sm text-moon-500">
+                      Page {page} of {totalPages}
+                    </span>
+                  ) : null
+                }
+              />
+              <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
+                  <DataTable
+                    columns={logColumns}
+                    rows={stats?.logs?.items ?? []}
+                    rowKey={(r) => r.id}
+                    empty="No requests logged"
+                  />
+              </div>
+
+              {totalPages > 1 && (
+                <div className="flex items-center justify-center gap-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => p - 1)}
+                  >
+                    Prev
+                  </Button>
                   <span className="text-sm text-moon-500">
                     Page {page} of {totalPages}
                   </span>
-                ) : null
-              }
-            />
-            <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
-                <DataTable
-                  columns={logColumns}
-                  rows={stats?.logs?.items ?? []}
-                  rowKey={(r) => r.id}
-                  empty="No requests logged"
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage((p) => p + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              )}
+            </section>
+          ) : (
+            <section className="space-y-4">
+              <div className="flex items-center justify-between">
+                <SectionHeading
+                  title="Latency Distribution"
+                  description="p50 / p95 / p99 latency over time."
                 />
-            </div>
-
-            {totalPages > 1 && (
-              <div className="flex items-center justify-center gap-4">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => p - 1)}
-                >
-                  Prev
-                </Button>
-                <span className="text-sm text-moon-500">
-                  Page {page} of {totalPages}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page >= totalPages}
-                  onClick={() => setPage((p) => p + 1)}
-                >
-                  Next
-                </Button>
+                <Select value={latencyBucket} onValueChange={(v) => v && setLatencyBucket(v)}>
+                  <SelectTrigger className="h-9 w-24 rounded-lg border-moon-200 bg-white/90 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="5m">5m</SelectItem>
+                    <SelectItem value="1h">1h</SelectItem>
+                    <SelectItem value="1d">1d</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-            )}
-          </section>
+              <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85 p-5">
+                {latencyLoading ? (
+                  <Skeleton className="h-[300px] rounded-xl" />
+                ) : latencyData.length === 0 ? (
+                  <div className="flex h-[300px] items-center justify-center text-sm text-moon-400">
+                    No latency data for this range
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={latencyData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis
+                        dataKey="bucket"
+                        tick={{ fontSize: 11, fill: "#9ca3af" }}
+                        tickFormatter={(v: string) => {
+                          if (v.length > 13) return v.slice(11, 16);
+                          if (v.length > 10) return v.slice(11);
+                          return v.slice(5);
+                        }}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 11, fill: "#9ca3af" }}
+                        label={{ value: "ms", angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "#9ca3af" } }}
+                      />
+                      <Tooltip
+                        contentStyle={{ borderRadius: "0.75rem", fontSize: "12px" }}
+                        formatter={(value) => [`${value}ms`]}
+                      />
+                      <Legend wrapperStyle={{ fontSize: "12px" }} />
+                      <Line type="monotone" dataKey="p50" stroke="#7c86b8" strokeWidth={2} dot={false} name="p50" />
+                      <Line type="monotone" dataKey="p95" stroke="#e0a030" strokeWidth={2} dot={false} name="p95" />
+                      <Line type="monotone" dataKey="p99" stroke="#e05050" strokeWidth={2} dot={false} name="p99" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </section>
+          )}
         </>
       )}
     </div>

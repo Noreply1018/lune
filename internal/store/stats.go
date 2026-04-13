@@ -182,3 +182,102 @@ func (s *Store) GetUsage(f UsageFilter) ([]RequestLog, int, error) {
 	}
 	return logs, total, rows.Err()
 }
+
+// LatencyBucket holds percentile latencies for a single time bucket.
+type LatencyBucket struct {
+	Bucket string  `json:"bucket"`
+	P50    float64 `json:"p50"`
+	P95    float64 `json:"p95"`
+	P99    float64 `json:"p99"`
+	Count  int     `json:"count"`
+}
+
+func (s *Store) GetLatencyStats(model, period, bucket string) ([]LatencyBucket, error) {
+	now := time.Now().UTC()
+	var since time.Time
+	switch period {
+	case "1h":
+		since = now.Add(-1 * time.Hour)
+	case "24h":
+		since = now.Add(-24 * time.Hour)
+	case "7d":
+		since = now.Add(-7 * 24 * time.Hour)
+	case "30d":
+		since = now.Add(-30 * 24 * time.Hour)
+	default:
+		since = now.Add(-24 * time.Hour)
+	}
+
+	var bucketExpr string
+	switch bucket {
+	case "5m":
+		bucketExpr = "strftime('%Y-%m-%d %H:', created_at) || printf('%02d', (cast(strftime('%M', created_at) as integer) / 5) * 5)"
+	case "1h":
+		bucketExpr = "strftime('%Y-%m-%d %H:00', created_at)"
+	case "1d":
+		bucketExpr = "strftime('%Y-%m-%d', created_at)"
+	default:
+		bucketExpr = "strftime('%Y-%m-%d %H:00', created_at)"
+	}
+
+	where := "created_at >= ? AND latency_ms > 0"
+	args := []any{since.Format("2006-01-02 15:04:05")}
+	if model != "" {
+		where += " AND (model_alias = ? OR target_model = ?)"
+		args = append(args, model, model)
+	}
+
+	query := "SELECT " + bucketExpr + " as bucket, latency_ms FROM request_logs WHERE " + where + " ORDER BY bucket, latency_ms"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type bucketEntry struct {
+		values []int64
+	}
+	bucketMap := make(map[string]*bucketEntry)
+	var order []string
+
+	for rows.Next() {
+		var b string
+		var lat int64
+		if err := rows.Scan(&b, &lat); err != nil {
+			return nil, err
+		}
+		e, exists := bucketMap[b]
+		if !exists {
+			e = &bucketEntry{}
+			bucketMap[b] = e
+			order = append(order, b)
+		}
+		e.values = append(e.values, lat)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]LatencyBucket, 0, len(order))
+	for _, b := range order {
+		vals := bucketMap[b].values
+		// vals are already sorted (ORDER BY latency_ms)
+		result = append(result, LatencyBucket{
+			Bucket: b,
+			P50:    percentile(vals, 0.50),
+			P95:    percentile(vals, 0.95),
+			P99:    percentile(vals, 0.99),
+			Count:  len(vals),
+		})
+	}
+	return result, nil
+}
+
+func percentile(sorted []int64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := int(float64(len(sorted)-1) * p)
+	return float64(sorted[idx])
+}

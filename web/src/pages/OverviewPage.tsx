@@ -6,6 +6,7 @@ import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
 import { api } from "@/lib/api";
 import { pct, latency, compact, relativeTime, shortDate } from "@/lib/fmt";
+import { estimateCost, formatCost } from "@/lib/pricing";
 import type { Overview, RequestLog } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -77,6 +78,20 @@ const requestColumns: Column<RequestLog>[] = [
           : "-"}
       </span>
     ),
+    align: "right",
+    tone: "numeric",
+  },
+  {
+    key: "cost",
+    header: "Est. Cost",
+    render: (r) => {
+      const cost = r.input_tokens != null
+        ? estimateCost(r.target_model || r.model_alias, r.input_tokens, r.output_tokens ?? 0)
+        : null;
+      return cost !== null
+        ? <span className="text-moon-500">{formatCost(cost)}</span>
+        : <span className="text-moon-400">-</span>;
+    },
     align: "right",
     tone: "numeric",
   },

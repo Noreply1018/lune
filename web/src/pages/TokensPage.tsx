@@ -127,9 +127,28 @@ export default function TokensPage() {
     }
   }
 
-  const envVars = created
-    ? `export OPENAI_BASE_URL=http://127.0.0.1:7788/v1\nexport OPENAI_API_KEY=${created.token}`
-    : "";
+  const [snippetTab, setSnippetTab] = useState(".env");
+
+  const snippetTabs = [".env", "Shell", "Python", "Node.js", "curl"] as const;
+
+  function getSnippet(token: string, tab: string): string {
+    const host = `${window.location.protocol}//${window.location.host}`;
+    const baseUrl = `${host}/v1`;
+    switch (tab) {
+      case ".env":
+        return `OPENAI_BASE_URL=${baseUrl}\nOPENAI_API_KEY=${token}`;
+      case "Shell":
+        return `export OPENAI_BASE_URL="${baseUrl}"\nexport OPENAI_API_KEY="${token}"`;
+      case "Python":
+        return `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="${baseUrl}",\n    api_key="${token}",\n)`;
+      case "Node.js":
+        return `import OpenAI from "openai";\n\nconst client = new OpenAI({\n  baseURL: "${baseUrl}",\n  apiKey: "${token}",\n});`;
+      case "curl":
+        return `curl ${baseUrl}/chat/completions \\\n  -H "Authorization: Bearer ${token}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'`;
+      default:
+        return "";
+    }
+  }
 
   const columns: Column<AccessToken>[] = [
     {
@@ -342,12 +361,31 @@ export default function TokensPage() {
               <p className="text-xs font-medium uppercase tracking-wider text-moon-400">
                 Quick Setup
               </p>
+              <div className="flex flex-wrap gap-1">
+                {snippetTabs.map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setSnippetTab(tab)}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                      snippetTab === tab
+                        ? "bg-moon-800 text-moon-100"
+                        : "bg-moon-100 text-moon-500 hover:bg-moon-200"
+                    }`}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
               <div className="rounded-lg bg-moon-800 p-4">
                 <pre className="whitespace-pre-wrap text-xs text-moon-100">
-                  {envVars}
+                  {created ? getSnippet(created.token, snippetTab) : ""}
                 </pre>
               </div>
-              <CopyButton value={envVars} label="Copy Env Vars" />
+              <CopyButton
+                value={created ? getSnippet(created.token, snippetTab) : ""}
+                label={`Copy ${snippetTab}`}
+              />
             </div>
           </div>
 

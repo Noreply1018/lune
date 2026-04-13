@@ -31,8 +31,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, MoreHorizontal, Globe, Server, KeyRound, Download, Copy, ExternalLink, Loader2, AlertTriangle, Clock } from "lucide-react";
+import { Plus, MoreHorizontal, Globe, Server, KeyRound, Download, Copy, ExternalLink, Loader2, AlertTriangle, Clock, Zap } from "lucide-react";
+import type { TestConnectionResult } from "@/lib/types";
 
+
+const PROVIDER_TEMPLATES = [
+  { value: "openai", label: "OpenAI", base_url: "https://api.openai.com/v1" },
+  { value: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com/v1" },
+  { value: "groq", label: "Groq", base_url: "https://api.groq.com/openai/v1" },
+  { value: "mistral", label: "Mistral", base_url: "https://api.mistral.ai/v1" },
+  { value: "together", label: "Together AI", base_url: "https://api.together.xyz/v1" },
+  { value: "openrouter", label: "OpenRouter", base_url: "https://openrouter.ai/api/v1" },
+  { value: "moonshot", label: "Moonshot", base_url: "https://api.moonshot.cn/v1" },
+  { value: "custom", label: "Custom", base_url: "" },
+];
 
 const CPA_PROVIDERS = [
   { value: "codex", label: "Codex (ChatGPT Plus/Pro)" },
@@ -128,6 +140,7 @@ export default function AccountsPage() {
   const [openaiForm, setOpenaiForm] = useState<OpenAIForm>(emptyOpenAIForm);
   const [cpaForm, setCpaForm] = useState<CpaForm>(emptyCpaForm);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
+  const [testing, setTesting] = useState(false);
 
   // device code login
   const [showDeviceCode, setShowDeviceCode] = useState(false);
@@ -287,6 +300,26 @@ export default function AccountsPage() {
       toast("Failed to delete account", "error");
     } finally {
       setDeleteTarget(null);
+    }
+  }
+
+  async function handleTestConnection() {
+    if (!openaiForm.base_url) return;
+    setTesting(true);
+    try {
+      const result = await api.post<TestConnectionResult>("/accounts/test-connection", {
+        base_url: openaiForm.base_url,
+        api_key: openaiForm.api_key,
+      });
+      if (result.reachable) {
+        toast(`Connected in ${result.latency_ms}ms — ${result.models?.length ?? 0} models available`);
+      } else {
+        toast(result.error || "Connection failed", "error");
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Test failed", "error");
+    } finally {
+      setTesting(false);
     }
   }
 
@@ -582,6 +615,34 @@ export default function AccountsPage() {
                 /* OpenAI-Compatible form */
                 <>
                   <div className="space-y-2">
+                    <Label htmlFor="acc-provider">Provider</Label>
+                    <Select
+                      value={openaiForm.provider || "custom"}
+                      onValueChange={(v) => {
+                        if (!v) return;
+                        const tpl = PROVIDER_TEMPLATES.find((t) => t.value === v);
+                        setOpenaiForm({
+                          ...openaiForm,
+                          provider: v === "custom" ? "" : v,
+                          base_url: tpl?.base_url ?? "",
+                          label: v === "custom" ? "" : (!openaiForm.label || PROVIDER_TEMPLATES.some((t) => t.label === openaiForm.label) ? (tpl?.label ?? "") : openaiForm.label),
+                        });
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select provider..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PROVIDER_TEMPLATES.map((p) => (
+                          <SelectItem key={p.value} value={p.value}>
+                            {p.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
                     <Label htmlFor="acc-label">Label</Label>
                     <Input
                       id="acc-label"
@@ -628,6 +689,18 @@ export default function AccountsPage() {
                       required={!editId}
                     />
                   </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleTestConnection}
+                    disabled={testing || !openaiForm.base_url}
+                  >
+                    {testing ? <Loader2 className="size-4 animate-spin" /> : <Zap className="size-4" />}
+                    Test Connection
+                  </Button>
 
                   <div className="space-y-2">
                     <Label htmlFor="acc-models">Model Allowlist</Label>

@@ -221,6 +221,21 @@ export interface RemoteAccount {
   already_imported: boolean;
 }
 
+export interface LatencyBucket {
+  bucket: string;
+  p50: number;
+  p95: number;
+  p99: number;
+  count: number;
+}
+
+export interface TestConnectionResult {
+  reachable: boolean;
+  latency_ms: number;
+  models: string[];
+  error: string;
+}
+
 export interface BatchImportResult {
   imported: number;
   skipped: number;

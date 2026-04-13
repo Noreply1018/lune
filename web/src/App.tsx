@@ -10,6 +10,7 @@ import RoutesPage from "./pages/RoutesPage";
 import TokensPage from "./pages/TokensPage";
 import UsagePage from "./pages/UsagePage";
 import CpaServicePage from "./pages/CpaServicePage";
+import PlaygroundPage from "./pages/PlaygroundPage";
 
 function PageRouter() {
   const path = usePathname();
@@ -26,6 +27,8 @@ function PageRouter() {
       return <UsagePage />;
     case "/admin/cpa-service":
       return <CpaServicePage />;
+    case "/admin/playground":
+      return <PlaygroundPage />;
     default:
       return <OverviewPage />;
   }
