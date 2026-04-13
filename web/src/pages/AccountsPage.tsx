@@ -6,7 +6,7 @@ import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
-import type { Account, CpaService, LoginSession, RemoteAccount } from "@/lib/types";
+import type { Account, CpaService, LatencyBucket, LoginSession, RemoteAccount } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -110,6 +110,34 @@ function expiryStatus(isoDate: string | null): "ok" | "soon" | "today" | "expire
   return "ok";
 }
 
+function Sparkline({ data }: { data: LatencyBucket[] }) {
+  if (data.length < 2) return <span className="text-xs text-moon-400">-</span>;
+  const values = data.map((d) => d.p50);
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const range = max - min || 1;
+  const w = 80;
+  const h = 24;
+  const points = values
+    .map((v, i) => `${(i / (values.length - 1)) * w},${h - ((v - min) / range) * (h - 4) - 2}`)
+    .join(" ");
+  const avg = Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+  return (
+    <span className="inline-flex items-center gap-1.5" title={`24h p50 avg: ${avg}ms`}>
+      <svg width={w} height={h} className="shrink-0">
+        <polyline
+          points={points}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          className="text-lunar-500"
+        />
+      </svg>
+      <span className="text-[11px] text-moon-500">{avg}ms</span>
+    </span>
+  );
+}
+
 function ExpiryBadge({ date }: { date: string | null }) {
   const status = expiryStatus(date);
   if (!status || status === "ok") return null;
@@ -155,6 +183,9 @@ export default function AccountsPage() {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [importLabel, setImportLabel] = useState("");
 
+  // sparkline data per account
+  const [sparklines, setSparklines] = useState<Record<number, LatencyBucket[]>>({});
+
   function load() {
     setLoading(true);
     Promise.all([
@@ -170,6 +201,23 @@ export default function AccountsPage() {
   }
 
   useEffect(load, []);
+
+  useEffect(() => {
+    if (accounts.length === 0) return;
+    const ids = accounts.map((a) => a.id);
+    Promise.all(
+      ids.map((id) =>
+        api
+          .get<LatencyBucket[]>(`/usage/latency?period=24h&bucket=1h&account=${id}`)
+          .then((data): [number, LatencyBucket[]] => [id, data ?? []])
+          .catch((): [number, LatencyBucket[]] => [id, []]),
+      ),
+    ).then((results) => {
+      const map: Record<number, LatencyBucket[]> = {};
+      for (const [id, data] of results) map[id] = data;
+      setSparklines(map);
+    });
+  }, [accounts]);
 
   function openCreate() {
     setEditId(null);
@@ -335,7 +383,10 @@ export default function AccountsPage() {
       header: "Source",
       render: (r) =>
         r.source_kind === "cpa" ? (
-          <span className="rounded-md bg-lunar-100/60 px-2 py-0.5 text-xs font-medium text-lunar-700">
+          <span
+            className="rounded-md bg-lunar-100/60 px-2 py-0.5 text-xs font-medium text-lunar-700"
+            title="Provider channel — managed by CPA service, credentials auto-refreshed"
+          >
             CPA - {r.cpa_provider}
           </span>
         ) : (
@@ -383,6 +434,12 @@ export default function AccountsPage() {
         ),
       align: "right",
       tone: "numeric",
+    },
+    {
+      key: "latency",
+      header: "Latency (24h)",
+      render: (r) => <Sparkline data={sparklines[r.id] ?? []} />,
+      tone: "secondary",
     },
     {
       key: "actions",

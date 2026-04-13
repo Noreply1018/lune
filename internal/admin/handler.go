@@ -612,7 +612,14 @@ func (h *Handler) getLatencyStats(w http.ResponseWriter, r *http.Request) {
 		bucket = "1h"
 	}
 
-	stats, err := h.store.GetLatencyStats(model, period, bucket)
+	var opts []int64
+	if acStr := r.URL.Query().Get("account"); acStr != "" {
+		if v, err := strconv.ParseInt(acStr, 10, 64); err == nil {
+			opts = append(opts, v)
+		}
+	}
+
+	stats, err := h.store.GetLatencyStats(model, period, bucket, opts...)
 	if err != nil {
 		webutil.WriteAdminError(w, 500, "internal", err.Error())
 		return

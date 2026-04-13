@@ -192,7 +192,7 @@ type LatencyBucket struct {
 	Count  int     `json:"count"`
 }
 
-func (s *Store) GetLatencyStats(model, period, bucket string) ([]LatencyBucket, error) {
+func (s *Store) GetLatencyStats(model, period, bucket string, accountID ...int64) ([]LatencyBucket, error) {
 	now := time.Now().UTC()
 	var since time.Time
 	switch period {
@@ -225,6 +225,10 @@ func (s *Store) GetLatencyStats(model, period, bucket string) ([]LatencyBucket, 
 	if model != "" {
 		where += " AND (model_alias = ? OR target_model = ?)"
 		args = append(args, model, model)
+	}
+	if len(accountID) > 0 && accountID[0] > 0 {
+		where += " AND account_id = ?"
+		args = append(args, accountID[0])
 	}
 
 	query := "SELECT " + bucketExpr + " as bucket, latency_ms FROM request_logs WHERE " + where + " ORDER BY bucket, latency_ms"
