@@ -2,14 +2,34 @@
 SPEC/
 *.md
 .gitignore
+.dockerignore
+
+# Secrets & local config
 .env
 .env.*
-web/node_modules/
+lune.yaml
+*.pem
+*.key
+
+# Runtime data
 data/
+cpa-auth/
 *.db
 *.db-journal
+*.db-shm
 *.db-wal
-lune
+*.log
+
+# Build artifacts
+/lune
+tmp/
+
+# Frontend (rebuilt inside Docker)
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Editors / tooling
 .claude/
 .idea/
 .vscode/

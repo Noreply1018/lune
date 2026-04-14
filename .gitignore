@@ -1,13 +1,19 @@
-# Secrets
+# Secrets & certificates
 .env
 .env.local
 .env.*.local
+*.pem
+*.key
 
 # Local tooling / editors
 .claude/
+.playwright-mcp/
 .idea/
 .vscode/
 .DS_Store
+tmp/
+wget-log
+audit-*.png
 
 # Local config
 lune.yaml
@@ -17,22 +23,29 @@ data/
 cpa-auth/
 *.db
 *.db-journal
+*.db-shm
 *.db-wal
 *.log
 
 # Go build outputs
+/lune
 *.exe
 *.exe~
 *.out
 *.test
-/lune
+*.so
+*.dylib
+*.dll
+cover.out
+*.coverprofile
+vendor/
 
 # Frontend dependencies / cache / build outputs
 web/node_modules/
 web/*.tsbuildinfo
 web/dist/
+web/.vite/
 internal/site/dist/
-.vite/
 
 # Generated JS typings in TS workspace
 web/*.js
