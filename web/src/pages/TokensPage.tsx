@@ -50,7 +50,7 @@ export default function TokensPage() {
     api
       .get<AccessToken[]>("/tokens")
       .then((d) => setTokens(d ?? []))
-      .catch(() => toast("Failed to load tokens", "error"))
+      .catch(() => toast("加载令牌失败", "error"))
       .finally(() => setLoading(false));
   }
 
@@ -80,7 +80,7 @@ export default function TokensPage() {
           name: form.name,
           quota_tokens: form.quota_tokens,
         });
-        toast("Token updated");
+        toast("令牌已更新");
         setShowForm(false);
         load();
       } else {
@@ -95,7 +95,7 @@ export default function TokensPage() {
         load();
       }
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Operation failed", "error");
+      toast(err instanceof Error ? err.message : "操作失败", "error");
     }
   }
 
@@ -110,7 +110,7 @@ export default function TokensPage() {
       setTokens((prev) =>
         prev.map((x) => (x.id === t.id ? { ...x, enabled: !next } : x)),
       );
-      toast("Failed to update token", "error");
+      toast("更新令牌失败", "error");
     }
   }
 
@@ -118,10 +118,10 @@ export default function TokensPage() {
     if (!deleteTarget) return;
     try {
       await api.delete(`/tokens/${deleteTarget.id}`);
-      toast("Token deleted");
+      toast("令牌已删除");
       load();
     } catch {
-      toast("Failed to delete token", "error");
+      toast("删除令牌失败", "error");
     } finally {
       setDeleteTarget(null);
     }
@@ -223,27 +223,26 @@ export default function TokensPage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="Workspace"
-        title="Tokens"
-        description="Issue client access tokens, review quota burn, and manage token lifecycle from one table."
+        eyebrow="工作区"
+        title="令牌"
+        description="统一签发访问令牌、查看配额消耗，并管理令牌生命周期。"
         meta={
           <span>
-            {tokens.length} token{tokens.length === 1 ? "" : "s"} •{" "}
-            {tokens.filter((token) => token.enabled).length} enabled
+            共 {tokens.length} 个令牌 • 已启用 {tokens.filter((token) => token.enabled).length} 个
           </span>
         }
         actions={
           <Button size="sm" onClick={openCreate}>
             <Plus className="size-4" />
-            Create Token
+            新建令牌
           </Button>
         }
       />
 
       <section className="space-y-4">
         <SectionHeading
-          title="Token Registry"
-          description="Track issued credentials, masked values, and quota pressure by token."
+          title="令牌列表"
+          description="查看已签发令牌、掩码值和当前配额压力。"
         />
 
         {loading ? (
@@ -254,7 +253,7 @@ export default function TokensPage() {
               columns={columns}
               rows={tokens}
               rowKey={(r) => r.id}
-              empty="No tokens created"
+              empty="暂未创建令牌"
             />
           </div>
         )}
@@ -266,7 +265,7 @@ export default function TokensPage() {
           <form onSubmit={handleSubmit}>
             <DialogHeader>
               <DialogTitle>
-                {editId ? "Edit Token" : "Create Access Token"}
+                {editId ? "编辑令牌" : "新建访问令牌"}
               </DialogTitle>
             </DialogHeader>
 
@@ -326,9 +325,9 @@ export default function TokensPage() {
                 variant="outline"
                 onClick={() => setShowForm(false)}
               >
-                Cancel
+                取消
               </Button>
-              <Button type="submit">{editId ? "Save" : "Create"}</Button>
+              <Button type="submit">{editId ? "保存" : "创建"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -340,26 +339,25 @@ export default function TokensPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Check className="size-5 text-status-green" />
-              Token Created
+              令牌创建成功
             </DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
             <p className="text-sm text-moon-500">
-              Make sure to copy your token now. You won't be able to see it
-              again.
+              请立即复制该令牌。关闭后将无法再次查看完整明文。
             </p>
 
             <div className="flex items-center gap-2 rounded-lg bg-moon-100 px-4 py-3">
               <code className="flex-1 break-all text-sm font-medium text-moon-800">
                 {created?.token}
               </code>
-              <CopyButton value={created?.token ?? ""} label="Copy" />
+              <CopyButton value={created?.token ?? ""} label="复制" />
             </div>
 
             <div className="space-y-2">
               <p className="text-xs font-medium uppercase tracking-wider text-moon-400">
-                Quick Setup
+                快速接入
               </p>
               <div className="flex flex-wrap gap-1">
                 {snippetTabs.map((tab) => (
@@ -384,13 +382,13 @@ export default function TokensPage() {
               </div>
               <CopyButton
                 value={created ? getSnippet(created.token, snippetTab) : ""}
-                label={`Copy ${snippetTab}`}
+                label={`复制 ${snippetTab}`}
               />
             </div>
           </div>
 
           <DialogFooter>
-            <Button onClick={() => setCreated(null)}>Done</Button>
+            <Button onClick={() => setCreated(null)}>完成</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -398,8 +396,8 @@ export default function TokensPage() {
       <ConfirmDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
-        title="Delete Token"
-        description={`Are you sure you want to delete "${deleteTarget?.name ?? ""}"? This token will be immediately invalidated.`}
+        title="删除令牌"
+        description={`确认删除“${deleteTarget?.name ?? ""}”吗？该令牌会立即失效。`}
         onConfirm={confirmDelete}
       />
     </div>

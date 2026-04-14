@@ -64,7 +64,7 @@ export default function PoolsPage() {
         setPools(p ?? []);
         setAccounts(a ?? []);
       })
-      .catch(() => toast("Failed to load pools", "error"))
+      .catch(() => toast("加载池失败", "error"))
       .finally(() => setLoading(false));
   }
 
@@ -95,15 +95,15 @@ export default function PoolsPage() {
     try {
       if (editId) {
         await api.put(`/pools/${editId}`, form);
-        toast("Pool updated");
+        toast("池已更新");
       } else {
         await api.post("/pools", form);
-        toast("Pool created");
+        toast("池已创建");
       }
       setShowForm(false);
       load();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Operation failed", "error");
+      toast(err instanceof Error ? err.message : "操作失败", "error");
     }
   }
 
@@ -118,7 +118,7 @@ export default function PoolsPage() {
       setPools((prev) =>
         prev.map((x) => (x.id === p.id ? { ...x, enabled: !next } : x)),
       );
-      toast("Failed to update pool", "error");
+      toast("更新池失败", "error");
     }
   }
 
@@ -126,10 +126,10 @@ export default function PoolsPage() {
     if (!deleteTarget) return;
     try {
       await api.delete(`/pools/${deleteTarget.id}`);
-      toast("Pool deleted");
+      toast("池已删除");
       load();
     } catch {
-      toast("Failed to delete pool", "error");
+      toast("删除池失败", "error");
     } finally {
       setDeleteTarget(null);
     }
@@ -156,7 +156,7 @@ export default function PoolsPage() {
       });
       load();
     } catch {
-      toast("Failed to update member", "error");
+      toast("更新成员失败", "error");
     }
   }
 
@@ -179,10 +179,10 @@ export default function PoolsPage() {
         strategy: pool.strategy,
         members,
       });
-      toast("Member added");
+      toast("成员已添加");
       load();
     } catch {
-      toast("Failed to add member", "error");
+      toast("添加成员失败", "error");
     }
   }
 
@@ -200,10 +200,10 @@ export default function PoolsPage() {
         strategy: pool.strategy,
         members,
       });
-      toast("Member removed");
+      toast("成员已移除");
       load();
     } catch {
-      toast("Failed to remove member", "error");
+      toast("移除成员失败", "error");
     }
   }
 
@@ -220,32 +220,31 @@ export default function PoolsPage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="Workspace"
-        title="Pools"
-        description="Compose resilient routing pools, inspect membership, and tune priority or weight without leaving the page."
+        eyebrow="工作区"
+        title="池"
+        description="组合上游账号形成路由池，并直接调整成员优先级和权重。"
         meta={
           <span>
-            {pools.length} pool{pools.length === 1 ? "" : "s"} •{" "}
-            {pools.reduce((count, pool) => count + pool.members.length, 0)} total members
+            共 {pools.length} 个池 • 成员总数 {pools.reduce((count, pool) => count + pool.members.length, 0)}
           </span>
         }
         actions={
           <Button size="sm" onClick={openCreate}>
             <Plus className="size-4" />
-            Add Pool
+            新增池
           </Button>
         }
       />
 
       <section className="space-y-4">
         <SectionHeading
-          title="Pool Registry"
-          description="Expand a pool to manage member ordering, weighting, and account composition."
+          title="池列表"
+          description="展开一个池即可管理成员顺序、权重和账号组成。"
         />
 
         {pools.length === 0 && (
           <p className="rounded-[1.6rem] border border-dashed border-moon-200/80 py-12 text-center text-sm text-moon-400">
-            No pools configured
+            暂未配置池
           </p>
         )}
 
@@ -438,7 +437,7 @@ export default function PoolsPage() {
           <form onSubmit={handleSubmit}>
             <DialogHeader>
               <DialogTitle>
-                {editId ? "Edit Pool" : "Add Pool"}
+                {editId ? "编辑池" : "新增池"}
               </DialogTitle>
             </DialogHeader>
 
@@ -482,9 +481,9 @@ export default function PoolsPage() {
                 variant="outline"
                 onClick={() => setShowForm(false)}
               >
-                Cancel
+                取消
               </Button>
-              <Button type="submit">{editId ? "Save" : "Create"}</Button>
+              <Button type="submit">{editId ? "保存" : "创建"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -493,7 +492,7 @@ export default function PoolsPage() {
       <ConfirmDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
-        title="Delete Pool"
+        title="删除池"
         description={`Are you sure you want to delete "${deleteTarget?.label ?? ""}"? This will also remove all member associations.`}
         onConfirm={confirmDelete}
       />

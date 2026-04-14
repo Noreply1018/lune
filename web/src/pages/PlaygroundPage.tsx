@@ -177,19 +177,19 @@ export default function PlaygroundPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Moonlight Console"
-        title="Playground"
-        description="Test the gateway end-to-end with an interactive chat interface."
+        eyebrow="Lune 控制台"
+        title="调试台"
+        description="通过交互式对话直接测试网关的端到端响应。"
       />
 
       {/* Controls */}
       <section className="rounded-[1.6rem] border border-moon-200/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.95),rgba(249,249,252,0.9))] p-4 sm:p-5">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto]">
           <div className="space-y-1.5">
-            <Label className="text-xs text-moon-500">Model</Label>
+            <Label className="text-xs text-moon-500">模型</Label>
             <Select value={model} onValueChange={(v) => v && setModel(v)}>
               <SelectTrigger>
-                <SelectValue placeholder="Select model..." />
+                <SelectValue placeholder="选择模型..." />
               </SelectTrigger>
               <SelectContent>
                 {models.map((m) => (
@@ -202,7 +202,7 @@ export default function PlaygroundPage() {
           </div>
 
           <div className="space-y-1.5">
-            <Label className="text-xs text-moon-500">Access Token</Label>
+            <Label className="text-xs text-moon-500">访问令牌</Label>
             <Input
               type="password"
               value={token}
@@ -219,7 +219,7 @@ export default function PlaygroundPage() {
               disabled={messages.length === 0 && !streaming}
             >
               <Trash2 className="size-4" />
-              Clear
+              清空
             </Button>
           </div>
         </div>
@@ -259,7 +259,7 @@ export default function PlaygroundPage() {
         >
           {messages.length === 0 && (
             <div className="flex h-full items-center justify-center text-sm text-moon-400">
-              Send a message to start
+              发送一条消息开始测试
             </div>
           )}
           {messages.map((msg, i) => (
@@ -293,7 +293,7 @@ export default function PlaygroundPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
+              placeholder="输入消息...（Enter 发送，Shift+Enter 换行）"
               disabled={streaming}
             />
             <Button

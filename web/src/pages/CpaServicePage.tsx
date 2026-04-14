@@ -54,6 +54,15 @@ const linkedColumns: Column<Account>[] = [
     tone: "primary",
   },
   {
+    key: "subtype",
+    header: "Subtype",
+    render: (r) => (
+      <span className="text-sm text-moon-600">
+        {r.cpa_account_key ? "Credential-backed account" : "Provider channel"}
+      </span>
+    ),
+  },
+  {
     key: "provider",
     header: "Provider",
     render: (r) => (
@@ -200,18 +209,18 @@ export default function CpaServicePage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="Configure"
-        title="CPA Service"
+        eyebrow="配置"
+        title="CPA 服务"
         description={
           service
-            ? "Manage your CPA (cli-proxy-api) connection."
-            : "Connect to a CPA (cli-proxy-api) instance for GPT/Codex account access."
+            ? "管理 CPA 控制面，负责发现账号、刷新凭据，并支撑 CPA 托管的路由单元。"
+            : "连接一个 CPA（cli-proxy-api）实例，用于发现账号并创建 CPA 托管单元。"
         }
         actions={
           !service ? (
             <Button size="sm" onClick={openEdit}>
               <Server className="size-4" />
-              Configure CPA Service
+              配置 CPA 服务
             </Button>
           ) : undefined
         }
@@ -239,7 +248,7 @@ export default function CpaServicePage() {
                     />
                     {!service.enabled && (
                       <span className="rounded-md bg-moon-200/60 px-2 py-0.5 text-xs font-medium text-moon-500">
-                        Disabled
+                        已停用
                       </span>
                     )}
                   </div>
@@ -260,29 +269,31 @@ export default function CpaServicePage() {
                     API Key
                   </p>
                   <p className="mt-1 text-sm text-moon-700">
-                    {service.api_key_set ? service.api_key_masked : "Not set"}
+                    {service.api_key_set ? service.api_key_masked : "未设置"}
                   </p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-[0.18em] text-moon-400">
-                    Status
+                    状态
                   </p>
-                  <p className="mt-1 text-sm text-moon-700">{service.status}</p>
+                  <p className="mt-1 text-sm text-moon-700">
+                    {service.status === "healthy" ? "正常" : service.status === "error" ? "异常" : "降级"}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-[0.18em] text-moon-400">
-                    Last Check
+                    最近检查
                   </p>
                   <p className="mt-1 text-sm text-moon-700">
                     {service.last_checked_at
                       ? relativeTime(service.last_checked_at)
-                      : "Never"}
+                      : "从未"}
                   </p>
                 </div>
                 {service.last_error && (
                   <div className="sm:col-span-2">
                     <p className="text-xs uppercase tracking-[0.18em] text-moon-400">
-                      Last Error
+                      最近错误
                     </p>
                     <p className="mt-1 text-sm text-status-red">
                       {service.last_error}
@@ -299,17 +310,17 @@ export default function CpaServicePage() {
                   disabled={testing}
                 >
                   <TestTube2 className="size-4" />
-                  {testing ? "Testing..." : "Test Connection"}
+                  {testing ? "测试中..." : "测试连接"}
                 </Button>
                 <Button size="sm" variant="outline" onClick={openSyncDialog}>
                   <RefreshCw className="size-4" />
-                  Sync from CPA
+                  发现账号
                 </Button>
                 <Button size="sm" variant="outline" onClick={openEdit}>
-                  Edit
+                  编辑
                 </Button>
                 <Button size="sm" variant="outline" onClick={toggleEnabled}>
-                  {service.enabled ? "Disable" : "Enable"}
+                  {service.enabled ? "停用" : "启用"}
                 </Button>
                 <Button
                   size="sm"
@@ -318,7 +329,7 @@ export default function CpaServicePage() {
                   onClick={() => setShowDelete(true)}
                 >
                   <Trash2 className="size-4" />
-                  Remove
+                  删除
                 </Button>
               </div>
             </div>
@@ -326,26 +337,63 @@ export default function CpaServicePage() {
 
           <section className="space-y-4">
             <SectionHeading
-              title="Linked Accounts"
-              description={`${linkedAccounts.length} provider channel${linkedAccounts.length === 1 ? "" : "s"} using this service.`}
+              title="CPA 托管账号"
+              description={`当前有 ${linkedAccounts.length} 个路由单元挂载到该 CPA 服务下，包括 Provider Channel 和凭据型账号。`}
             />
             <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
               <DataTable
                 columns={linkedColumns}
                 rows={linkedAccounts}
                 rowKey={(r) => r.id}
-                empty="No CPA accounts linked"
+                empty="当前没有挂载任何 CPA 账号"
               />
             </div>
           </section>
         </>
       ) : (
-        <section className="rounded-[1.6rem] border border-moon-200/70 bg-white/85 p-10 text-center">
-          <Server className="mx-auto size-12 text-moon-300" />
-          <p className="mt-4 text-moon-500">No CPA service configured.</p>
-          <Button size="sm" className="mt-4" onClick={openEdit}>
-            Configure CPA Service
-          </Button>
+        <section className="rounded-[1.6rem] border border-moon-200/70 bg-white/85 p-8">
+          <div className="text-center">
+            <Server className="mx-auto size-12 text-moon-300" />
+            <h3 className="mt-4 text-lg font-semibold text-moon-800">尚未配置 CPA 服务</h3>
+            <p className="mt-2 text-sm text-moon-500">
+              CPA（CLI Proxy API）是外部代理服务，支持通过 ChatGPT Plus/Pro、Claude 等订阅账号访问 LLM 提供商。部署 CPA 后，可在此页面连接并管理。
+            </p>
+          </div>
+
+          <div className="mt-6 rounded-2xl border border-moon-200/70 bg-moon-50/70 p-5 text-left text-sm text-moon-600">
+            <p className="font-medium text-moon-700">部署指引</p>
+            <ul className="mt-2 list-inside list-disc space-y-1">
+              <li>
+                使用 Docker Compose 一键启动：
+                <code className="ml-1 rounded bg-moon-100 px-1.5 py-0.5 text-xs text-moon-700">docker compose up -d</code>
+              </li>
+              <li>
+                CPA 镜像：
+                <code className="ml-1 rounded bg-moon-100 px-1.5 py-0.5 text-xs text-moon-700">eceasy/cli-proxy-api</code>
+              </li>
+              <li>
+                Docker Compose 部署会自动配置默认 CPA 连接，无需手动操作
+              </li>
+            </ul>
+
+            <p className="mt-4 font-medium text-moon-700">Base URL 参考</p>
+            <div className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+              <span className="text-moon-500">Docker Compose 部署</span>
+              <code className="text-moon-700">http://cpa:8317</code>
+              <span className="text-moon-500">本地开发</span>
+              <code className="text-moon-700">http://127.0.0.1:8317</code>
+            </div>
+
+            <p className="mt-4 text-moon-500">
+              如需手动配置外部 CPA 实例，请确保 CPA 服务已启动后再点击下方按钮。
+            </p>
+          </div>
+
+          <div className="mt-6 text-center">
+            <Button size="sm" onClick={openEdit}>
+              配置 CPA 服务
+            </Button>
+          </div>
         </section>
       )}
 
@@ -354,12 +402,12 @@ export default function CpaServicePage() {
           <form onSubmit={handleSubmit}>
             <DialogHeader>
               <DialogTitle>
-                {service ? "Edit CPA Service" : "Configure CPA Service"}
+                {service ? "编辑 CPA 服务" : "配置 CPA 服务"}
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="cpa-label">Label</Label>
+                <Label htmlFor="cpa-label">标签</Label>
                 <Input
                   id="cpa-label"
                   value={form.label}
@@ -390,7 +438,7 @@ export default function CpaServicePage() {
                     setForm({ ...form, api_key: e.target.value })
                   }
                   placeholder={
-                    service ? "Leave empty to keep current" : "sk-cpa-default"
+                    service ? "留空则保留当前密钥" : "sk-cpa-default"
                   }
                 />
               </div>
@@ -401,9 +449,9 @@ export default function CpaServicePage() {
                 variant="outline"
                 onClick={() => setShowForm(false)}
               >
-                Cancel
+                取消
               </Button>
-              <Button type="submit">{service ? "Save" : "Configure"}</Button>
+              <Button type="submit">{service ? "保存" : "配置"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -412,8 +460,8 @@ export default function CpaServicePage() {
       <ConfirmDialog
         open={showDelete}
         onOpenChange={setShowDelete}
-        title="Remove CPA Service"
-        description="Are you sure you want to remove the CPA service? This cannot be undone."
+        title="删除 CPA 服务"
+        description="确认删除当前 CPA 服务吗？此操作不可撤销。"
         onConfirm={confirmDelete}
       />
 
@@ -421,15 +469,18 @@ export default function CpaServicePage() {
       <Dialog open={showSync} onOpenChange={setShowSync}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Sync from CPA</DialogTitle>
+            <DialogTitle>从 CPA 发现账号</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            <div className="rounded-2xl border border-moon-200/70 bg-moon-50/70 p-4 text-sm text-moon-500">
+              该操作会扫描 CPA 凭据目录，并将选中的凭据型账号导入当前工作区。
+            </div>
             {syncLoading && remoteAccounts.length === 0 ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="size-6 animate-spin text-moon-400" />
               </div>
             ) : remoteAccounts.length === 0 ? (
-              <p className="py-4 text-center text-sm text-moon-500">No accounts found in cpa-auth directory.</p>
+              <p className="py-4 text-center text-sm text-moon-500">在 cpa-auth 目录中未发现可导入账号。</p>
             ) : (
               <div className="max-h-64 space-y-2 overflow-y-auto">
                 {remoteAccounts.map((ra) => (
@@ -452,12 +503,12 @@ export default function CpaServicePage() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-moon-800">{ra.email}</p>
                       <p className="text-xs text-moon-500">
-                        {ra.provider} - {ra.plan_type || "unknown"}
-                        {ra.expired_at && ` | Expires: ${new Date(ra.expired_at).toLocaleDateString()}`}
+                        {ra.provider} - {ra.plan_type || "未知套餐"}
+                        {ra.expired_at && ` | 到期：${new Date(ra.expired_at).toLocaleDateString()}`}
                       </p>
                     </div>
                     {ra.already_imported && (
-                      <span className="rounded-md bg-moon-100 px-2 py-0.5 text-[10px] font-medium text-moon-500">Imported</span>
+                      <span className="rounded-md bg-moon-100 px-2 py-0.5 text-[10px] font-medium text-moon-500">已导入</span>
                     )}
                   </label>
                 ))}
@@ -465,12 +516,12 @@ export default function CpaServicePage() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowSync(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setShowSync(false)}>取消</Button>
             <Button
               disabled={selectedKeys.size === 0 || syncLoading}
               onClick={handleBatchImport}
             >
-              {syncLoading ? <Loader2 className="size-4 animate-spin" /> : `Import (${selectedKeys.size})`}
+              {syncLoading ? <Loader2 className="size-4 animate-spin" /> : `导入（${selectedKeys.size}）`}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -486,7 +537,7 @@ export default function CpaServicePage() {
 
     api.get<RemoteAccount[]>("/cpa/service/remote-accounts")
       .then((accs) => setRemoteAccounts(accs ?? []))
-      .catch((err) => toast(err instanceof Error ? err.message : "Failed to scan accounts", "error"))
+      .catch((err) => toast(err instanceof Error ? err.message : "扫描账号失败", "error"))
       .finally(() => setSyncLoading(false));
   }
 
@@ -498,11 +549,11 @@ export default function CpaServicePage() {
         service_id: service.id,
         account_keys: [...selectedKeys],
       });
-      toast(`Imported ${result.imported}, skipped ${result.skipped}${result.errors?.length ? `, ${result.errors.length} errors` : ""}`);
+      toast(`已导入 ${result.imported} 个，跳过 ${result.skipped} 个${result.errors?.length ? `，${result.errors.length} 个失败` : ""}`);
       setShowSync(false);
       load();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Import failed", "error");
+      toast(err instanceof Error ? err.message : "导入失败", "error");
     } finally {
       setSyncLoading(false);
     }

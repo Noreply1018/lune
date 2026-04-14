@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { STATUS_LABELS_ZH } from "@/copy/admin";
 
 type Status = "healthy" | "degraded" | "error" | "disabled";
 
@@ -36,7 +37,7 @@ export default function StatusBadge({
           dotColor[status] ?? dotColor.disabled,
         )}
       />
-      {label ?? status}
+      {label ?? STATUS_LABELS_ZH[status]}
     </span>
   );
 }

@@ -69,7 +69,7 @@ export default function RoutesPage() {
         setPools(p ?? []);
         setDefaultPoolId(s?.default_pool_id ?? null);
       })
-      .catch(() => toast("Failed to load routes", "error"))
+      .catch(() => toast("加载路由失败", "error"))
       .finally(() => setLoading(false));
   }
 
@@ -82,7 +82,7 @@ export default function RoutesPage() {
     try {
       await api.put("/settings", { default_pool_id: value });
     } catch {
-      toast("Failed to update default pool", "error");
+      toast("更新默认池失败", "error");
       load();
     }
   }
@@ -109,15 +109,15 @@ export default function RoutesPage() {
     try {
       if (editId) {
         await api.put(`/routes/${editId}`, form);
-        toast("Route updated");
+        toast("路由已更新");
       } else {
         await api.post("/routes", form);
-        toast("Route created");
+        toast("路由已创建");
       }
       setShowForm(false);
       load();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Operation failed", "error");
+      toast(err instanceof Error ? err.message : "操作失败", "error");
     }
   }
 
@@ -132,7 +132,7 @@ export default function RoutesPage() {
       setRoutes((prev) =>
         prev.map((x) => (x.id === r.id ? { ...x, enabled: !next } : x)),
       );
-      toast("Failed to update route", "error");
+      toast("更新路由失败", "error");
     }
   }
 
@@ -140,10 +140,10 @@ export default function RoutesPage() {
     if (!deleteTarget) return;
     try {
       await api.delete(`/routes/${deleteTarget.id}`);
-      toast("Route deleted");
+      toast("路由已删除");
       load();
     } catch {
-      toast("Failed to delete route", "error");
+      toast("删除路由失败", "error");
     } finally {
       setDeleteTarget(null);
     }
@@ -218,19 +218,18 @@ export default function RoutesPage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="Workspace"
-        title="Routes"
-        description="Map public model aliases to target models and pools, including the default catch-all path."
+        eyebrow="工作区"
+        title="路由"
+        description="将公开模型别名映射到目标模型和路由池，并管理默认兜底路径。"
         meta={
           <span>
-            {routes.length} explicit route{routes.length === 1 ? "" : "s"} •{" "}
-            {enabledPools.length} enabled pool{enabledPools.length === 1 ? "" : "s"}
+            共 {routes.length} 条显式路由 • 已启用 {enabledPools.length} 个池
           </span>
         }
         actions={
           <Button size="sm" onClick={openCreate}>
             <Plus className="size-4" />
-            Add Route
+            新增路由
           </Button>
         }
       />
@@ -244,13 +243,13 @@ export default function RoutesPage() {
         <>
           <section className="space-y-4">
             <SectionHeading
-              title="Default Route"
-              description="Fallback pool used when an alias does not match an explicit route."
+              title="默认路由"
+              description="当模型别名未命中显式路由时，使用这里的兜底池。"
             />
             <div className="rounded-[1.6rem] border border-moon-200/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(240,242,248,0.92))] p-5">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
                 <Label className="shrink-0 text-sm font-medium text-moon-700">
-                  Default Pool
+                  默认池
                 </Label>
                 <Select
                   value={
@@ -271,7 +270,7 @@ export default function RoutesPage() {
                   </SelectContent>
                 </Select>
                 <span className="text-sm text-moon-500">
-                  Catch-all for unmatched models.
+                  用于承接未匹配的模型请求。
                 </span>
               </div>
             </div>
@@ -279,15 +278,15 @@ export default function RoutesPage() {
 
           <section className="space-y-4">
             <SectionHeading
-              title="Route Table"
-              description="Public aliases, target models, and the pool serving each route."
+              title="路由表"
+              description="查看模型别名、目标模型以及提供服务的池。"
             />
             <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
               <DataTable
                 columns={columns}
                 rows={routes}
                 rowKey={(r) => r.id}
-                empty="No routes configured"
+                empty="暂未配置路由"
               />
             </div>
           </section>
@@ -295,8 +294,7 @@ export default function RoutesPage() {
           <div className="flex items-start gap-2 text-sm text-moon-500">
             <Info className="mt-0.5 size-4 shrink-0 text-moon-400" />
             <span>
-              Models not listed above will route through the default pool
-              with the original model name.
+              上面未列出的模型，会保留原始模型名并走默认池。
             </span>
           </div>
         </>
@@ -307,7 +305,7 @@ export default function RoutesPage() {
           <form onSubmit={handleSubmit}>
             <DialogHeader>
               <DialogTitle>
-                {editId ? "Edit Route" : "Add Route"}
+                {editId ? "编辑路由" : "新增路由"}
               </DialogTitle>
             </DialogHeader>
 
@@ -382,9 +380,9 @@ export default function RoutesPage() {
                 variant="outline"
                 onClick={() => setShowForm(false)}
               >
-                Cancel
+                取消
               </Button>
-              <Button type="submit">{editId ? "Save" : "Create"}</Button>
+              <Button type="submit">{editId ? "保存" : "创建"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -393,8 +391,8 @@ export default function RoutesPage() {
       <ConfirmDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
-        title="Delete Route"
-        description={`Are you sure you want to delete the route for "${deleteTarget?.alias ?? ""}"?`}
+        title="删除路由"
+        description={`确认删除“${deleteTarget?.alias ?? ""}”这条路由吗？`}
         onConfirm={confirmDelete}
       />
     </div>

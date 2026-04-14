@@ -18,7 +18,7 @@ export default function CopyButton({
   function handleCopy() {
     navigator.clipboard.writeText(value);
     setCopied(true);
-    toast("Copied!");
+    toast("已复制");
     setTimeout(() => setCopied(false), 2000);
   }
 
@@ -34,7 +34,7 @@ export default function CopyButton({
       ) : (
         <Copy className="size-3.5" />
       )}
-      {label && <span className="ml-1">{copied ? "Copied!" : label}</span>}
+      {label && <span className="ml-1">{copied ? "已复制" : label}</span>}
     </Button>
   );
 }

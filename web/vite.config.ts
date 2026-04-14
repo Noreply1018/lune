@@ -14,6 +14,13 @@ export default defineConfig({
   build: {
     outDir: "../internal/site/dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          recharts: ["recharts"],
+        },
+      },
+    },
   },
   server: {
     proxy: {

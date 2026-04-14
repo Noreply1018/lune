@@ -12,40 +12,10 @@ import {
   SidebarInset,
   SidebarFooter,
 } from "@/components/ui/sidebar";
-import {
-  LayoutDashboard,
-  Users,
-  Layers,
-  Route,
-  Key,
-  BarChart3,
-  Server,
-  MessageSquare,
-} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePathname, useRouter } from "@/lib/router";
 import { Separator } from "@/components/ui/separator";
-
-const navGroups = [
-  {
-    label: "Observe",
-    items: [
-      { label: "Overview", href: "/admin", icon: LayoutDashboard },
-      { label: "Usage", href: "/admin/usage", icon: BarChart3 },
-      { label: "Playground", href: "/admin/playground", icon: MessageSquare },
-    ],
-  },
-  {
-    label: "Configure",
-    items: [
-      { label: "Accounts", href: "/admin/accounts", icon: Users },
-      { label: "Pools", href: "/admin/pools", icon: Layers },
-      { label: "Routes", href: "/admin/routes", icon: Route },
-      { label: "Tokens", href: "/admin/tokens", icon: Key },
-      { label: "CPA Service", href: "/admin/cpa-service", icon: Server },
-    ],
-  },
-];
+import { ADMIN_NAV_GROUPS } from "@/copy/admin";
 
 function CrescentIcon({ className }: { className?: string }) {
   return (
@@ -99,7 +69,7 @@ export default function Shell({ children }: { children: ReactNode }) {
                 Lune
               </span>
               <span className="block text-[10px] font-medium uppercase tracking-[0.24em] text-moon-400">
-                Moonlight Admin
+                管理控制台
               </span>
             </span>
           </a>
@@ -108,7 +78,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         <Separator className="mx-3 mb-2 w-auto bg-moon-200/70" />
 
         <SidebarContent className="gap-3 px-2 pb-3 pt-1">
-          {navGroups.map((group) => (
+          {ADMIN_NAV_GROUPS.map((group) => (
             <SidebarGroup key={group.label} className="gap-1.5 px-0 py-0">
               <SidebarGroupLabel className="px-3 text-[10px] font-semibold uppercase tracking-[0.24em] text-moon-400/90">
                 {group.label}
@@ -159,10 +129,10 @@ export default function Shell({ children }: { children: ReactNode }) {
         <SidebarFooter className="px-3 pb-4 pt-2">
           <div className="rounded-[1rem] border border-white/60 bg-white/55 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.68)] group-data-[collapsible=icon]:hidden">
             <span className="block text-[10px] font-medium uppercase tracking-[0.22em] text-moon-400">
-              Moonlight Admin
+              Lune Console
             </span>
             <span className="mt-1 block text-xs text-moon-500">
-              v1.0
+              中文友好版
             </span>
           </div>
         </SidebarFooter>

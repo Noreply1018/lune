@@ -13,7 +13,7 @@ export default function UsageBar({
   if (total === 0) {
     return (
       <span className={cn("text-xs text-moon-400", className)}>
-        {compact(used)} / unlimited
+        {compact(used)} / 不限额
       </span>
     );
   }

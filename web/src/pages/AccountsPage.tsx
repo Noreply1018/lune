@@ -7,6 +7,7 @@ import SectionHeading from "@/components/SectionHeading";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
 import type { Account, CpaService, LatencyBucket, LoginSession, RemoteAccount } from "@/lib/types";
+import { useRouter } from "@/lib/router";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, MoreHorizontal, Globe, Server, KeyRound, Download, Copy, ExternalLink, Loader2, AlertTriangle, Clock, Zap } from "lucide-react";
+import { Plus, MoreHorizontal, Globe, Server, KeyRound, Download, Copy, ExternalLink, Loader2, AlertTriangle, Clock, Zap, ArrowRight, ShieldCheck } from "lucide-react";
 import type { TestConnectionResult } from "@/lib/types";
 
 
@@ -154,12 +155,14 @@ function ExpiryBadge({ date }: { date: string | null }) {
 }
 
 export default function AccountsPage() {
+  const { navigate } = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [cpaService, setCpaService] = useState<CpaService | null>(null);
   const [loading, setLoading] = useState(true);
 
   // source selection
   const [showSourcePicker, setShowSourcePicker] = useState(false);
+  const [sourceStep, setSourceStep] = useState<"root" | "cpa">("root");
 
   // forms
   const [showForm, setShowForm] = useState(false);
@@ -221,17 +224,13 @@ export default function AccountsPage() {
 
   function openCreate() {
     setEditId(null);
+    setSourceStep("root");
     setShowSourcePicker(true);
   }
 
   function pickSource(kind: "openai_compat" | "cpa") {
     setEditSourceKind(kind);
     setShowSourcePicker(false);
-
-    if (kind === "cpa" && !cpaService) {
-      toast("Please configure a CPA Service first", "error");
-      return;
-    }
 
     if (kind === "openai_compat") {
       setOpenaiForm(emptyOpenAIForm);
@@ -352,7 +351,7 @@ export default function AccountsPage() {
   }
 
   async function handleTestConnection() {
-    if (!openaiForm.base_url) return;
+    if (!openaiForm.base_url || !openaiForm.api_key) return;
     setTesting(true);
     try {
       const result = await api.post<TestConnectionResult>("/accounts/test-connection", {
@@ -385,7 +384,7 @@ export default function AccountsPage() {
         r.source_kind === "cpa" ? (
           <span
             className="rounded-md bg-lunar-100/60 px-2 py-0.5 text-xs font-medium text-lunar-700"
-            title="Provider channel — managed by CPA service, credentials auto-refreshed"
+            title={r.cpa_account_key ? "Credential-backed CPA account" : "CPA provider channel"}
           >
             CPA - {r.cpa_provider}
           </span>
@@ -394,6 +393,19 @@ export default function AccountsPage() {
             OpenAI compat
           </span>
         ),
+    },
+    {
+      key: "unit_type",
+      header: "Unit Type",
+      render: (r) =>
+        r.source_kind === "cpa" ? (
+          <span className="text-sm text-moon-600">
+            {r.cpa_account_key ? "Credential-backed account" : "Provider channel"}
+          </span>
+        ) : (
+          <span className="text-sm text-moon-600">Direct API credential</span>
+        ),
+      tone: "secondary",
     },
     {
       key: "endpoint",
@@ -419,11 +431,11 @@ export default function AccountsPage() {
       tone: "status",
     },
     {
-      key: "quota",
-      header: "Quota",
+      key: "budget",
+      header: "Budget",
       render: (r) =>
         r.source_kind === "cpa" ? (
-          <span className="text-sm text-moon-400">-</span>
+          <span className="text-sm text-moon-400">Managed by CPA</span>
         ) : r.quota_total > 0 ? (
           <span className="text-sm text-moon-500">
             {r.quota_unit === "USD" ? "$" : r.quota_unit === "CNY" ? "\u00a5" : ""}
@@ -474,27 +486,26 @@ export default function AccountsPage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="Workspace"
-        title="Accounts"
-        description="Manage upstream provider accounts, their current health, and spending constraints."
+        eyebrow="工作区"
+        title="账号"
+        description="管理可参与路由的上游执行单元，包括直连 API 凭据和 CPA 托管账号。"
         meta={
           <span>
-            {accounts.length} configured account{accounts.length === 1 ? "" : "s"} •{" "}
-            {accounts.filter((account) => account.enabled).length} enabled
+            已配置 {accounts.length} 个账号单元 • 已启用 {accounts.filter((account) => account.enabled).length} 个
           </span>
         }
         actions={
           <Button size="sm" onClick={openCreate}>
             <Plus className="size-4" />
-            Add Account
+            新增账号
           </Button>
         }
       />
 
       <section className="space-y-4">
         <SectionHeading
-          title="Account Registry"
-          description="Each row represents one upstream credential set and its operational quota."
+          title="账号列表"
+          description="每一行都是一个可路由执行单元。直连 API 账号展示本地预算；CPA 账号继承 CPA 服务的鉴权与刷新状态。"
         />
 
         {loading ? (
@@ -505,7 +516,7 @@ export default function AccountsPage() {
               columns={columns}
               rows={accounts}
               rowKey={(r) => r.id}
-              empty="No accounts configured"
+              empty="暂未配置账号"
             />
           </div>
         )}
@@ -515,62 +526,168 @@ export default function AccountsPage() {
       <Dialog open={showSourcePicker} onOpenChange={setShowSourcePicker}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Choose Source</DialogTitle>
+            <DialogTitle>{sourceStep === "root" ? "新增账号" : "选择 CPA 接入方式"}</DialogTitle>
           </DialogHeader>
-          <div className="grid grid-cols-2 gap-3 py-4">
-            <button
-              type="button"
-              onClick={() => pickSource("openai_compat")}
-              className="flex flex-col items-center gap-3 rounded-xl border border-moon-200 p-5 text-center transition hover:border-lunar-400 hover:bg-lunar-50/30"
-            >
-              <Globe className="size-8 text-moon-400" />
-              <div>
-                <p className="font-medium text-moon-800">OpenAI-Compatible</p>
-                <p className="mt-1 text-xs text-moon-500">
-                  Direct connection to any OpenAI-compatible API.
-                </p>
+          {sourceStep === "root" ? (
+            <div className="space-y-4 py-4">
+              <p className="text-sm text-moon-500">
+                先选择账号来源。若选择 CPA，下一步再选择具体接入方式。
+              </p>
+              <div className="grid gap-3">
+                <button
+                  type="button"
+                  onClick={() => pickSource("openai_compat")}
+                  className="flex items-start gap-4 rounded-2xl border border-moon-200 px-5 py-4 text-left transition hover:border-lunar-400 hover:bg-lunar-50/30"
+                >
+                  <span className="mt-0.5 flex size-11 items-center justify-center rounded-2xl bg-moon-100 text-moon-500">
+                    <Globe className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center justify-between gap-3">
+                      <span className="font-medium text-moon-800">OpenAI-Compatible</span>
+                      <ArrowRight className="size-4 text-moon-300" />
+                    </span>
+                    <span className="mt-1 block text-sm text-moon-500">
+                      直接接入任意 OpenAI-Compatible API。
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => cpaService && setSourceStep("cpa")}
+                  disabled={!cpaService}
+                  className={`flex items-start gap-4 rounded-2xl border px-5 py-4 text-left transition ${
+                    cpaService
+                      ? "border-moon-200 hover:border-lunar-400 hover:bg-lunar-50/30"
+                      : "cursor-not-allowed border-moon-200 bg-moon-50/80 opacity-80"
+                  }`}
+                >
+                  <span className="mt-0.5 flex size-11 items-center justify-center rounded-2xl bg-lunar-100/70 text-lunar-600">
+                    <Server className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center justify-between gap-3">
+                      <span className="font-medium text-moon-800">CPA</span>
+                      {cpaService ? (
+                        <ArrowRight className="size-4 text-moon-300" />
+                      ) : (
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                          需先配置
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-1 block text-sm text-moon-500">
+                      通过 CPA 服务创建 Provider Channel 或凭据型账号。
+                    </span>
+                    {!cpaService && (
+                      <span className="mt-3 block text-xs text-moon-500">
+                        请先配置 CPA 服务，再回来选择接入方式。
+                      </span>
+                    )}
+                  </span>
+                </button>
               </div>
-            </button>
-            <button
-              type="button"
-              onClick={() => pickSource("cpa")}
-              className="flex flex-col items-center gap-3 rounded-xl border border-moon-200 p-5 text-center transition hover:border-lunar-400 hover:bg-lunar-50/30"
-            >
-              <Server className="size-8 text-moon-400" />
-              <div>
-                <p className="font-medium text-moon-800">CPA Provider Channel</p>
-                <p className="mt-1 text-xs text-moon-500">
-                  Route through a CPA service provider.
-                </p>
+              {!cpaService && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="mt-0.5 size-4 text-amber-600" />
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-sm font-medium text-amber-900">当前无法使用 CPA 入口</p>
+                        <p className="mt-1 text-sm text-amber-800/80">
+                          需要先配置 CPA 服务，才能创建 CPA Channel、执行 Device Code 登录或导入已有账号。
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => {
+                          setShowSourcePicker(false);
+                          navigate("/admin/cpa-service");
+                        }}
+                      >
+                        前往 CPA 服务
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4 py-4">
+              <div className="rounded-2xl border border-lunar-200/80 bg-lunar-50/40 p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-lunar-700">CPA 服务</p>
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-moon-800">{cpaService?.label}</p>
+                    <p className="text-xs text-moon-500">{cpaService?.base_url}</p>
+                  </div>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-lunar-700">
+                    <ShieldCheck className="size-3.5" />
+                    已就绪
+                  </span>
+                </div>
               </div>
-            </button>
-            <button
-              type="button"
-              onClick={() => { setShowSourcePicker(false); startDeviceCodeLogin(); }}
-              className="flex flex-col items-center gap-3 rounded-xl border border-moon-200 p-5 text-center transition hover:border-lunar-400 hover:bg-lunar-50/30"
-            >
-              <KeyRound className="size-8 text-moon-400" />
-              <div>
-                <p className="font-medium text-moon-800">Login with Device Code</p>
-                <p className="mt-1 text-xs text-moon-500">
-                  Authenticate via OpenAI OAuth device flow.
-                </p>
+              <div className="grid gap-3">
+                <button
+                  type="button"
+                  onClick={() => pickSource("cpa")}
+                  className="flex items-start gap-4 rounded-2xl border border-moon-200 px-5 py-4 text-left transition hover:border-lunar-400 hover:bg-lunar-50/30"
+                >
+                  <span className="mt-0.5 flex size-11 items-center justify-center rounded-2xl bg-lunar-100/70 text-lunar-600">
+                    <Server className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium text-moon-800">Provider Channel</span>
+                    <span className="mt-1 block text-sm text-moon-500">
+                      为单个 Provider 创建路由通道，并由 CPA 负责刷新与执行。
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSourcePicker(false);
+                    startDeviceCodeLogin();
+                  }}
+                  className="flex items-start gap-4 rounded-2xl border border-moon-200 px-5 py-4 text-left transition hover:border-lunar-400 hover:bg-lunar-50/30"
+                >
+                  <span className="mt-0.5 flex size-11 items-center justify-center rounded-2xl bg-moon-100 text-moon-500">
+                    <KeyRound className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium text-moon-800">Device Code Login</span>
+                    <span className="mt-1 block text-sm text-moon-500">
+                      通过 OAuth 登录，创建凭据型 CPA 账号。
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSourcePicker(false);
+                    openImportDialog();
+                  }}
+                  className="flex items-start gap-4 rounded-2xl border border-moon-200 px-5 py-4 text-left transition hover:border-lunar-400 hover:bg-lunar-50/30"
+                >
+                  <span className="mt-0.5 flex size-11 items-center justify-center rounded-2xl bg-moon-100 text-moon-500">
+                    <Download className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium text-moon-800">导入已有账号</span>
+                    <span className="mt-1 block text-sm text-moon-500">
+                      从本地 CPA 凭据目录中导入已存在的凭据型账号。
+                    </span>
+                  </span>
+                </button>
               </div>
-            </button>
-            <button
-              type="button"
-              onClick={() => { setShowSourcePicker(false); openImportDialog(); }}
-              className="flex flex-col items-center gap-3 rounded-xl border border-moon-200 p-5 text-center transition hover:border-lunar-400 hover:bg-lunar-50/30"
-            >
-              <Download className="size-8 text-moon-400" />
-              <div>
-                <p className="font-medium text-moon-800">Import from CPA</p>
-                <p className="mt-1 text-xs text-moon-500">
-                  Import existing accounts from cpa-auth directory.
-                </p>
-              </div>
-            </button>
-          </div>
+              <DialogFooter className="pt-1">
+                <Button type="button" variant="outline" onClick={() => setSourceStep("root")}>
+                  返回
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -581,10 +698,10 @@ export default function AccountsPage() {
             <DialogHeader>
               <DialogTitle>
                 {editId
-                  ? "Edit Account"
+                  ? "编辑账号"
                   : editSourceKind === "cpa"
-                    ? "Add CPA Provider Channel"
-                    : "Add Account"}
+                    ? "新增 CPA Provider Channel"
+                    : "新增账号"}
               </DialogTitle>
             </DialogHeader>
 
@@ -593,9 +710,9 @@ export default function AccountsPage() {
                 /* CPA form */
                 <>
                   <div className="space-y-2">
-                    <Label>CPA Service</Label>
+                    <Label>CPA 服务</Label>
                     <Input
-                      value={cpaService?.label ?? "Not configured"}
+                      value={cpaService?.label ?? "未配置"}
                       disabled
                       className="bg-moon-50"
                     />
@@ -617,7 +734,7 @@ export default function AccountsPage() {
                         }}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="Select provider..." />
+                          <SelectValue placeholder="选择 Provider..." />
                         </SelectTrigger>
                         <SelectContent>
                           {CPA_PROVIDERS.map((p) => (
@@ -630,7 +747,7 @@ export default function AccountsPage() {
                     )}
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="cpa-label">Label</Label>
+                    <Label htmlFor="cpa-label">标签</Label>
                     <Input
                       id="cpa-label"
                       value={cpaForm.label}
@@ -642,7 +759,7 @@ export default function AccountsPage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="cpa-models">Model Allowlist</Label>
+                    <Label htmlFor="cpa-models">模型白名单</Label>
                     <Input
                       id="cpa-models"
                       value={cpaForm.model_allowlist}
@@ -652,11 +769,11 @@ export default function AccountsPage() {
                           model_allowlist: e.target.value,
                         })
                       }
-                      placeholder="gpt-4o, gpt-4.1 (comma-separated, empty = all)"
+                      placeholder="gpt-4o, gpt-4.1（逗号分隔，留空表示全部）"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="cpa-notes">Notes</Label>
+                    <Label htmlFor="cpa-notes">备注</Label>
                     <textarea
                       id="cpa-notes"
                       className="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -687,7 +804,7 @@ export default function AccountsPage() {
                       }}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="Select provider..." />
+                        <SelectValue placeholder="选择 Provider..." />
                       </SelectTrigger>
                       <SelectContent>
                         {PROVIDER_TEMPLATES.map((p) => (
@@ -700,7 +817,7 @@ export default function AccountsPage() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="acc-label">Label</Label>
+                    <Label htmlFor="acc-label">标签</Label>
                     <Input
                       id="acc-label"
                       value={openaiForm.label}
@@ -741,7 +858,7 @@ export default function AccountsPage() {
                         })
                       }
                       placeholder={
-                        editId ? "Leave empty to keep current" : "sk-..."
+                        editId ? "留空则保留当前密钥" : "sk-..."
                       }
                       required={!editId}
                     />
@@ -753,14 +870,24 @@ export default function AccountsPage() {
                     size="sm"
                     className="w-full"
                     onClick={handleTestConnection}
-                    disabled={testing || !openaiForm.base_url}
+                    disabled={testing || !openaiForm.base_url || !openaiForm.api_key}
                   >
                     {testing ? <Loader2 className="size-4 animate-spin" /> : <Zap className="size-4" />}
-                    Test Connection
+                    测试连接
                   </Button>
+                  {!editId && (!openaiForm.base_url || !openaiForm.api_key) && (
+                      <p className="text-xs text-moon-500">
+                      请先填写 Base URL 和 API Key，再进行连接测试。
+                    </p>
+                  )}
+                  {editId && !openaiForm.api_key && (
+                    <p className="text-xs text-moon-500">
+                      若要测试连接，请输入新的 API Key。留空会保留当前密钥，但这里无法直接测试。
+                    </p>
+                  )}
 
                   <div className="space-y-2">
-                    <Label htmlFor="acc-models">Model Allowlist</Label>
+                    <Label htmlFor="acc-models">模型白名单</Label>
                     <Input
                       id="acc-models"
                       value={openaiForm.model_allowlist}
@@ -770,13 +897,13 @@ export default function AccountsPage() {
                           model_allowlist: e.target.value,
                         })
                       }
-                      placeholder="gpt-4o, gpt-4o-mini (comma-separated, empty = all)"
+                      placeholder="gpt-4o, gpt-4o-mini（逗号分隔，留空表示全部）"
                     />
                   </div>
 
                   <div className="grid grid-cols-3 gap-3">
                     <div className="space-y-2">
-                      <Label htmlFor="acc-quota-total">Total Quota</Label>
+                      <Label htmlFor="acc-quota-total">总额度</Label>
                       <Input
                         id="acc-quota-total"
                         type="number"
@@ -790,7 +917,7 @@ export default function AccountsPage() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="acc-quota-used">Used</Label>
+                      <Label htmlFor="acc-quota-used">已用</Label>
                       <Input
                         id="acc-quota-used"
                         type="number"
@@ -804,7 +931,7 @@ export default function AccountsPage() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label>Unit</Label>
+                      <Label>单位</Label>
                       <Select
                         value={openaiForm.quota_unit}
                         onValueChange={(v) =>
@@ -824,7 +951,7 @@ export default function AccountsPage() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="acc-notes">Notes</Label>
+                    <Label htmlFor="acc-notes">备注</Label>
                     <textarea
                       id="acc-notes"
                       className="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -845,9 +972,9 @@ export default function AccountsPage() {
                 variant="outline"
                 onClick={() => setShowForm(false)}
               >
-                Cancel
+                取消
               </Button>
-              <Button type="submit">{editId ? "Save" : "Create"}</Button>
+              <Button type="submit">{editId ? "保存" : "创建"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -856,8 +983,8 @@ export default function AccountsPage() {
       <ConfirmDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
-        title="Delete Account"
-        description={`Are you sure you want to delete "${deleteTarget?.label ?? ""}"? This action cannot be undone.`}
+        title="删除账号"
+        description={`确认删除“${deleteTarget?.label ?? ""}”吗？此操作不可撤销。`}
         onConfirm={confirmDelete}
       />
 
@@ -871,9 +998,26 @@ export default function AccountsPage() {
       }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Device Code Login</DialogTitle>
+            <DialogTitle>Device Code 登录</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            <div className="rounded-2xl border border-moon-200/70 bg-moon-50/70 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-moon-400">会话摘要</p>
+              <div className="mt-3 grid gap-3 text-sm sm:grid-cols-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-moon-400">CPA 服务</p>
+                  <p className="mt-1 font-medium text-moon-800">{cpaService?.label ?? "未配置"}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-moon-400">Provider</p>
+                  <p className="mt-1 font-medium text-moon-800">OpenAI / Codex</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-moon-400">结果</p>
+                  <p className="mt-1 font-medium text-moon-800">将创建一个凭据型 CPA 账号</p>
+                </div>
+              </div>
+            </div>
             {loginLoading && !loginSession && (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="size-6 animate-spin text-moon-400" />
@@ -882,7 +1026,7 @@ export default function AccountsPage() {
             {loginSession?.status === "pending" && (
               <>
                 <div className="space-y-2">
-                  <p className="text-sm text-moon-600">Open this URL:</p>
+                  <p className="text-sm text-moon-600">请打开以下地址：</p>
                   <div className="flex items-center gap-2">
                     <code className="flex-1 rounded-md bg-moon-50 px-3 py-2 text-sm">{loginSession.verification_uri}</code>
                     <Button size="icon" variant="outline" onClick={() => window.open(loginSession.verification_uri, "_blank")}>
@@ -891,12 +1035,12 @@ export default function AccountsPage() {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-sm text-moon-600">Enter this code:</p>
+                  <p className="text-sm text-moon-600">输入以下验证码：</p>
                   <div className="flex items-center gap-2">
                     <code className="flex-1 rounded-lg bg-moon-50 px-4 py-3 text-center text-lg font-mono font-bold tracking-widest">{loginSession.user_code}</code>
                     <Button size="icon" variant="outline" onClick={() => {
                       navigator.clipboard.writeText(loginSession.user_code ?? "");
-                      toast("Code copied");
+                      toast("验证码已复制");
                     }}>
                       <Copy className="size-4" />
                     </Button>
@@ -904,7 +1048,7 @@ export default function AccountsPage() {
                 </div>
                 <div className="flex items-center gap-2 text-sm text-moon-500">
                   <Loader2 className="size-4 animate-spin" />
-                  <span>Waiting for authorization...</span>
+                  <span>等待授权中...</span>
                   {loginSession.expires_at && (
                     <span className="ml-auto">
                       <CountdownTimer expiresAt={loginSession.expires_at} />
@@ -916,19 +1060,19 @@ export default function AccountsPage() {
             {loginSession?.status === "authorized" && (
               <div className="flex items-center gap-2 py-4 text-sm text-moon-600">
                 <Loader2 className="size-4 animate-spin" />
-                Authorized, finalizing account...
+                已授权，正在完成账号创建...
               </div>
             )}
             {loginSession?.status === "succeeded" && (
               <div className="space-y-3">
                 <div className="rounded-lg bg-green-50 p-4 text-sm text-green-800">
-                  Account created successfully!
+                  账号创建成功
                 </div>
                 {loginSession.account && (
                   <div className="space-y-1 text-sm text-moon-600">
-                    <p><span className="font-medium">Label:</span> {loginSession.account.label}</p>
-                    <p><span className="font-medium">Email:</span> {loginSession.account.cpa_email}</p>
-                    <p><span className="font-medium">Plan:</span> {loginSession.account.cpa_plan_type}</p>
+                    <p><span className="font-medium">标签：</span>{loginSession.account.label}</p>
+                    <p><span className="font-medium">邮箱：</span>{loginSession.account.cpa_email}</p>
+                    <p><span className="font-medium">套餐：</span>{loginSession.account.cpa_plan_type}</p>
                   </div>
                 )}
               </div>
@@ -936,15 +1080,15 @@ export default function AccountsPage() {
             {(loginSession?.status === "failed" || loginSession?.status === "expired") && (
               <div className="space-y-3">
                 <div className="rounded-lg bg-red-50 p-4 text-sm text-red-800">
-                  {loginSession.error_message || "Login failed"}
+                  {loginSession.error_message || "登录失败"}
                 </div>
-                <Button variant="outline" onClick={startDeviceCodeLogin}>Retry</Button>
+                <Button variant="outline" onClick={startDeviceCodeLogin}>重试</Button>
               </div>
             )}
           </div>
           <DialogFooter>
             {loginSession?.status === "succeeded" ? (
-              <Button onClick={() => { setShowDeviceCode(false); load(); }}>Done</Button>
+              <Button onClick={() => { setShowDeviceCode(false); load(); }}>完成</Button>
             ) : (
               <Button variant="outline" onClick={() => {
                 if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
@@ -953,7 +1097,7 @@ export default function AccountsPage() {
                 if (pollRef.current) clearInterval(pollRef.current);
                 pollRef.current = null;
                 setShowDeviceCode(false);
-              }}>Cancel</Button>
+              }}>取消</Button>
             )}
           </DialogFooter>
         </DialogContent>
@@ -963,15 +1107,18 @@ export default function AccountsPage() {
       <Dialog open={showImport} onOpenChange={setShowImport}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Import CPA Accounts</DialogTitle>
+            <DialogTitle>导入 CPA 账号</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            <div className="rounded-2xl border border-moon-200/70 bg-moon-50/70 p-4 text-sm text-moon-500">
+              扫描本地 CPA 凭据目录中的现有账号，并将选中的凭据型账号接入当前工作区。
+            </div>
             {importLoading && remoteAccounts.length === 0 ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="size-6 animate-spin text-moon-400" />
               </div>
             ) : remoteAccounts.length === 0 ? (
-              <p className="py-4 text-center text-sm text-moon-500">No accounts found in cpa-auth directory.</p>
+              <p className="py-4 text-center text-sm text-moon-500">在 cpa-auth 目录中未发现可导入账号。</p>
             ) : (
               <div className="max-h-64 space-y-2 overflow-y-auto">
                 {remoteAccounts.map((ra) => (
@@ -994,27 +1141,41 @@ export default function AccountsPage() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-moon-800">{ra.email}</p>
                       <p className="text-xs text-moon-500">
-                        {ra.provider} - {ra.plan_type || "unknown"}
-                        {ra.expired_at && ` | Expires: ${new Date(ra.expired_at).toLocaleDateString()}`}
+                        {ra.provider} - {ra.plan_type || "未知套餐"}
+                        {ra.expired_at && ` | 到期：${new Date(ra.expired_at).toLocaleDateString()}`}
                       </p>
                     </div>
                     {ra.already_imported && (
                       <span className="rounded-md bg-moon-100 px-2 py-0.5 text-[10px] font-medium text-moon-500">
-                        Already imported
+                        已导入
                       </span>
                     )}
                   </label>
                 ))}
               </div>
             )}
+            {selectedKeys.size === 1 && (
+              <div className="space-y-2">
+                <Label htmlFor="import-label">自定义标签</Label>
+                <Input
+                  id="import-label"
+                  value={importLabel}
+                  onChange={(e) => setImportLabel(e.target.value)}
+                  placeholder="选填。留空则使用自动命名。"
+                />
+                <p className="text-xs text-moon-500">
+                  仅在导入单个账号时生效。
+                </p>
+              </div>
+            )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowImport(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setShowImport(false)}>取消</Button>
             <Button
               disabled={selectedKeys.size === 0 || importLoading}
               onClick={handleImport}
             >
-              {importLoading ? <Loader2 className="size-4 animate-spin" /> : `Import (${selectedKeys.size})`}
+              {importLoading ? <Loader2 className="size-4 animate-spin" /> : `导入（${selectedKeys.size}）`}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1024,10 +1185,7 @@ export default function AccountsPage() {
 
   // --- Device Code Login ---
   function startDeviceCodeLogin() {
-    if (!cpaService) {
-      toast("Please configure a CPA Service first", "error");
-      return;
-    }
+    if (!cpaService) return;
     setLoginSession(null);
     setLoginLoading(true);
     setShowDeviceCode(true);
@@ -1050,7 +1208,7 @@ export default function AccountsPage() {
             })
             .catch(() => {
               setLoginSession((prev) =>
-                prev ? { ...prev, status: "failed", error_message: "Session lost. Please start again." } : null
+                prev ? { ...prev, status: "failed", error_message: "登录会话已丢失，请重新开始。" } : null
               );
               if (pollRef.current) clearInterval(pollRef.current);
               pollRef.current = null;
@@ -1059,17 +1217,14 @@ export default function AccountsPage() {
       })
       .catch((err) => {
         setLoginLoading(false);
-        toast(err instanceof Error ? err.message : "Failed to start login", "error");
+        toast(err instanceof Error ? err.message : "无法发起登录流程", "error");
         setShowDeviceCode(false);
       });
   }
 
   // --- Import ---
   function openImportDialog() {
-    if (!cpaService) {
-      toast("Please configure a CPA Service first", "error");
-      return;
-    }
+    if (!cpaService) return;
     setRemoteAccounts([]);
     setSelectedKeys(new Set());
     setImportLabel("");
@@ -1078,7 +1233,7 @@ export default function AccountsPage() {
 
     api.get<RemoteAccount[]>("/cpa/service/remote-accounts")
       .then((accs) => setRemoteAccounts(accs ?? []))
-      .catch((err) => toast(err instanceof Error ? err.message : "Failed to scan accounts", "error"))
+      .catch((err) => toast(err instanceof Error ? err.message : "扫描账号失败", "error"))
       .finally(() => setImportLoading(false));
   }
 
@@ -1094,18 +1249,18 @@ export default function AccountsPage() {
           label: importLabel,
           enabled: true,
         });
-        toast("Account imported");
+        toast("账号已导入");
       } else {
         const result = await api.post<{ imported: number; skipped: number; errors: string[] }>("/accounts/cpa/import/batch", {
           service_id: cpaService.id,
           account_keys: [...selectedKeys],
         });
-        toast(`Imported ${result.imported}, skipped ${result.skipped}${result.errors?.length ? `, ${result.errors.length} errors` : ""}`);
+        toast(`已导入 ${result.imported} 个，跳过 ${result.skipped} 个${result.errors?.length ? `，${result.errors.length} 个失败` : ""}`);
       }
       setShowImport(false);
       load();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Import failed", "error");
+      toast(err instanceof Error ? err.message : "导入失败", "error");
     } finally {
       setImportLoading(false);
     }
@@ -1117,7 +1272,7 @@ function CountdownTimer({ expiresAt }: { expiresAt: string }) {
   useEffect(() => {
     function update() {
       const diff = new Date(expiresAt).getTime() - Date.now();
-      if (diff <= 0) { setRemaining("Expired"); return; }
+      if (diff <= 0) { setRemaining("已过期"); return; }
       const min = Math.floor(diff / 60000);
       const sec = Math.floor((diff % 60000) / 1000);
       setRemaining(`${min}:${sec.toString().padStart(2, "0")}`);

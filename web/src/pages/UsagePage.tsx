@@ -22,11 +22,11 @@ import { estimateCost, formatCost } from "@/lib/pricing";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 const TIME_RANGES = [
-  { value: "1h", label: "Last 1h" },
-  { value: "24h", label: "Last 24h" },
-  { value: "7d", label: "Last 7d" },
-  { value: "30d", label: "Last 30d" },
-  { value: "all", label: "All time" },
+  { value: "1h", label: "最近 1 小时" },
+  { value: "24h", label: "最近 24 小时" },
+  { value: "7d", label: "最近 7 天" },
+  { value: "30d", label: "最近 30 天" },
+  { value: "all", label: "全部时间" },
 ];
 
 const logColumns: Column<RequestLog>[] = [
@@ -143,7 +143,7 @@ export default function UsagePage() {
     api
       .get<UsageStats>(`/usage?${buildQuery()}`)
       .then(setStats)
-      .catch(() => toast("Failed to load usage data", "error"))
+      .catch(() => toast("加载用量数据失败", "error"))
       .finally(() => setLoading(false));
   }
 
@@ -170,7 +170,7 @@ export default function UsagePage() {
     api
       .get<LatencyBucket[]>(`/usage/latency?${params}`)
       .then((d) => setLatencyData(d ?? []))
-      .catch(() => toast("Failed to load latency data", "error"))
+      .catch(() => toast("加载延迟数据失败", "error"))
       .finally(() => setLatencyLoading(false));
   }, [viewTab, range, filterModel, latencyBucket]);
 
@@ -274,13 +274,13 @@ export default function UsagePage() {
   return (
     <div className="space-y-8">
       <PageHeader
-        eyebrow="Moonlight Console"
-        title="Usage"
-        description="Analyze request volume, token spend, and routing behavior over time without leaving the admin workspace."
+        eyebrow="Lune 控制台"
+        title="用量"
+        description="按时间、账号、令牌和模型维度查看请求量、Token 消耗与路由行为。"
         meta={
           <span>
-            {stats?.logs?.total ?? 0} log entries in the selected range
-            {activeFilters > 0 ? ` • ${activeFilters} active filter${activeFilters > 1 ? "s" : ""}` : ""}
+            当前范围内共 {stats?.logs?.total ?? 0} 条日志
+            {activeFilters > 0 ? ` • 已启用 ${activeFilters} 个筛选条件` : ""}
           </span>
         }
       />
@@ -289,17 +289,17 @@ export default function UsagePage() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-1">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-lunar-600">
-              Control Surface
+              筛选面板
             </p>
             <h2 className="text-lg font-semibold text-moon-800">
-              Slice usage by time range, token, account, or model alias
+              按时间、令牌、账号或模型别名查看用量切片
             </h2>
             <p className="text-sm text-moon-500">
-              Filters update the summary, ranking tables, and request log together.
+              筛选条件会同时影响概览卡片、排行榜和请求日志。
             </p>
           </div>
           <div className="text-sm text-moon-500">
-            Current range:{" "}
+            当前范围：
             <span className="font-medium text-moon-700">
               {TIME_RANGES.find((item) => item.value === range)?.label ?? range}
             </span>
@@ -322,10 +322,10 @@ export default function UsagePage() {
 
           <Select value={filterToken} onValueChange={(v) => { if (v) { setFilterToken(v); setPage(1); } }}>
             <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
-              <SelectValue placeholder="Token" />
+              <SelectValue placeholder="令牌" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Tokens</SelectItem>
+              <SelectItem value="all">全部令牌</SelectItem>
               {tokensList.map((t) => (
                 <SelectItem key={t.id} value={t.name}>
                   {t.name}
@@ -336,10 +336,10 @@ export default function UsagePage() {
 
           <Select value={filterAccount} onValueChange={(v) => { if (v) { setFilterAccount(v); setPage(1); } }}>
             <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
-              <SelectValue placeholder="Account" />
+              <SelectValue placeholder="账号" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Accounts</SelectItem>
+              <SelectItem value="all">全部账号</SelectItem>
               {accounts.map((a) => (
                 <SelectItem key={a.id} value={String(a.id)}>
                   {a.label}
@@ -350,10 +350,10 @@ export default function UsagePage() {
 
           <Select value={filterModel} onValueChange={(v) => { if (v) { setFilterModel(v); setPage(1); } }}>
             <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
-              <SelectValue placeholder="Model" />
+              <SelectValue placeholder="模型" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Models</SelectItem>
+              <SelectItem value="all">全部模型</SelectItem>
               {models.map((m) => (
                 <SelectItem key={m} value={m}>
                   {m}
@@ -367,8 +367,8 @@ export default function UsagePage() {
               <SelectValue placeholder="Source" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Sources</SelectItem>
-              <SelectItem value="openai_compat">OpenAI Compatible</SelectItem>
+              <SelectItem value="all">全部来源</SelectItem>
+              <SelectItem value="openai_compat">OpenAI 兼容</SelectItem>
               <SelectItem value="cpa">CPA</SelectItem>
             </SelectContent>
           </Select>
@@ -392,28 +392,28 @@ export default function UsagePage() {
         <>
           <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <StatCard
-              label="Requests"
+              label="请求数"
               value={compact(stats?.total_requests ?? 0)}
-              sub="Matching requests in the active range."
+              sub="当前筛选范围内的请求总数。"
               icon={Activity}
               variant="hero"
             />
             <StatCard
-              label="Input Tokens"
+              label="输入 Token"
               value={compact(stats?.total_input_tokens ?? 0)}
-              sub="Inbound tokens before routing."
+              sub="进入路由前统计到的输入 Token。"
               icon={ArrowDownToLine}
             />
             <StatCard
-              label="Output Tokens"
+              label="输出 Token"
               value={compact(stats?.total_output_tokens ?? 0)}
-              sub="Generated tokens returned downstream."
+              sub="返回给下游的生成 Token。"
               icon={ArrowUpFromLine}
             />
             <StatCard
-              label="Est. Cost"
+              label="预估成本"
               value={totalCost > 0 ? formatCost(totalCost) : "-"}
-              sub="Estimated cost for this page."
+              sub="基于当前页日志估算。"
               icon={DollarSign}
             />
           </section>
@@ -421,30 +421,30 @@ export default function UsagePage() {
           <section className="grid gap-6 xl:grid-cols-2">
             <div className="space-y-4">
               <SectionHeading
-                title="Usage by Account"
-                description="Which upstream accounts are carrying the current workload."
+                title="按账号查看用量"
+                description="查看当前负载主要由哪些上游账号承担。"
               />
               <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
                 <DataTable
                   columns={byAccountCols}
                   rows={stats?.by_account ?? []}
                   rowKey={(r) => r.account_id}
-                  empty="No data"
+                  empty="暂无数据"
                 />
               </div>
             </div>
 
             <div className="space-y-4">
               <SectionHeading
-                title="Usage by Token"
-                description="Client-side demand distribution across issued access tokens."
+                title="按令牌查看用量"
+                description="查看客户端请求在各访问令牌上的分布。"
               />
               <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
                 <DataTable
                   columns={byTokenCols}
                   rows={stats?.by_token ?? []}
                   rowKey={(r) => r.token_name}
-                  empty="No data"
+                  empty="暂无数据"
                 />
               </div>
             </div>
@@ -463,7 +463,7 @@ export default function UsagePage() {
                     : "bg-moon-100 text-moon-500 hover:bg-moon-200"
                 }`}
               >
-                {tab === "requests" ? "Requests" : "Latency"}
+                {tab === "requests" ? "请求日志" : "延迟曲线"}
               </button>
             ))}
           </div>
@@ -471,12 +471,12 @@ export default function UsagePage() {
           {viewTab === "requests" ? (
             <section className="space-y-4">
               <SectionHeading
-                title="Request Log"
-                description="Detailed request samples with latency, token flow, and upstream account outcomes."
+                title="请求日志"
+                description="查看请求样本、延迟、Token 流向和上游账号结果。"
                 action={
                   totalPages > 1 ? (
                     <span className="text-sm text-moon-500">
-                      Page {page} of {totalPages}
+                      第 {page} / {totalPages} 页
                     </span>
                   ) : null
                 }
@@ -486,7 +486,7 @@ export default function UsagePage() {
                     columns={logColumns}
                     rows={stats?.logs?.items ?? []}
                     rowKey={(r) => r.id}
-                    empty="No requests logged"
+                    empty="暂无请求日志"
                   />
               </div>
 
@@ -498,10 +498,10 @@ export default function UsagePage() {
                     disabled={page <= 1}
                     onClick={() => setPage((p) => p - 1)}
                   >
-                    Prev
+                    上一页
                   </Button>
                   <span className="text-sm text-moon-500">
-                    Page {page} of {totalPages}
+                    第 {page} / {totalPages} 页
                   </span>
                   <Button
                     variant="outline"
@@ -509,7 +509,7 @@ export default function UsagePage() {
                     disabled={page >= totalPages}
                     onClick={() => setPage((p) => p + 1)}
                   >
-                    Next
+                    下一页
                   </Button>
                 </div>
               )}
@@ -518,8 +518,8 @@ export default function UsagePage() {
             <section className="space-y-4">
               <div className="flex items-center justify-between">
                 <SectionHeading
-                  title="Latency Distribution"
-                  description="p50 / p95 / p99 latency over time."
+                  title="延迟分布"
+                  description="查看 p50 / p95 / p99 随时间的变化。"
                 />
                 <Select value={latencyBucket} onValueChange={(v) => v && setLatencyBucket(v)}>
                   <SelectTrigger className="h-9 w-24 rounded-lg border-moon-200 bg-white/90 text-sm">

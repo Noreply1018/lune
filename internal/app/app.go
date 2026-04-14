@@ -26,6 +26,8 @@ type Config struct {
 	Port       int    `yaml:"port"`
 	DataDir    string `yaml:"data_dir"`
 	CpaAuthDir string `yaml:"cpa_auth_dir"`
+	CpaBaseURL string `yaml:"cpa_base_url"`
+	CpaAPIKey  string `yaml:"cpa_api_key"`
 }
 
 func LoadConfig() Config {
@@ -50,6 +52,12 @@ func LoadConfig() Config {
 	}
 	if v := os.Getenv("LUNE_CPA_AUTH_DIR"); v != "" {
 		cfg.CpaAuthDir = v
+	}
+	if v := os.Getenv("LUNE_CPA_BASE_URL"); v != "" {
+		cfg.CpaBaseURL = v
+	}
+	if v := os.Getenv("LUNE_CPA_API_KEY"); v != "" {
+		cfg.CpaAPIKey = v
 	}
 
 	return cfg
@@ -88,6 +96,9 @@ func New(cfg Config) (*App, error) {
 func (a *App) Run() error {
 	// resolve admin token
 	adminToken, tokenSource := a.resolveAdminToken()
+
+	// auto-configure default CPA service if env vars are set
+	a.ensureDefaultCpa()
 
 	srv := httpserver.New(a.logger, a.store, a.cache, a.cfg.CpaAuthDir)
 
@@ -157,6 +168,28 @@ func (a *App) resolveAdminToken() (token, source string) {
 	_ = a.store.SetSetting("admin_token", token)
 	a.cache.Invalidate()
 	return token, "auto-generated"
+}
+
+func (a *App) ensureDefaultCpa() {
+	if a.cfg.CpaBaseURL == "" {
+		return
+	}
+	existing, _ := a.store.GetCpaService()
+	if existing != nil {
+		return
+	}
+	svc := &store.CpaService{
+		Label:   "Default CPA",
+		BaseURL: a.cfg.CpaBaseURL,
+		APIKey:  a.cfg.CpaAPIKey,
+		Enabled: true,
+	}
+	if _, err := a.store.CreateCpaService(svc); err != nil {
+		a.logger.Printf("auto-configure CPA: %v", err)
+		return
+	}
+	a.cache.Invalidate()
+	a.logger.Printf("CPA service auto-configured: %s", a.cfg.CpaBaseURL)
 }
 
 func Check(cfg Config) error {
