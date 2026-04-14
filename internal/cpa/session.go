@@ -56,7 +56,7 @@ func (s *SessionStore) CreateSession(serviceID int64, dcr *DeviceCodeResponse) (
 		VerificationURI: dcr.VerificationURI,
 		UserCode:        dcr.UserCode,
 		ExpiresAt:       time.Now().Add(time.Duration(dcr.ExpiresIn) * time.Second),
-		PollInterval:    dcr.Interval,
+		PollInterval:    int(dcr.Interval),
 		DeviceCode:      dcr.DeviceCode,
 	}
 

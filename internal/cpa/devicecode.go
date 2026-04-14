@@ -6,9 +6,33 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// flexInt handles JSON fields that may be either a number or a string-encoded number.
+type flexInt int
+
+func (fi *flexInt) UnmarshalJSON(b []byte) error {
+	// Try number first.
+	var n int
+	if err := json.Unmarshal(b, &n); err == nil {
+		*fi = flexInt(n)
+		return nil
+	}
+	// Try string.
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return fmt.Errorf("flexInt: cannot unmarshal %s", string(b))
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("flexInt: invalid number string %q", s)
+	}
+	*fi = flexInt(n)
+	return nil
+}
 
 const (
 	deviceCodeURL = "https://auth.openai.com/api/accounts/deviceauth/usercode"
@@ -25,19 +49,20 @@ var (
 )
 
 type DeviceCodeResponse struct {
-	DeviceCode      string `json:"device_code"`
-	UserCode        string `json:"user_code"`
-	VerificationURI string `json:"verification_uri"`
-	ExpiresIn       int    `json:"expires_in"`
-	Interval        int    `json:"interval"`
+	DeviceCode      string  `json:"device_code"`
+	UserCode        string  `json:"user_code"`
+	VerificationURI string  `json:"verification_uri"`
+	VerificationURL string  `json:"verification_url"` // some providers use this instead
+	ExpiresIn       flexInt `json:"expires_in"`
+	Interval        flexInt `json:"interval"`
 }
 
 type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	IDToken      string `json:"id_token"`
-	ExpiresIn    int    `json:"expires_in"`
-	TokenType    string `json:"token_type"`
+	AccessToken  string  `json:"access_token"`
+	RefreshToken string  `json:"refresh_token"`
+	IDToken      string  `json:"id_token"`
+	ExpiresIn    flexInt `json:"expires_in"`
+	TokenType    string  `json:"token_type"`
 }
 
 func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
@@ -63,8 +88,14 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&dcr); err != nil {
 		return nil, err
 	}
+	if dcr.VerificationURI == "" && dcr.VerificationURL != "" {
+		dcr.VerificationURI = dcr.VerificationURL
+	}
 	if dcr.VerificationURI == "" {
 		dcr.VerificationURI = "https://auth.openai.com/codex/device"
+	}
+	if dcr.ExpiresIn == 0 {
+		dcr.ExpiresIn = 900 // default 15 minutes
 	}
 	if dcr.Interval == 0 {
 		dcr.Interval = 5

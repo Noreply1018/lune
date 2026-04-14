@@ -1068,6 +1068,10 @@ func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSessio
 
 			tokenResp, err := cpa.PollForToken(ctx, session.DeviceCode)
 			if err != nil {
+				if ctx.Err() != nil {
+					// context cancelled or deadline exceeded — let ctx.Done() handle it
+					continue
+				}
 				if errors.Is(err, cpa.ErrAuthorizationPending) {
 					continue
 				}

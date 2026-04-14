@@ -142,7 +142,7 @@ docker compose ps cpa
 
 如果你希望改完文件后自动重启，推荐使用 `air`。它是一个 Go 开发期的开源 live reload 工具：监听文件变化，自动重新编译并重启当前进程，不需要你手工 `Ctrl+C` 再 `go run`。
 
-首次安装：
+如果你的机器已经能正常执行 `go run ./cmd/lune`，说明 Go 工具链已经可用；这一步只是用 `go install` 安装 `air`，不是安装 Go 本身：
 
 ```bash
 go install github.com/air-verse/air@latest
@@ -162,6 +162,14 @@ air
 - 保存 Go 文件或 `lune.yaml` 后会自动重新编译并重启
 
 `air` 适合日常后端开发；如果你只是偶尔想强制刷新一次进程，用 `./scripts/dev-restart.sh` 更直接。
+
+如果你是通过 Docker 运行整个项目，则不需要宿主机安装 Go 或 `air`；容器启动直接使用：
+
+```bash
+docker compose up -d
+```
+
+只有本地直接执行 `go run ./cmd/lune` 或 `air` 做开发时，才需要宿主机具备 Go 工具链。
 
 ```bash
 go build ./cmd/lune                            # 构建
