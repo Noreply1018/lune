@@ -730,7 +730,7 @@ export default function AccountsPage() {
                       <div>
                         <p className="text-sm font-medium text-amber-900">当前无法使用 CPA 入口</p>
                         <p className="mt-1 text-sm text-amber-800/80">
-                          需要先配置 CPA 服务，才能创建 CPA Channel、执行 Device Code 登录或导入已有账号。
+                          需要先配置 CPA 服务，才能创建 CPA Channel、执行 Codex 登录或导入已有账号。
                         </p>
                       </div>
                       <Button
@@ -791,9 +791,9 @@ export default function AccountsPage() {
                     <KeyRound className="size-5" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="font-medium text-moon-800">Device Code 登录</span>
+                    <span className="font-medium text-moon-800">Codex 登录</span>
                     <span className="mt-1 block text-sm text-moon-500">
-                      通过 Device Code 登录，创建凭据型 CPA 账号。
+                      通过 Codex OAuth 登录，创建凭据型 CPA 账号。
                     </span>
                   </span>
                 </button>
@@ -1123,7 +1123,7 @@ export default function AccountsPage() {
         onConfirm={confirmDelete}
       />
 
-      {/* CPA Device Code Login Dialog */}
+      {/* CPA Codex Login Dialog */}
       <Dialog open={showCpaLogin} onOpenChange={(open) => {
         if (!open) {
           if (loginSession && (loginSession.status === "pending" || loginSession.status === "scanning")) {
@@ -1333,7 +1333,7 @@ export default function AccountsPage() {
     </div>
   );
 
-  // --- CPA Device Code Login ---
+  // --- CPA Codex Login ---
   function startCpaOAuthLogin() {
     if (!cpaService) return;
     // cancel existing session if still active
