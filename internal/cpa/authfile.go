@@ -28,7 +28,20 @@ func AccountKeyFromFile(f *CpaAuthFile) string {
 	return fmt.Sprintf("%s-%s-%s", f.Type, f.Email, plan)
 }
 
+func validateAccountKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("empty account key")
+	}
+	if strings.Contains(key, "/") || strings.Contains(key, "\\") || strings.Contains(key, "..") {
+		return fmt.Errorf("invalid account key: %q", key)
+	}
+	return nil
+}
+
 func ReadAuthFile(dir, accountKey string) (*CpaAuthFile, error) {
+	if err := validateAccountKey(accountKey); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(dir, accountKey+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -42,6 +55,9 @@ func ReadAuthFile(dir, accountKey string) (*CpaAuthFile, error) {
 }
 
 func WriteAuthFile(dir string, f *CpaAuthFile, accountKey string) error {
+	if err := validateAccountKey(accountKey); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err

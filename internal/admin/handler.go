@@ -560,10 +560,20 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 		SourceKind: r.URL.Query().Get("source_kind"),
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
-		filter.Limit, _ = strconv.Atoi(v)
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			webutil.WriteAdminError(w, 400, "bad_request", "invalid limit parameter")
+			return
+		}
+		filter.Limit = n
 	}
 	if v := r.URL.Query().Get("offset"); v != "" {
-		filter.Offset, _ = strconv.Atoi(v)
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			webutil.WriteAdminError(w, 400, "bad_request", "invalid offset parameter")
+			return
+		}
+		filter.Offset = n
 	}
 	logs, total, err := h.store.GetUsage(filter)
 	if err != nil {

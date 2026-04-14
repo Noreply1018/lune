@@ -15,6 +15,8 @@ import (
 	"lune/internal/store"
 )
 
+const degradedLatencyThreshold = 5 * time.Second
+
 type Checker struct {
 	store      *store.Store
 	cache      *store.RoutingCache
@@ -123,7 +125,7 @@ func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 		return
 	}
 
-	if latency > 5*time.Second {
+	if latency > degradedLatencyThreshold {
 		c.store.UpdateAccountHealth(acc.ID, "degraded", fmt.Sprintf("slow response: %s", latency))
 		return
 	}
