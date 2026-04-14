@@ -18,77 +18,29 @@
 默认启动方式：
 
 ```bash
-docker compose up -d
+./scripts/up.sh
 ```
 
-这会同时启动 Lune 和 CPA。启动后可访问：
-
-- Admin UI: `http://127.0.0.1:7788/admin`
-- Gateway API: `http://127.0.0.1:7788/v1`
-
-常用状态查看：
-
-```bash
-docker compose ps
-docker compose logs -f lune
-```
+这会同时启动 Lune 和 CPA，并在终端打印当前访问地址。地址展示会优先取运行中的 Docker 端口映射，拿不到时再回退到 `LUNE_PORT` 和本地 `lune.yaml`。
 
 ## 启动与开发命令
 
-### Docker
+所有常用操作都统一通过 `scripts/` 下的 Docker 包装脚本完成：
 
 ```bash
-docker compose up -d           # 启动 Lune + CPA
-docker compose restart lune    # 重启 Lune
-docker compose restart cpa     # 重启 CPA
-docker compose ps              # 查看容器状态
-docker compose logs -f lune    # 查看 Lune 日志
-docker compose logs -f cpa     # 查看 CPA 日志
+./scripts/up.sh               # 启动 Lune + CPA，并打印访问地址
+./scripts/restart.sh          # 默认重启 Lune
+./scripts/restart.sh cpa      # 重启 CPA
+./scripts/restart.sh all      # 重启全部服务
+./scripts/logs.sh             # 默认跟随 Lune 日志
+./scripts/logs.sh cpa         # 跟随 CPA 日志
+./scripts/logs.sh all         # 跟随全部日志
+./scripts/ps.sh               # 查看容器状态
+./scripts/down.sh             # 停止并移除容器
+./scripts/rebuild.sh          # 重新构建并启动
 ```
 
-Docker Compose 是推荐运行方式。`docker-compose.yml` 已经把 Lune 和 CPA 接好，容器内默认通过 `http://cpa:8317` 通信。
-
-### 本地开发
-
-```bash
-go run ./cmd/lune              # 本地直接运行 Lune
-./scripts/dev-restart.sh       # 按当前配置端口重启本地开发进程
-air                            # 监听 Go 文件和 lune.yaml，自动重编译 + 重启
-go build ./cmd/lune            # 构建
-CGO_ENABLED=0 go build -o lune ./cmd/lune
-```
-
-这些命令主要用于仓库开发和调试，不是默认启动路径。
-
-`./scripts/dev-restart.sh` 会按下面的优先级解析当前端口：
-
-- `LUNE_PORT`
-- 本地 `lune.yaml` 里的 `port`
-- 默认值 `7788`
-
-### Air
-
-`air` 是一个 Go 开发期的开源 live reload 工具。保存 Go 文件或本地 `lune.yaml` 后，它会自动重新编译并重启当前进程。
-
-安装 `air`：
-
-```bash
-go install github.com/air-verse/air@latest
-```
-
-仓库已提交 [`.air.toml`](/home/lh/projects/lune/.air.toml) 作为默认配置，行为如下：
-
-- 构建产物输出到 `tmp/`
-- 监听 `go` 文件和本地 `lune.yaml`
-- 忽略 `data/`、`cpa-auth/`、`web/`、`internal/site/dist/` 等目录
-
-### CLI
-
-```bash
-lune up
-lune version
-lune check
-```
+Docker Compose 是唯一推荐的运行和开发方式。README 不再提供本地 `go run` 或 `air` 工作流。
 
 ## 配置
 
@@ -122,19 +74,11 @@ cpa_api_key: sk-cpa-default
 
 CPA 是外部代理服务，但在本仓库里已经纳入 `docker-compose.yml`，默认通过 Docker Compose 与 Lune 一起启动。
 
-需要区分两件事：
+在 Docker Compose 场景下：
 
-- Docker 启动 CPA：由 `docker compose up -d` 负责
-- 配置默认 CPA 连接：由 `LUNE_CPA_BASE_URL` 或本地 `lune.yaml` 负责
-
-在 Docker Compose 场景下，Lune 默认连 `http://cpa:8317`，无需再到后台手动新增默认 CPA Service。
-
-如果你本地直接运行 `go run ./cmd/lune`，而 CPA 仍在宿主机或容器外暴露 `8317`，则本地 `lune.yaml` 可以写成：
-
-```yaml
-cpa_base_url: http://127.0.0.1:8317
-cpa_api_key: sk-cpa-default
-```
+- `./scripts/up.sh` 会同时启动 Lune 和 CPA
+- Lune 默认通过 `http://cpa:8317` 访问 CPA
+- 默认 CPA 连接会由 Compose 里的环境变量自动配置，无需在后台手动新增
 
 Lune 和 CPA 通过共享 `cpa-auth` 卷交换凭据文件，CPA 会热加载该目录的变更。
 
