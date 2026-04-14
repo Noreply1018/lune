@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1111,7 +1110,7 @@ func generateToken() string {
 	return "sk-lune-" + hex.EncodeToString(b)
 }
 
-// --- CPA Login Sessions (Device Code Flow) ---
+// --- CPA Login Sessions (Management API Flow) ---
 
 func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -1122,48 +1121,55 @@ func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.cpaAuthDir == "" {
-		webutil.WriteAdminError(w, 400, "not_configured", "cpa_auth_dir is not configured")
-		return
-	}
-
 	svc, err := h.store.GetCpaServiceByID(req.ServiceID)
 	if err != nil || svc == nil {
 		webutil.WriteAdminError(w, 404, "not_found", "CPA service not found")
 		return
 	}
 
-	dcr, err := cpa.RequestDeviceCode(r.Context())
+	mgmt, err := h.cpaManagementClient(svc)
 	if err != nil {
-		webutil.WriteAdminError(w, 502, "upstream_error", fmt.Sprintf("device code request failed: %v", err))
+		webutil.WriteAdminError(w, 400, "not_configured", err.Error())
 		return
 	}
 
-	session, err := h.sessions.CreateSession(req.ServiceID, dcr)
+	authResp, err := mgmt.StartCodexAuth(r.Context())
+	if err != nil {
+		webutil.WriteAdminError(w, 502, "upstream_error", fmt.Sprintf("CPA codex auth failed: %v", err))
+		return
+	}
+
+	// snapshot existing auth keys to detect new files after authorization
+	existingKeys := make(map[string]bool)
+	if h.cpaAuthDir != "" {
+		if scanned, err := cpa.ScanAuthDirKeyed(h.cpaAuthDir); err == nil {
+			for _, s := range scanned {
+				existingKeys[s.Key] = true
+			}
+		}
+	}
+
+	session, err := h.sessions.CreateSession(req.ServiceID, authResp.URL, authResp.State, existingKeys)
 	if err != nil {
 		webutil.WriteAdminError(w, 409, "active_session", err.Error())
 		return
 	}
 
-	// start background polling goroutine
 	ctx, cancel := context.WithDeadline(context.Background(), session.ExpiresAt)
 	session.CancelFunc = cancel
 
-	go h.pollLoginSession(ctx, session, svc)
+	go h.pollLoginSession(ctx, session, svc, mgmt)
 
 	webutil.WriteData(w, 201, map[string]any{
-		"id":                    session.ID,
-		"status":                session.Status,
-		"verification_uri":      session.VerificationURI,
-		"user_code":             session.UserCode,
-		"expires_at":            session.ExpiresAt.Format(time.RFC3339),
-		"poll_interval_seconds": session.PollInterval,
+		"id":         session.ID,
+		"status":     session.Status,
+		"auth_url":   session.AuthURL,
+		"expires_at": session.ExpiresAt.Format(time.RFC3339),
 	})
 }
 
-func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSession, svc *store.CpaService) {
-	interval := time.Duration(session.PollInterval) * time.Second
-	ticker := time.NewTicker(interval)
+func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSession, svc *store.CpaService, mgmt *cpa.ManagementClient) {
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -1171,7 +1177,7 @@ func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSessio
 		case <-ctx.Done():
 			s := h.sessions.GetSession(session.ID)
 			if s != nil && s.Status == "pending" {
-				h.sessions.UpdateStatus(session.ID, "expired", "expired_token", "Device code expired")
+				h.sessions.UpdateStatus(session.ID, "expired", "expired", "Login session expired")
 			}
 			return
 		case <-ticker.C:
@@ -1180,68 +1186,68 @@ func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSessio
 				return
 			}
 
-			tokenResp, err := cpa.PollForToken(ctx, session.DeviceAuthID, session.UserCode)
+			statusResp, err := mgmt.GetAuthStatus(ctx, session.AuthState)
 			if err != nil {
-				if errors.Is(err, cpa.ErrAuthorizationPending) {
-					continue
-				}
-				if errors.Is(err, cpa.ErrSlowDown) {
-					ticker.Reset(interval + 5*time.Second)
-					continue
-				}
-				if errors.Is(err, cpa.ErrExpiredToken) {
-					h.sessions.UpdateStatus(session.ID, "expired", "expired_token", "Device code expired")
-					return
-				}
-				if errors.Is(err, cpa.ErrAccessDenied) {
-					h.sessions.UpdateStatus(session.ID, "failed", "access_denied", "User denied authorization")
-					return
-				}
-				h.sessions.UpdateStatus(session.ID, "failed", "poll_error", err.Error())
+				h.sessions.UpdateStatus(session.ID, "failed", "poll_error", fmt.Sprintf("Failed to check auth status: %v", err))
 				return
 			}
 
-			// success — process the token
-			h.sessions.UpdateStatus(session.ID, "authorized", "", "")
-			h.finalizeLogin(session, svc, tokenResp)
-			return
+			switch statusResp.Status {
+			case "wait":
+				continue
+			case "ok":
+				h.finalizeManagementLogin(session, svc)
+				return
+			default:
+				errMsg := statusResp.Error
+				if errMsg == "" {
+					errMsg = fmt.Sprintf("CPA auth returned status: %s", statusResp.Status)
+				}
+				h.sessions.UpdateStatus(session.ID, "failed", "auth_error", errMsg)
+				return
+			}
 		}
 	}
 }
 
-func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService, tokenResp *cpa.TokenResponse) {
-	info, err := cpa.ParseAccountInfoFromTokens(tokenResp.IDToken, tokenResp.AccessToken)
-	if err != nil {
-		h.sessions.UpdateStatus(session.ID, "failed", "jwt_parse_error", fmt.Sprintf("Failed to parse JWT: %v", err))
+func (h *Handler) finalizeManagementLogin(session *cpa.LoginSession, svc *store.CpaService) {
+	h.sessions.UpdateStatus(session.ID, "scanning", "", "")
+
+	if h.cpaAuthDir == "" {
+		h.sessions.UpdateStatus(session.ID, "failed", "not_configured", "cpa_auth_dir is not configured")
 		return
 	}
 
-	planType := info.PlanType
-	if planType == "" {
-		planType = "unknown"
+	// Retry scanning up to 3 times with 2s interval to allow CPA to finish writing the file
+	var newKey string
+	var newFile *cpa.CpaAuthFile
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		scanned, err := cpa.ScanAuthDirKeyed(h.cpaAuthDir)
+		if err != nil {
+			continue
+		}
+		for _, s := range scanned {
+			if !session.ExistingKeys[s.Key] {
+				f := s.File
+				newKey = s.Key
+				newFile = &f
+				break
+			}
+		}
+		if newFile != nil {
+			break
+		}
 	}
-	accountKey := fmt.Sprintf("codex-%s-%s", info.Email, planType)
 
-	expiredAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
-	lastRefresh := time.Now().Format(time.RFC3339)
-
-	authFile := &cpa.CpaAuthFile{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		IDToken:      tokenResp.IDToken,
-		AccountID:    info.AccountID,
-		Email:        info.Email,
-		Disabled:     false,
-		Expired:      expiredAt,
-		LastRefresh:  lastRefresh,
-		Type:         "codex",
-	}
-	if err := cpa.WriteAuthFile(h.cpaAuthDir, authFile, accountKey); err != nil {
-		h.sessions.UpdateStatus(session.ID, "failed", "file_write_error", fmt.Sprintf("Failed to write credential file: %v", err))
+	if newFile == nil {
+		h.sessions.UpdateStatus(session.ID, "failed", "no_credentials", "Authorization succeeded but no new credential file was detected")
 		return
 	}
 
-	account, err := h.upsertImportedCpaAccount(svc, accountKey, authFile, "", true, "", nil)
+	account, err := h.upsertImportedCpaAccount(svc, newKey, newFile, "", true, "", nil)
 	if err != nil {
 		h.sessions.UpdateStatus(session.ID, "failed", "import_error", fmt.Sprintf("Failed to create account: %v", err))
 		return
@@ -1266,11 +1272,9 @@ func (h *Handler) getLoginSession(w http.ResponseWriter, r *http.Request) {
 
 	switch session.Status {
 	case "pending":
-		resp["verification_uri"] = session.VerificationURI
-		resp["user_code"] = session.UserCode
+		resp["auth_url"] = session.AuthURL
 		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
-		resp["poll_interval_seconds"] = session.PollInterval
-	case "authorized":
+	case "scanning":
 		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
 	case "succeeded":
 		if session.AccountID != nil {
