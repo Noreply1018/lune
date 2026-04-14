@@ -25,6 +25,7 @@ services:
     environment:
       CPA_API_KEY: "${CPA_API_KEY:-sk-cpa-default}"
     volumes:
+      - ./cpa-config.yaml:/CLIProxyAPI/config.yaml:ro
       - cpa-auth:/app/cpa-auth
 
 volumes:
