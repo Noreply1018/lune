@@ -15,35 +15,98 @@
 
 ## 快速开始
 
-如果你只是想启动 Lune 本体：
+默认启动方式：
 
 ```bash
-go run ./cmd/lune         # 启动服务
+docker compose up -d
 ```
 
-如果你要直接体验带 CPA 的完整后台，推荐用下面这条作为日常开发入口：
+这会同时启动 Lune 和 CPA。启动后可访问：
+
+- Admin UI: `http://127.0.0.1:7788/admin`
+- Gateway API: `http://127.0.0.1:7788/v1`
+
+常用状态查看：
 
 ```bash
-docker compose up -d cpa && go run ./cmd/lune
+docker compose ps
+docker compose logs -f lune
 ```
 
-这里有一个关键区别：
+## 启动与开发命令
 
-- `go run ./cmd/lune` 只会启动 Lune，不会启动 CPA 进程
-- `docker compose up -d cpa` 才是把本地 CPA 容器拉起来
-- 本地 `lune.yaml` 里的 `cpa_base_url` / `cpa_api_key` 只负责让 Lune 自动连上已经在运行的 CPA，不负责把它启动起来
-
-## CLI
+### Docker
 
 ```bash
-lune up                   # 启动 HTTP 服务（默认）
-lune version              # 打印版本信息
-lune check                # 校验数据库并打印摘要
+docker compose up -d           # 启动 Lune + CPA
+docker compose restart lune    # 重启 Lune
+docker compose restart cpa     # 重启 CPA
+docker compose ps              # 查看容器状态
+docker compose logs -f lune    # 查看 Lune 日志
+docker compose logs -f cpa     # 查看 CPA 日志
+```
+
+Docker Compose 是推荐运行方式。`docker-compose.yml` 已经把 Lune 和 CPA 接好，容器内默认通过 `http://cpa:8317` 通信。
+
+### 本地开发
+
+```bash
+go run ./cmd/lune              # 本地直接运行 Lune
+./scripts/dev-restart.sh       # 按当前配置端口重启本地开发进程
+air                            # 监听 Go 文件和 lune.yaml，自动重编译 + 重启
+go build ./cmd/lune            # 构建
+CGO_ENABLED=0 go build -o lune ./cmd/lune
+```
+
+这些命令主要用于仓库开发和调试，不是默认启动路径。
+
+`./scripts/dev-restart.sh` 会按下面的优先级解析当前端口：
+
+- `LUNE_PORT`
+- 本地 `lune.yaml` 里的 `port`
+- 默认值 `7788`
+
+### Air
+
+`air` 是一个 Go 开发期的开源 live reload 工具。保存 Go 文件或本地 `lune.yaml` 后，它会自动重新编译并重启当前进程。
+
+安装 `air`：
+
+```bash
+go install github.com/air-verse/air@latest
+```
+
+仓库已提交 [`.air.toml`](/home/lh/projects/lune/.air.toml) 作为默认配置，行为如下：
+
+- 构建产物输出到 `tmp/`
+- 监听 `go` 文件和本地 `lune.yaml`
+- 忽略 `data/`、`cpa-auth/`、`web/`、`internal/site/dist/` 等目录
+
+### CLI
+
+```bash
+lune up
+lune version
+lune check
 ```
 
 ## 配置
 
-优先级：`lune.yaml` → 环境变量覆盖
+配置优先级：`lune.yaml` → 环境变量覆盖
+
+仓库提供 [lune.example.yaml](/home/lh/projects/lune/lune.example.yaml) 作为示例配置；本地使用时复制为 `lune.yaml` 后再按环境修改。`lune.yaml` 被 `.gitignore` 忽略，用来保存本机目录、地址和 key 等本地值。
+
+示例配置：
+
+```yaml
+port: 7788
+data_dir: ./data
+cpa_auth_dir: ./cpa-auth
+cpa_base_url: http://127.0.0.1:8317
+cpa_api_key: sk-cpa-default
+```
+
+### 环境变量
 
 | 变量 | 用途 | 默认值 |
 |---|---|---|
@@ -51,16 +114,29 @@ lune check                # 校验数据库并打印摘要
 | `LUNE_DATA_DIR` | SQLite 数据目录 | `./data` |
 | `LUNE_ADMIN_TOKEN` | 管理令牌覆盖 | 自动生成 |
 | `LUNE_CPA_AUTH_DIR` | CPA 凭据文件目录 | `./cpa-auth` |
+| `LUNE_CPA_BASE_URL` | Lune 连接 CPA 的地址 | Docker: `http://cpa:8317` |
+| `LUNE_CPA_API_KEY` | Lune 使用的 CPA API Key | 同 `CPA_API_KEY` |
+| `CPA_API_KEY` | CPA 服务 API Key | `sk-cpa-default` |
 
-仓库提供 [lune.example.yaml](/home/lh/projects/lune/lune.example.yaml) 作为示例配置；本地使用时复制为 `lune.yaml` 后再按环境修改。`lune.yaml` 被 `.gitignore` 忽略，用来保存本机目录、地址和 key 等本地值。
+## Docker 与 CPA
 
-`lune.example.yaml` 示例：
+CPA 是外部代理服务，但在本仓库里已经纳入 `docker-compose.yml`，默认通过 Docker Compose 与 Lune 一起启动。
+
+需要区分两件事：
+
+- Docker 启动 CPA：由 `docker compose up -d` 负责
+- 配置默认 CPA 连接：由 `LUNE_CPA_BASE_URL` 或本地 `lune.yaml` 负责
+
+在 Docker Compose 场景下，Lune 默认连 `http://cpa:8317`，无需再到后台手动新增默认 CPA Service。
+
+如果你本地直接运行 `go run ./cmd/lune`，而 CPA 仍在宿主机或容器外暴露 `8317`，则本地 `lune.yaml` 可以写成：
 
 ```yaml
-port: 7788
-data_dir: ./data
-cpa_auth_dir: ./cpa-auth
+cpa_base_url: http://127.0.0.1:8317
+cpa_api_key: sk-cpa-default
 ```
+
+Lune 和 CPA 通过共享 `cpa-auth` 卷交换凭据文件，CPA 会热加载该目录的变更。
 
 ## HTTP 接口
 
@@ -104,122 +180,3 @@ Bearer access token 认证。透明代理到上游 provider。
 | GET | `/v1/models` | 可用模型列表（无需认证） |
 | POST | `/v1/chat/completions` | 代理到上游（支持 streaming） |
 | POST | `/v1/*` | 其他 OpenAI 兼容端点透传 |
-
-## 开发
-
-### 本地开发
-
-```bash
-docker compose up -d cpa && go run ./cmd/lune
-```
-
-这是最实用的本地开发方式：
-
-- CPA 是外部 Docker 服务，不是这个 Go 进程里的一个子模块，所以 `go run ./cmd/lune` 不会顺手把 CPA 也启动
-- 第一次开发时先执行一次 `docker compose up -d cpa`，后面通常只需要反复 `go run ./cmd/lune`
-- 如果 Docker Desktop、WSL 或宿主机重启过，需要先确认 CPA 容器已经重新起来
-- 本地 `lune.yaml` 可预配置 `http://127.0.0.1:8317` 和默认 key；只要本地 8317 上真的有 CPA 在跑，Lune 首次启动就会自动写入 `Default CPA`
-
-如果你想确认 CPA 是否已经在运行，可以执行：
-
-```bash
-docker compose ps cpa
-```
-
-### 开发启动与重启
-
-如果你只是想手动重启当前 Lune 进程，直接运行：
-
-```bash
-./scripts/dev-restart.sh
-```
-
-这个脚本会按下面的优先级自动解析当前端口，然后杀掉旧进程并重新启动：
-
-- `LUNE_PORT`
-- 本地 `lune.yaml` 里的 `port`
-- 默认值 `7788`
-
-如果你希望改完文件后自动重启，推荐使用 `air`。它是一个 Go 开发期的开源 live reload 工具：监听文件变化，自动重新编译并重启当前进程，不需要你手工 `Ctrl+C` 再 `go run`。
-
-如果你的机器已经能正常执行 `go run ./cmd/lune`，说明 Go 工具链已经可用；这一步只是用 `go install` 安装 `air`，不是安装 Go 本身：
-
-```bash
-go install github.com/air-verse/air@latest
-```
-
-日常使用：
-
-```bash
-air
-```
-
-当前仓库已提交 [`.air.toml`](/home/lh/projects/lune/.air.toml) 作为默认配置：
-
-- 构建产物输出到 `tmp/`
-- 监听 `go` 文件和本地 `lune.yaml`
-- 忽略 `data/`、`cpa-auth/`、`web/`、`internal/site/dist/` 等目录
-- 保存 Go 文件或 `lune.yaml` 后会自动重新编译并重启
-
-`air` 适合日常后端开发；如果你只是偶尔想强制刷新一次进程，用 `./scripts/dev-restart.sh` 更直接。
-
-如果你是通过 Docker 运行整个项目，则不需要宿主机安装 Go 或 `air`；容器启动直接使用：
-
-```bash
-docker compose up -d
-```
-
-只有本地直接执行 `go run ./cmd/lune` 或 `air` 做开发时，才需要宿主机具备 Go 工具链。
-
-```bash
-go build ./cmd/lune                            # 构建
-CGO_ENABLED=0 go build -o lune ./cmd/lune      # 生产构建
-```
-
-### Web 管理界面
-
-```bash
-cd web
-npm install
-npm run build      # 类型检查 + vite 构建 → internal/site/dist/
-npm run dev        # vite 开发服务器 :5173（代理 /admin/api → :7788）
-```
-
-### Docker 部署
-
-```bash
-docker compose up -d          # 启动 Lune + CPA（生产推荐）
-docker compose up -d lune     # 仅启动 Lune（不含 CPA）
-```
-
-`docker compose up -d` 是最接近“开箱即用”的方式，因为它会把 Lune 和 CPA 一起拉起。
-
-### CPA 部署
-
-CPA（[cli-proxy-api](https://hub.docker.com/r/eceasy/cli-proxy-api)）是外部代理服务，支持通过 ChatGPT Plus/Pro、Claude 等订阅账号访问 LLM 提供商。它已经被纳入 `docker-compose.yml`，但它仍然是一个独立进程，不会被 `go run ./cmd/lune` 自动拉起。
-
-需要区分两件事：
-
-- 自动启动 CPA：只有 `docker compose up -d` 或 `docker compose up -d cpa` 会做这件事
-- 自动配置默认 CPA 连接：Lune 启动时如果发现 `LUNE_CPA_BASE_URL` / 本地 `lune.yaml` 里有配置，就会自动写入默认 CPA Service
-
-也就是说，`自动配置` 不等于 `自动启动`。前提始终是：对应地址上的 CPA 服务已经可达。
-
-在 Docker Compose 场景下，执行 `docker compose up -d` 后，Lune 会自动配置默认 CPA 连接（`http://cpa:8317`），无需再去后台手动新增。
-
-**配置项：**
-
-| 变量 | 用途 | 默认值 |
-|---|---|---|
-| `CPA_API_KEY` | CPA 服务 API Key | `sk-cpa-default` |
-| `LUNE_CPA_BASE_URL` | Lune 连接 CPA 的地址 | `http://cpa:8317`（Docker 内部） |
-| `LUNE_CPA_API_KEY` | Lune 使用的 CPA API Key | 同 `CPA_API_KEY` |
-
-**网络地址：**
-
-| 场景 | CPA Base URL |
-|---|---|
-| Docker Compose 部署 | `http://cpa:8317`（容器间通信） |
-| 本地开发 | `http://127.0.0.1:8317` |
-
-Lune 和 CPA 通过共享 `cpa-auth` 卷交换凭据文件，CPA 会热加载该目录的变更。
