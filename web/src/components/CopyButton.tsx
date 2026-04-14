@@ -15,11 +15,15 @@ export default function CopyButton({
 }) {
   const [copied, setCopied] = useState(false);
 
-  function handleCopy() {
-    navigator.clipboard.writeText(value);
-    setCopied(true);
-    toast("已复制");
-    setTimeout(() => setCopied(false), 2000);
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      toast("已复制");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast("复制失败", "error");
+    }
   }
 
   return (
