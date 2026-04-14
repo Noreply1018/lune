@@ -37,6 +37,11 @@ func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir string) *Handl
 	}
 }
 
+func (h *Handler) internalError(w http.ResponseWriter, err error) {
+	h.logger.Printf("admin: %v", err)
+	webutil.WriteAdminError(w, 500, "internal", "internal server error")
+}
+
 func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
 	handle := func(pattern string, fn http.HandlerFunc) {
 		mux.Handle(pattern, wrap(fn))
@@ -107,7 +112,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 	accounts, err := h.store.ListAccounts()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	// mask api keys and fill runtime
@@ -158,7 +163,7 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 			webutil.WriteAdminError(w, 409, "duplicate", "a CPA account with this service and provider already exists")
 			return
 		}
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -174,7 +179,7 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, err := h.store.GetAccount(id)
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	if existing == nil {
@@ -199,7 +204,7 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.UpdateAccount(id, &req); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -218,7 +223,7 @@ func (h *Handler) enableAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.EnableAccount(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -231,7 +236,7 @@ func (h *Handler) disableAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DisableAccount(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -244,7 +249,7 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DeleteAccount(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -256,7 +261,7 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listPools(w http.ResponseWriter, r *http.Request) {
 	pools, err := h.store.ListPools()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	webutil.WriteList(w, pools, len(pools))
@@ -277,7 +282,7 @@ func (h *Handler) createPool(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := h.store.CreatePool(&req)
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -296,7 +301,7 @@ func (h *Handler) updatePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.UpdatePool(id, &req); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -310,7 +315,7 @@ func (h *Handler) enablePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.EnablePool(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -323,7 +328,7 @@ func (h *Handler) disablePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DisablePool(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -336,7 +341,7 @@ func (h *Handler) deletePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DeletePool(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -348,7 +353,7 @@ func (h *Handler) deletePool(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listRoutes(w http.ResponseWriter, r *http.Request) {
 	routes, err := h.store.ListRoutes()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	webutil.WriteList(w, routes, len(routes))
@@ -370,7 +375,7 @@ func (h *Handler) createRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := h.store.CreateRoute(&req)
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -389,7 +394,7 @@ func (h *Handler) updateRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.UpdateRoute(id, &req); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -403,7 +408,7 @@ func (h *Handler) deleteRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DeleteRoute(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -415,7 +420,7 @@ func (h *Handler) deleteRoute(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listTokens(w http.ResponseWriter, r *http.Request) {
 	tokens, err := h.store.ListTokens()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	for i := range tokens {
@@ -439,7 +444,7 @@ func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := h.store.CreateToken(&req)
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -459,7 +464,7 @@ func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.UpdateToken(id, &req); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -474,7 +479,7 @@ func (h *Handler) enableToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.EnableToken(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -487,7 +492,7 @@ func (h *Handler) disableToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DisableToken(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -500,7 +505,7 @@ func (h *Handler) deleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DeleteToken(id); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -512,7 +517,7 @@ func (h *Handler) deleteToken(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := h.store.GetSettings()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	// hide admin_token
@@ -529,7 +534,7 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.UpdateSettings(pairs); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -541,7 +546,7 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getOverview(w http.ResponseWriter, r *http.Request) {
 	overview, err := h.store.GetOverview()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	webutil.WriteData(w, 200, overview)
@@ -562,7 +567,7 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	logs, total, err := h.store.GetUsage(filter)
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	webutil.WriteList(w, logs, total)
@@ -621,7 +626,7 @@ func (h *Handler) getLatencyStats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.store.GetLatencyStats(model, period, bucket, opts...)
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	webutil.WriteData(w, 200, stats)
@@ -632,7 +637,7 @@ func (h *Handler) getLatencyStats(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getCpaService(w http.ResponseWriter, r *http.Request) {
 	svc, err := h.store.GetCpaService()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	if svc == nil {
@@ -663,7 +668,7 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := h.store.GetCpaService()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 
@@ -684,7 +689,7 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 			svc.APIKey = existing.APIKey
 		}
 		if err := h.store.UpdateCpaService(existing.ID, svc); err != nil {
-			webutil.WriteAdminError(w, 500, "internal", err.Error())
+			h.internalError(w, err)
 			return
 		}
 		h.cache.Invalidate()
@@ -707,7 +712,7 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 				webutil.WriteAdminError(w, 409, "already_exists", err.Error())
 				return
 			}
-			webutil.WriteAdminError(w, 500, "internal", err.Error())
+			h.internalError(w, err)
 			return
 		}
 		h.cache.Invalidate()
@@ -722,7 +727,7 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) deleteCpaService(w http.ResponseWriter, r *http.Request) {
 	svc, err := h.store.GetCpaService()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	if svc == nil {
@@ -731,7 +736,7 @@ func (h *Handler) deleteCpaService(w http.ResponseWriter, r *http.Request) {
 	}
 	count, err := h.store.CountAccountsByCpaService(svc.ID)
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	if count > 0 {
@@ -740,7 +745,7 @@ func (h *Handler) deleteCpaService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DeleteCpaService(svc.ID); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -817,7 +822,10 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 	// allow testing with body params or from stored service
 	body, _ := io.ReadAll(r.Body)
 	if len(body) > 0 {
-		json.Unmarshal(body, &req)
+		if err := json.Unmarshal(body, &req); err != nil {
+			webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+			return
+		}
 	}
 	if req.BaseURL == "" {
 		svc, err := h.store.GetCpaService()
@@ -897,7 +905,7 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) enableCpaService(w http.ResponseWriter, r *http.Request) {
 	svc, err := h.store.GetCpaService()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	if svc == nil {
@@ -905,7 +913,7 @@ func (h *Handler) enableCpaService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.EnableCpaService(svc.ID); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -915,7 +923,7 @@ func (h *Handler) enableCpaService(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) disableCpaService(w http.ResponseWriter, r *http.Request) {
 	svc, err := h.store.GetCpaService()
 	if err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	if svc == nil {
@@ -923,7 +931,7 @@ func (h *Handler) disableCpaService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DisableCpaService(svc.ID); err != nil {
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
@@ -1336,7 +1344,7 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 			webutil.WriteAdminError(w, 409, "duplicate", "This account has already been imported")
 			return
 		}
-		webutil.WriteAdminError(w, 500, "internal", err.Error())
+		h.internalError(w, err)
 		return
 	}
 

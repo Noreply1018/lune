@@ -42,9 +42,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// read body
+	// read body (limit 10 MB to prevent memory exhaustion)
+	const maxBodySize = 10 << 20
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			webutil.WriteGatewayError(w, 413, "request_too_large", "request body exceeds 10MB limit")
+			return
+		}
 		webutil.WriteGatewayError(w, 400, "bad_request", "failed to read request body")
 		return
 	}
