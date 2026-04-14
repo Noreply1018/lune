@@ -4,12 +4,16 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
 type Store struct {
-	db *sql.DB
+	db          *sql.DB
+	schemaMu    sync.Mutex
+	schemaCache map[string]map[string]bool
 }
 
 func New(dbPath string) (*Store, error) {
@@ -23,10 +27,14 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, schemaCache: make(map[string]map[string]bool)}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	if err := s.repairSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("repair schema: %w", err)
 	}
 	return s, nil
 }
@@ -183,6 +191,139 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (s *Store) tableColumns(table string) (map[string]bool, error) {
+	s.schemaMu.Lock()
+	defer s.schemaMu.Unlock()
+
+	if cols, ok := s.schemaCache[table]; ok {
+		out := make(map[string]bool, len(cols))
+		for k, v := range cols {
+			out[k] = v
+		}
+		return out, nil
+	}
+
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid      int
+			name     string
+			typ      string
+			notnull  int
+			defaultV any
+			primaryK int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &defaultV, &primaryK); err != nil {
+			return nil, err
+		}
+		cols[strings.ToLower(name)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	s.schemaCache[table] = cols
+
+	out := make(map[string]bool, len(cols))
+	for k, v := range cols {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (s *Store) invalidateSchemaCache(table string) {
+	s.schemaMu.Lock()
+	defer s.schemaMu.Unlock()
+	delete(s.schemaCache, table)
+}
+
+func (s *Store) ensureColumn(table, name, ddl string) error {
+	cols, err := s.tableColumns(table)
+	if err != nil {
+		return err
+	}
+	if cols[strings.ToLower(name)] {
+		return nil
+	}
+	if _, err := s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + ddl); err != nil {
+		return err
+	}
+	s.invalidateSchemaCache(table)
+	return nil
+}
+
+func (s *Store) repairSchema() error {
+	accountColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"label", `label TEXT NOT NULL DEFAULT ''`},
+		{"base_url", `base_url TEXT NOT NULL DEFAULT ''`},
+		{"api_key", `api_key TEXT NOT NULL DEFAULT ''`},
+		{"enabled", `enabled INTEGER NOT NULL DEFAULT 1`},
+		{"status", `status TEXT NOT NULL DEFAULT 'healthy'`},
+		{"quota_total", `quota_total REAL NOT NULL DEFAULT 0`},
+		{"quota_used", `quota_used REAL NOT NULL DEFAULT 0`},
+		{"quota_unit", `quota_unit TEXT NOT NULL DEFAULT ''`},
+		{"notes", `notes TEXT NOT NULL DEFAULT ''`},
+		{"model_allowlist", `model_allowlist TEXT NOT NULL DEFAULT '[]'`},
+		{"last_checked_at", `last_checked_at TEXT`},
+		{"last_error", `last_error TEXT NOT NULL DEFAULT ''`},
+		{"created_at", `created_at TEXT`},
+		{"updated_at", `updated_at TEXT`},
+		{"source_kind", `source_kind TEXT NOT NULL DEFAULT 'openai_compat'`},
+		{"provider", `provider TEXT NOT NULL DEFAULT ''`},
+		{"cpa_service_id", `cpa_service_id INTEGER REFERENCES cpa_services(id)`},
+		{"cpa_provider", `cpa_provider TEXT NOT NULL DEFAULT ''`},
+		{"cpa_account_key", `cpa_account_key TEXT NOT NULL DEFAULT ''`},
+		{"cpa_email", `cpa_email TEXT NOT NULL DEFAULT ''`},
+		{"cpa_plan_type", `cpa_plan_type TEXT NOT NULL DEFAULT ''`},
+		{"cpa_openai_id", `cpa_openai_id TEXT NOT NULL DEFAULT ''`},
+		{"cpa_expired_at", `cpa_expired_at TEXT`},
+		{"cpa_last_refresh_at", `cpa_last_refresh_at TEXT`},
+		{"cpa_disabled", `cpa_disabled INTEGER NOT NULL DEFAULT 0`},
+	}
+	for _, col := range accountColumns {
+		if err := s.ensureColumn("accounts", col.name, col.ddl); err != nil {
+			return err
+		}
+	}
+
+	requestLogColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"request_id", `request_id TEXT NOT NULL DEFAULT ''`},
+		{"access_token_name", `access_token_name TEXT`},
+		{"model_alias", `model_alias TEXT`},
+		{"target_model", `target_model TEXT`},
+		{"pool_id", `pool_id INTEGER`},
+		{"account_id", `account_id INTEGER`},
+		{"status_code", `status_code INTEGER`},
+		{"latency_ms", `latency_ms INTEGER`},
+		{"input_tokens", `input_tokens INTEGER`},
+		{"output_tokens", `output_tokens INTEGER`},
+		{"stream", `stream INTEGER`},
+		{"request_ip", `request_ip TEXT`},
+		{"success", `success INTEGER`},
+		{"error_message", `error_message TEXT`},
+		{"created_at", `created_at TEXT`},
+		{"source_kind", `source_kind TEXT NOT NULL DEFAULT 'openai_compat'`},
+	}
+	for _, col := range requestLogColumns {
+		if err := s.ensureColumn("request_logs", col.name, col.ddl); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

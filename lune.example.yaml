@@ -3,3 +3,4 @@ data_dir: ./data
 cpa_auth_dir: ./cpa-auth
 cpa_base_url: http://127.0.0.1:8317
 cpa_api_key: sk-cpa-default
+cpa_management_key: lune-cpa-management-dev

@@ -1,13 +1,19 @@
 import { useEffect, useState } from "react";
-import StatCard from "@/components/StatCard";
 import DataTable, { type Column } from "@/components/DataTable";
-import StatusBadge from "@/components/StatusBadge";
 import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
+import StatusBadge from "@/components/StatusBadge";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
 import { compact, latency, shortDate } from "@/lib/fmt";
-import type { UsageStats, RequestLog, Account, AccessToken, LatencyBucket } from "@/lib/types";
+import { estimateCost, formatCost } from "@/lib/pricing";
+import type {
+  Account,
+  AccessToken,
+  LatencyBucket,
+  RequestLog,
+  UsageStats,
+} from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,9 +23,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Activity, ArrowDownToLine, ArrowUpFromLine, DollarSign } from "lucide-react";
-import { estimateCost, formatCost } from "@/lib/pricing";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import {
+  Activity,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  BarChart3,
+  DollarSign,
+  Filter,
+  Waves,
+} from "lucide-react";
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 const TIME_RANGES = [
   { value: "1h", label: "最近 1 小时" },
@@ -33,9 +55,7 @@ const logColumns: Column<RequestLog>[] = [
   {
     key: "time",
     header: "时间",
-    render: (r) => (
-      <span className="text-moon-500">{shortDate(r.created_at)}</span>
-    ),
+    render: (r) => <span className="text-moon-500">{shortDate(r.created_at)}</span>,
     tone: "secondary",
   },
   {
@@ -47,17 +67,13 @@ const logColumns: Column<RequestLog>[] = [
   {
     key: "token",
     header: "令牌",
-    render: (r) => (
-      <span className="text-moon-500">{r.access_token_name}</span>
-    ),
+    render: (r) => <span className="text-moon-500">{r.access_token_name}</span>,
     tone: "secondary",
   },
   {
     key: "account",
     header: "账号",
-    render: (r) => (
-      <span className="text-moon-500">{r.account_label}</span>
-    ),
+    render: (r) => <span className="text-moon-500">{r.account_label}</span>,
     tone: "secondary",
   },
   {
@@ -88,9 +104,7 @@ const logColumns: Column<RequestLog>[] = [
   {
     key: "latency",
     header: "延迟",
-    render: (r) => (
-      <span className="text-moon-500">{latency(r.latency_ms)}</span>
-    ),
+    render: (r) => <span className="text-moon-500">{latency(r.latency_ms)}</span>,
     align: "right",
     tone: "numeric",
   },
@@ -143,10 +157,18 @@ export default function UsagePage() {
     let cancelled = false;
     api
       .get<UsageStats>(`/usage?${buildQuery()}`)
-      .then((d) => { if (!cancelled) setStats(d); })
-      .catch(() => { if (!cancelled) toast("加载用量数据失败", "error"); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .then((d) => {
+        if (!cancelled) setStats(d);
+      })
+      .catch(() => {
+        if (!cancelled) toast("加载用量数据失败", "error");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }
 
   useEffect(() => {
@@ -159,7 +181,9 @@ export default function UsagePage() {
       setAccounts(a ?? []);
       setTokensList(t ?? []);
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -176,27 +200,42 @@ export default function UsagePage() {
     if (filterModel !== "all") params.set("model", filterModel);
     api
       .get<LatencyBucket[]>(`/usage/latency?${params}`)
-      .then((d) => { if (!cancelled) setLatencyData(d ?? []); })
-      .catch(() => { if (!cancelled) toast("加载延迟数据失败", "error"); })
-      .finally(() => { if (!cancelled) setLatencyLoading(false); });
-    return () => { cancelled = true; };
+      .then((d) => {
+        if (!cancelled) setLatencyData(d ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) toast("加载延迟数据失败", "error");
+      })
+      .finally(() => {
+        if (!cancelled) setLatencyLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [viewTab, range, filterModel, latencyBucket]);
 
   const models = Array.from(
     new Set(stats?.logs?.items?.map((l) => l.model_alias).filter(Boolean) ?? []),
   );
-
-  const totalPages = stats?.logs
-    ? Math.ceil(stats.logs.total / stats.logs.page_size)
-    : 1;
+  const totalPages = stats?.logs ? Math.ceil(stats.logs.total / stats.logs.page_size) : 1;
+  const totalCost = (stats?.logs?.items ?? []).reduce((sum, r) => {
+    if (r.input_tokens == null) return sum;
+    const cost = estimateCost(r.target_model || r.model_alias, r.input_tokens, r.output_tokens ?? 0);
+    return sum + (cost ?? 0);
+  }, 0);
+  const activeFilters = [
+    range !== "24h",
+    filterToken !== "all",
+    filterAccount !== "all",
+    filterModel !== "all",
+    filterSource !== "all",
+  ].filter(Boolean).length;
 
   const byAccountCols: Column<UsageStats["by_account"][0]>[] = [
     {
       key: "account",
       header: "账号",
-      render: (r) => (
-        <span className="font-medium text-moon-800">{r.account_label}</span>
-      ),
+      render: (r) => <span className="font-medium text-moon-800">{r.account_label}</span>,
     },
     {
       key: "requests",
@@ -232,9 +271,7 @@ export default function UsagePage() {
     {
       key: "token",
       header: "令牌",
-      render: (r) => (
-        <span className="font-medium text-moon-800">{r.token_name}</span>
-      ),
+      render: (r) => <span className="font-medium text-moon-800">{r.token_name}</span>,
     },
     {
       key: "requests",
@@ -266,84 +303,55 @@ export default function UsagePage() {
     },
   ];
 
-  const totalCost = (stats?.logs?.items ?? []).reduce((sum, r) => {
-    if (r.input_tokens == null) return sum;
-    const c = estimateCost(r.target_model || r.model_alias, r.input_tokens, r.output_tokens ?? 0);
-    return sum + (c ?? 0);
-  }, 0);
-  const activeFilters = [
-    range !== "24h",
-    filterToken !== "all",
-    filterAccount !== "all",
-    filterModel !== "all",
-    filterSource !== "all",
-  ].filter(Boolean).length;
-
   return (
-    <div className="space-y-8">
+    <div className="space-y-10">
       <PageHeader
-        eyebrow="Lune 控制台"
+        eyebrow="Usage / Analytics"
         title="用量"
-        description="按时间、账号、令牌和模型维度查看请求量、Token 消耗与路由行为。"
+        description="查看请求量、Token 与成本走势。"
         meta={
-          <span>
-            当前范围内共 {stats?.logs?.total ?? 0} 条日志
-            {activeFilters > 0 ? ` • 已启用 ${activeFilters} 个筛选条件` : ""}
-          </span>
+          <>
+            <span>日志 {stats?.logs?.total ?? 0}</span>
+            <span>筛选 {activeFilters}</span>
+            <span>{TIME_RANGES.find((item) => item.value === range)?.label ?? range}</span>
+          </>
         }
       />
 
-      <section className="rounded-[1.6rem] border border-moon-200/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(240,242,248,0.92))] p-4 sm:p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-1">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-lunar-600">
-              筛选面板
-            </p>
-            <h2 className="text-lg font-semibold text-moon-800">
-              按时间、令牌、账号或模型别名查看用量切片
+      <section className="surface-section px-5 py-5 sm:px-6 sm:py-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="space-y-2">
+            <p className="eyebrow-label">分析工具条</p>
+            <h2 className="text-[1.1rem] font-semibold tracking-[-0.03em] text-moon-800">
+              按范围筛选，再看请求、延迟与成本分布
             </h2>
             <p className="text-sm text-moon-500">
-              筛选条件会同时影响概览卡片、排行榜和请求日志。
+              这里不做欢迎语，只保留分析所需的上下文。
             </p>
           </div>
-          <div className="text-sm text-moon-500">
-            当前范围：
-            <span className="font-medium text-moon-700">
-              {TIME_RANGES.find((item) => item.value === range)?.label ?? range}
-            </span>
+
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/75 bg-white/70 px-3 py-2 text-sm text-moon-500">
+            <Filter className="size-4 text-moon-400" />
+            当前已启用 {activeFilters} 个筛选条件
           </div>
         </div>
 
-        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <Select value={range} onValueChange={(v) => { if (v) { setRange(v); setPage(1); } }}>
-            <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
-              <SelectValue />
+        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <Select value={range} onValueChange={(v) => v && (setRange(v), setPage(1))}>
+            <SelectTrigger className="h-11 rounded-xl border-white/75 bg-white/82">
+              <SelectValue placeholder="时间范围" />
             </SelectTrigger>
             <SelectContent>
-              {TIME_RANGES.map((t) => (
-                <SelectItem key={t.value} value={t.value}>
-                  {t.label}
+              {TIME_RANGES.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
 
-          <Select value={filterToken} onValueChange={(v) => { if (v) { setFilterToken(v); setPage(1); } }}>
-            <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
-              <SelectValue placeholder="令牌" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部令牌</SelectItem>
-              {tokensList.map((t) => (
-                <SelectItem key={t.id} value={t.name}>
-                  {t.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select value={filterAccount} onValueChange={(v) => { if (v) { setFilterAccount(v); setPage(1); } }}>
-            <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
+          <Select value={filterAccount} onValueChange={(v) => v && (setFilterAccount(v), setPage(1))}>
+            <SelectTrigger className="h-11 rounded-xl border-white/75 bg-white/82">
               <SelectValue placeholder="账号" />
             </SelectTrigger>
             <SelectContent>
@@ -356,8 +364,22 @@ export default function UsagePage() {
             </SelectContent>
           </Select>
 
-          <Select value={filterModel} onValueChange={(v) => { if (v) { setFilterModel(v); setPage(1); } }}>
-            <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
+          <Select value={filterToken} onValueChange={(v) => v && (setFilterToken(v), setPage(1))}>
+            <SelectTrigger className="h-11 rounded-xl border-white/75 bg-white/82">
+              <SelectValue placeholder="令牌" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部令牌</SelectItem>
+              {tokensList.map((t) => (
+                <SelectItem key={t.id} value={t.name}>
+                  {t.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={filterModel} onValueChange={(v) => v && (setFilterModel(v), setPage(1))}>
+            <SelectTrigger className="h-11 rounded-xl border-white/75 bg-white/82">
               <SelectValue placeholder="模型" />
             </SelectTrigger>
             <SelectContent>
@@ -370,8 +392,8 @@ export default function UsagePage() {
             </SelectContent>
           </Select>
 
-          <Select value={filterSource} onValueChange={(v) => { if (v) { setFilterSource(v); setPage(1); } }}>
-            <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
+          <Select value={filterSource} onValueChange={(v) => v && (setFilterSource(v), setPage(1))}>
+            <SelectTrigger className="h-11 rounded-xl border-white/75 bg-white/82">
               <SelectValue placeholder="来源" />
             </SelectTrigger>
             <SelectContent>
@@ -384,153 +406,31 @@ export default function UsagePage() {
       </section>
 
       {loading && !stats ? (
-        <div className="space-y-4">
+        <div className="space-y-6">
+          <Skeleton className="h-[22rem] rounded-[2rem]" />
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-36 rounded-[1.5rem]" />
+            {Array.from({ length: 4 }).map((_, index) => (
+              <Skeleton key={index} className="h-32 rounded-[1.4rem]" />
             ))}
           </div>
           <div className="grid gap-6 xl:grid-cols-2">
-            <Skeleton className="h-72 rounded-[1.5rem]" />
-            <Skeleton className="h-72 rounded-[1.5rem]" />
+            <Skeleton className="h-80 rounded-[1.6rem]" />
+            <Skeleton className="h-80 rounded-[1.6rem]" />
           </div>
-          <Skeleton className="h-96 rounded-[1.5rem]" />
         </div>
       ) : (
         <>
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <StatCard
-              label="请求数"
-              value={compact(stats?.total_requests ?? 0)}
-              sub="当前筛选范围内的请求总数。"
-              icon={Activity}
-              variant="hero"
-            />
-            <StatCard
-              label="输入 Token"
-              value={compact(stats?.total_input_tokens ?? 0)}
-              sub="进入路由前统计到的输入 Token。"
-              icon={ArrowDownToLine}
-            />
-            <StatCard
-              label="输出 Token"
-              value={compact(stats?.total_output_tokens ?? 0)}
-              sub="返回给下游的生成 Token。"
-              icon={ArrowUpFromLine}
-            />
-            <StatCard
-              label="预估成本"
-              value={totalCost > 0 ? formatCost(totalCost) : "-"}
-              sub="基于当前页日志估算。"
-              icon={DollarSign}
-            />
-          </section>
-
-          <section className="grid gap-6 xl:grid-cols-2">
-            <div className="space-y-4">
-              <SectionHeading
-                title="按账号查看用量"
-                description="查看当前负载主要由哪些上游账号承担。"
-              />
-              <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
-                <DataTable
-                  columns={byAccountCols}
-                  rows={stats?.by_account ?? []}
-                  rowKey={(r) => r.account_id}
-                  empty="暂无数据"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <SectionHeading
-                title="按令牌查看用量"
-                description="查看客户端请求在各访问令牌上的分布。"
-              />
-              <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
-                <DataTable
-                  columns={byTokenCols}
-                  rows={stats?.by_token ?? []}
-                  rowKey={(r) => r.token_name}
-                  empty="暂无数据"
-                />
-              </div>
-            </div>
-          </section>
-
-          {/* Tab switcher */}
-          <div className="flex gap-1">
-            {(["requests", "latency"] as const).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setViewTab(tab)}
-                className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
-                  viewTab === tab
-                    ? "bg-moon-800 text-moon-100"
-                    : "bg-moon-100 text-moon-500 hover:bg-moon-200"
-                }`}
-              >
-                {tab === "requests" ? "请求日志" : "延迟曲线"}
-              </button>
-            ))}
-          </div>
-
-          {viewTab === "requests" ? (
-            <section className="space-y-4">
-              <SectionHeading
-                title="请求日志"
-                description="查看请求样本、延迟、Token 流向和上游账号结果。"
-                action={
-                  totalPages > 1 ? (
-                    <span className="text-sm text-moon-500">
-                      第 {page} / {totalPages} 页
-                    </span>
-                  ) : null
-                }
-              />
-              <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
-                  <DataTable
-                    columns={logColumns}
-                    rows={stats?.logs?.items ?? []}
-                    rowKey={(r) => r.id}
-                    empty="暂无请求日志"
-                  />
-              </div>
-
-              {totalPages > 1 && (
-                <div className="flex items-center justify-center gap-4">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page <= 1}
-                    onClick={() => setPage((p) => p - 1)}
-                  >
-                    上一页
-                  </Button>
-                  <span className="text-sm text-moon-500">
-                    第 {page} / {totalPages} 页
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page >= totalPages}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    下一页
-                  </Button>
+          <section className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+            <div className="surface-section overflow-hidden px-5 py-5 sm:px-6 sm:py-6">
+              <div className="flex flex-wrap items-end justify-between gap-4 border-b border-moon-200/60 pb-4">
+                <div>
+                  <p className="eyebrow-label">主图表</p>
+                  <h2 className="mt-1 text-[1.1rem] font-semibold tracking-[-0.03em] text-moon-800">
+                    延迟趋势
+                  </h2>
                 </div>
-              )}
-            </section>
-          ) : (
-            <section className="space-y-4">
-              <div className="flex items-center justify-between">
-                <SectionHeading
-                  title="延迟分布"
-                  description="查看 p50 / p95 / p99 随时间的变化。"
-                />
                 <Select value={latencyBucket} onValueChange={(v) => v && setLatencyBucket(v)}>
-                  <SelectTrigger className="h-9 w-24 rounded-lg border-moon-200 bg-white/90 text-sm">
+                  <SelectTrigger className="h-9 w-24 rounded-lg border-white/75 bg-white/84 text-sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -540,20 +440,23 @@ export default function UsagePage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85 p-5">
+
+              <div className="mt-5 h-[320px]">
                 {latencyLoading ? (
-                  <Skeleton className="h-[300px] rounded-xl" />
+                  <Skeleton className="h-full rounded-[1.2rem]" />
                 ) : latencyData.length === 0 ? (
-                  <div className="flex h-[300px] items-center justify-center text-sm text-moon-400">
-                    当前范围内暂无延迟数据
+                  <div className="panel-muted flex h-full flex-col items-center justify-center rounded-[1.4rem] border border-dashed border-moon-200/80 text-center">
+                    <Waves className="size-6 text-moon-300" />
+                    <p className="mt-4 text-sm font-medium text-moon-600">当前范围内没有延迟样本</p>
+                    <p className="mt-1 text-sm text-moon-400">调整时间范围或筛选条件后再查看。</p>
                   </div>
                 ) : (
-                  <ResponsiveContainer width="100%" height={300}>
+                  <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={latencyData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(197,201,216,0.55)" />
                       <XAxis
                         dataKey="bucket"
-                        tick={{ fontSize: 11, fill: "#9ca3af" }}
+                        tick={{ fontSize: 11, fill: "#98a0b7" }}
                         tickFormatter={(v: string) => {
                           if (v.length > 13) return v.slice(11, 16);
                           if (v.length > 10) return v.slice(11);
@@ -561,23 +464,205 @@ export default function UsagePage() {
                         }}
                       />
                       <YAxis
-                        tick={{ fontSize: 11, fill: "#9ca3af" }}
-                        label={{ value: "ms", angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "#9ca3af" } }}
+                        tick={{ fontSize: 11, fill: "#98a0b7" }}
+                        label={{
+                          value: "ms",
+                          angle: -90,
+                          position: "insideLeft",
+                          style: { fontSize: 11, fill: "#98a0b7" },
+                        }}
                       />
                       <Tooltip
-                        contentStyle={{ borderRadius: "0.75rem", fontSize: "12px" }}
+                        contentStyle={{
+                          borderRadius: "0.95rem",
+                          border: "1px solid rgba(197,201,216,0.6)",
+                          background: "rgba(255,255,255,0.94)",
+                          fontSize: "12px",
+                        }}
                         formatter={(value) => [`${value}ms`]}
                       />
                       <Legend wrapperStyle={{ fontSize: "12px" }} />
-                      <Line type="monotone" dataKey="p50" stroke="#7c86b8" strokeWidth={2} dot={false} name="p50" />
-                      <Line type="monotone" dataKey="p95" stroke="#e0a030" strokeWidth={2} dot={false} name="p95" />
-                      <Line type="monotone" dataKey="p99" stroke="#e05050" strokeWidth={2} dot={false} name="p99" />
+                      <Line type="monotone" dataKey="p50" stroke="#867dc1" strokeWidth={2.3} dot={false} name="p50" />
+                      <Line type="monotone" dataKey="p95" stroke="#c09a55" strokeWidth={2.1} dot={false} name="p95" />
+                      <Line type="monotone" dataKey="p99" stroke="#be7476" strokeWidth={2.1} dot={false} name="p99" />
                     </LineChart>
                   </ResponsiveContainer>
                 )}
               </div>
-            </section>
-          )}
+            </div>
+
+            <aside className="grid gap-4 md:grid-cols-2 xl:grid-cols-1">
+              {[
+                {
+                  label: "请求",
+                  value: compact(stats?.total_requests ?? 0),
+                  sub: "当前筛选范围内的请求数",
+                  icon: Activity,
+                },
+                {
+                  label: "输入 Token",
+                  value: compact(stats?.total_input_tokens ?? 0),
+                  sub: "请求侧输入量",
+                  icon: ArrowDownToLine,
+                },
+                {
+                  label: "输出 Token",
+                  value: compact(stats?.total_output_tokens ?? 0),
+                  sub: "模型返回量",
+                  icon: ArrowUpFromLine,
+                },
+                {
+                  label: "预估成本",
+                  value: totalCost > 0 ? formatCost(totalCost) : "-",
+                  sub: "按当前页日志估算",
+                  icon: DollarSign,
+                },
+              ].map((item) => (
+                <div key={item.label} className="surface-card px-5 py-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs tracking-[0.16em] text-moon-400">{item.label}</p>
+                    <item.icon className="size-4 text-moon-400" />
+                  </div>
+                  <p className="mt-3 text-[1.7rem] font-semibold tracking-[-0.05em] text-moon-800">
+                    {item.value}
+                  </p>
+                  <p className="mt-2 text-sm text-moon-500">{item.sub}</p>
+                </div>
+              ))}
+            </aside>
+          </section>
+
+          <section className="grid gap-6 xl:grid-cols-2">
+            <div className="space-y-4">
+              <SectionHeading
+                title="按账号分布"
+                description="查看当前负载主要由哪些上游账号承接。"
+              />
+              <div className="surface-card overflow-hidden">
+                <DataTable
+                  columns={byAccountCols}
+                  rows={stats?.by_account ?? []}
+                  rowKey={(r) => r.account_id}
+                  empty="当前没有账号维度数据"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <SectionHeading
+                title="按令牌分布"
+                description="查看客户端请求在各访问令牌上的分布。"
+              />
+              <div className="surface-card overflow-hidden">
+                <DataTable
+                  columns={byTokenCols}
+                  rows={stats?.by_token ?? []}
+                  rowKey={(r) => r.token_name}
+                  empty="当前没有令牌维度数据"
+                />
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <SectionHeading
+                title="日志与延迟明细"
+                description="切换查看请求样本或延迟曲线。"
+              />
+              <div className="flex gap-1 rounded-full border border-white/75 bg-white/70 p-1">
+                {(["requests", "latency"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setViewTab(tab)}
+                    className={`rounded-full px-4 py-2 text-sm transition ${
+                      viewTab === tab
+                        ? "bg-moon-800 text-moon-50"
+                        : "text-moon-500 hover:bg-moon-100/80"
+                    }`}
+                  >
+                    {tab === "requests" ? "请求日志" : "延迟曲线"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {viewTab === "requests" ? (
+              <div className="surface-card overflow-hidden">
+                <div className="flex flex-wrap items-end justify-between gap-3 border-b border-moon-200/60 px-4 py-3">
+                  <div>
+                    <p className="eyebrow-label">Request Log</p>
+                    <p className="mt-1 text-sm text-moon-500">
+                      最新样本按时间倒序排列，便于追踪路由与错误。
+                    </p>
+                  </div>
+                  <span className="text-sm text-moon-500">
+                    第 {page} / {totalPages} 页
+                  </span>
+                </div>
+                <DataTable
+                  columns={logColumns}
+                  rows={stats?.logs?.items ?? []}
+                  rowKey={(r) => r.id}
+                  empty="当前没有请求日志"
+                />
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-center gap-4 border-t border-moon-200/60 px-4 py-4">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={page <= 1}
+                      onClick={() => setPage((p) => p - 1)}
+                    >
+                      上一页
+                    </Button>
+                    <span className="text-sm text-moon-500">
+                      第 {page} / {totalPages} 页
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={page >= totalPages}
+                      onClick={() => setPage((p) => p + 1)}
+                    >
+                      下一页
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="surface-card px-5 py-5 sm:px-6 sm:py-6">
+                <div className="flex items-center gap-3">
+                  <BarChart3 className="size-4 text-moon-400" />
+                  <p className="text-sm text-moon-500">
+                    上方主图已作为本页核心分析区，这里保留为辅助查看入口。
+                  </p>
+                </div>
+                <div className="mt-4 h-[320px]">
+                  {latencyLoading ? (
+                    <Skeleton className="h-full rounded-[1.2rem]" />
+                  ) : latencyData.length === 0 ? (
+                    <div className="panel-muted flex h-full items-center justify-center rounded-[1.4rem] border border-dashed border-moon-200/80 text-sm text-moon-400">
+                      当前范围内暂无延迟数据
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={latencyData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(197,201,216,0.55)" />
+                        <XAxis dataKey="bucket" tick={{ fontSize: 11, fill: "#98a0b7" }} />
+                        <YAxis tick={{ fontSize: 11, fill: "#98a0b7" }} />
+                        <Tooltip />
+                        <Line type="monotone" dataKey="p50" stroke="#867dc1" strokeWidth={2.2} dot={false} />
+                        <Line type="monotone" dataKey="p95" stroke="#c09a55" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="p99" stroke="#be7476" strokeWidth={2} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
         </>
       )}
     </div>

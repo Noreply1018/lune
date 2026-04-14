@@ -23,11 +23,12 @@ import (
 )
 
 type Config struct {
-	Port       int    `yaml:"port"`
-	DataDir    string `yaml:"data_dir"`
-	CpaAuthDir string `yaml:"cpa_auth_dir"`
-	CpaBaseURL string `yaml:"cpa_base_url"`
-	CpaAPIKey  string `yaml:"cpa_api_key"`
+	Port             int    `yaml:"port"`
+	DataDir          string `yaml:"data_dir"`
+	CpaAuthDir       string `yaml:"cpa_auth_dir"`
+	CpaBaseURL       string `yaml:"cpa_base_url"`
+	CpaAPIKey        string `yaml:"cpa_api_key"`
+	CpaManagementKey string `yaml:"cpa_management_key"`
 }
 
 func LoadConfig() Config {
@@ -59,6 +60,9 @@ func LoadConfig() Config {
 	if v := os.Getenv("LUNE_CPA_API_KEY"); v != "" {
 		cfg.CpaAPIKey = v
 	}
+	if v := os.Getenv("LUNE_CPA_MANAGEMENT_KEY"); v != "" {
+		cfg.CpaManagementKey = v
+	}
 
 	return cfg
 }
@@ -75,6 +79,11 @@ func New(cfg Config) (*App, error) {
 
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
+	}
+	if cfg.CpaAuthDir != "" {
+		if err := os.MkdirAll(cfg.CpaAuthDir, 0755); err != nil {
+			return nil, fmt.Errorf("create cpa auth dir: %w", err)
+		}
 	}
 
 	dbPath := filepath.Join(cfg.DataDir, "lune.db")
@@ -100,7 +109,7 @@ func (a *App) Run() error {
 	// auto-configure default CPA service if env vars are set
 	a.ensureDefaultCpa()
 
-	srv := httpserver.New(a.logger, a.store, a.cache, a.cfg.CpaAuthDir)
+	srv := httpserver.New(a.logger, a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey)
 
 	// Prefer an explicit IPv4 listener so WSL localhost forwarding can
 	// consistently expose the service to Windows browsers.

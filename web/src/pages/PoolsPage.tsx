@@ -1,11 +1,11 @@
 import { type FormEvent, useEffect, useState } from "react";
-import StatusBadge from "@/components/StatusBadge";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
+import StatusBadge from "@/components/StatusBadge";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
-import type { Pool, PoolMember, Account } from "@/lib/types";
+import type { Account, Pool, PoolMember } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -31,10 +31,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  Plus,
   ChevronDown,
   ChevronRight,
   MoreHorizontal,
+  Plus,
+  Sparkles,
 } from "lucide-react";
 
 interface PoolForm {
@@ -43,6 +44,22 @@ interface PoolForm {
 }
 
 const emptyForm: PoolForm = { label: "", strategy: "priority-first-healthy" };
+
+function StrategyLabel({ strategy }: { strategy: string }) {
+  const label =
+    strategy === "priority-first-healthy"
+      ? "优先健康优先级"
+      : strategy === "round-robin"
+        ? "轮询"
+        : strategy === "weighted-random"
+          ? "权重随机"
+          : strategy;
+  return (
+    <span className="rounded-full bg-lunar-100/70 px-2.5 py-1 text-[11px] text-lunar-700">
+      {label}
+    </span>
+  );
+}
 
 export default function PoolsPage() {
   const [pools, setPools] = useState<Pool[]>([]);
@@ -64,15 +81,17 @@ export default function PoolsPage() {
         return null;
       }),
       api.get<Account[]>("/accounts").catch(() => null),
-    ]).then(([p, a]) => {
+    ]).then(([poolList, accountList]) => {
       if (cancelled) return;
-      if (p !== null) setPools(p ?? []);
-      if (a !== null) setAccounts(a ?? []);
+      if (poolList !== null) setPools(poolList ?? []);
+      if (accountList !== null) setAccounts(accountList ?? []);
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }
 
   useEffect(() => {
@@ -94,9 +113,9 @@ export default function PoolsPage() {
     setShowForm(true);
   }
 
-  function openEdit(p: Pool) {
-    setEditId(p.id);
-    setForm({ label: p.label, strategy: p.strategy });
+  function openEdit(pool: Pool) {
+    setEditId(pool.id);
+    setForm({ label: pool.label, strategy: pool.strategy });
     setShowForm(true);
   }
 
@@ -117,17 +136,13 @@ export default function PoolsPage() {
     }
   }
 
-  async function togglePool(p: Pool) {
-    const next = !p.enabled;
-    setPools((prev) =>
-      prev.map((x) => (x.id === p.id ? { ...x, enabled: next } : x)),
-    );
+  async function togglePool(pool: Pool) {
+    const next = !pool.enabled;
+    setPools((prev) => prev.map((item) => (item.id === pool.id ? { ...item, enabled: next } : item)));
     try {
-      await api.post(`/pools/${p.id}/${next ? "enable" : "disable"}`);
+      await api.post(`/pools/${pool.id}/${next ? "enable" : "disable"}`);
     } catch {
-      setPools((prev) =>
-        prev.map((x) => (x.id === p.id ? { ...x, enabled: !next } : x)),
-      );
+      setPools((prev) => prev.map((item) => (item.id === pool.id ? { ...item, enabled: !next } : item)));
       toast("更新池失败", "error");
     }
   }
@@ -177,11 +192,7 @@ export default function PoolsPage() {
         priority: m.priority,
         weight: m.weight,
       })),
-      {
-        account_id: accountId,
-        priority: pool.members.length + 1,
-        weight: 10,
-      },
+      { account_id: accountId, priority: pool.members.length + 1, weight: 10 },
     ];
     try {
       await api.put(`/pools/${pool.id}`, {
@@ -219,24 +230,28 @@ export default function PoolsPage() {
 
   if (loading) {
     return (
-      <div className="space-y-6">
+      <div className="space-y-8">
         <Skeleton className="h-24 rounded-[1.5rem]" />
-        <Skeleton className="h-40 rounded-[1.5rem]" />
-        <Skeleton className="h-40 rounded-[1.5rem]" />
+        <Skeleton className="h-52 rounded-[1.8rem]" />
+        <Skeleton className="h-72 rounded-[1.8rem]" />
       </div>
     );
   }
 
+  const totalMembers = pools.reduce((count, pool) => count + pool.members.length, 0);
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-10">
       <PageHeader
-        eyebrow="工作区"
+        eyebrow="Pools / Composition"
         title="池"
-        description="组合上游账号形成路由池，并直接调整成员优先级和权重。"
+        description="把账号组合成可分发的执行组。"
         meta={
-          <span>
-            共 {pools.length} 个池 • 成员总数 {pools.reduce((count, pool) => count + pool.members.length, 0)}
-          </span>
+          <>
+            <span>池 {pools.length}</span>
+            <span>成员 {totalMembers}</span>
+            <span>可用账号 {accounts.length}</span>
+          </>
         }
         actions={
           <Button size="sm" onClick={openCreate}>
@@ -246,209 +261,237 @@ export default function PoolsPage() {
         }
       />
 
+      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+        <div className="surface-section moon-grid px-6 py-6 sm:px-7">
+          <p className="eyebrow-label">组合关系</p>
+          <h2 className="mt-2 text-[1.15rem] font-semibold tracking-[-0.03em] text-moon-800">
+            一个池，连接多个执行成员
+          </h2>
+          <p className="mt-3 max-w-2xl text-sm leading-7 text-moon-500">
+            池不只是一个列表，它决定优先级、权重和承载路径。这里用更接近关系图的方式呈现，而不是一块空白大卡片。
+          </p>
+
+          <div className="mt-6 grid gap-3 md:grid-cols-3">
+            <div className="rounded-[1.25rem] border border-white/72 bg-white/74 px-4 py-4">
+              <p className="kicker">已启用池</p>
+              <p className="mt-3 text-[1.5rem] font-semibold tracking-[-0.04em] text-moon-800">
+                {pools.filter((pool) => pool.enabled).length}
+              </p>
+            </div>
+            <div className="rounded-[1.25rem] border border-white/72 bg-white/74 px-4 py-4">
+              <p className="kicker">成员总数</p>
+              <p className="mt-3 text-[1.5rem] font-semibold tracking-[-0.04em] text-moon-800">
+                {totalMembers}
+              </p>
+            </div>
+            <div className="rounded-[1.25rem] border border-white/72 bg-white/74 px-4 py-4">
+              <p className="kicker">待加入账号</p>
+              <p className="mt-3 text-[1.5rem] font-semibold tracking-[-0.04em] text-moon-800">
+                {accounts.length - totalMembers > 0 ? accounts.length - totalMembers : 0}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-6 space-y-3">
+            {pools.slice(0, 3).map((pool) => (
+              <div
+                key={pool.id}
+                className="flex flex-wrap items-center gap-3 rounded-[1.1rem] border border-white/70 bg-white/68 px-4 py-3"
+              >
+                <span className="inline-flex size-7 items-center justify-center rounded-full bg-lunar-100 text-lunar-700">
+                  <Sparkles className="size-3.5" />
+                </span>
+                <span className="font-medium text-moon-800">{pool.label}</span>
+                <span className="text-sm text-moon-500">成员 {pool.members.length}</span>
+                <StrategyLabel strategy={pool.strategy} />
+              </div>
+            ))}
+            {pools.length === 0 && (
+              <div className="rounded-[1.3rem] border border-dashed border-moon-200/80 px-5 py-10 text-center text-sm text-moon-400">
+                还没有任何池，先创建一个组合入口。
+              </div>
+            )}
+          </div>
+        </div>
+
+        <aside className="surface-card px-5 py-5">
+          <p className="eyebrow-label">设计提示</p>
+          <div className="mt-4 space-y-4 text-sm leading-6 text-moon-500">
+            <p>优先级更高的成员会先被选择。</p>
+            <p>使用权重时，数值越高，分流概率越高。</p>
+            <p>展开单个池后可以直接调成员顺序和权重。</p>
+          </div>
+        </aside>
+      </section>
+
       <section className="space-y-4">
         <SectionHeading
           title="池列表"
-          description="展开一个池即可管理成员顺序、权重和账号组成。"
+          description="每个池都是一组可调度成员，展开后可直接微调关系。"
         />
 
-        {pools.length === 0 && (
-          <p className="rounded-[1.6rem] border border-dashed border-moon-200/80 py-12 text-center text-sm text-moon-400">
-            暂未配置池
-          </p>
-        )}
+        {pools.length === 0 ? (
+          <div className="surface-card px-6 py-14 text-center">
+            <p className="text-base font-medium text-moon-700">尚未配置池</p>
+            <p className="mt-2 text-sm text-moon-400">新增一个池，用来组织多个执行账号。</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {pools.map((pool) => {
+              const isOpen = expanded.has(pool.id);
+              const memberAccountIds = new Set(pool.members.map((m) => m.account_id));
+              const availableAccounts = accounts.filter((a) => !memberAccountIds.has(a.id));
 
-        <div className="space-y-4">
-        {pools.map((pool) => {
-          const isOpen = expanded.has(pool.id);
-          const memberAccountIds = new Set(
-            pool.members.map((m) => m.account_id),
-          );
-          const availableAccounts = accounts.filter(
-            (a) => !memberAccountIds.has(a.id),
-          );
-
-          return (
-            <div
-              key={pool.id}
-              className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/88 transition-shadow hover:shadow-[0_18px_40px_-36px_rgba(36,43,74,0.45)]"
-            >
-              <div
-                className="flex cursor-pointer flex-col gap-4 px-5 py-5 lg:flex-row lg:items-center lg:justify-between"
-                onClick={() => toggleExpand(pool.id)}
-              >
-                <div className="flex items-start gap-3">
-                  <div className="mt-1">
-                    {isOpen ? (
-                      <ChevronDown className="size-4 text-moon-400" />
-                    ) : (
-                      <ChevronRight className="size-4 text-moon-400" />
-                    )}
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <span className="font-medium text-moon-800">
-                        {pool.label}
-                      </span>
-                      <StatusBadge
-                        status={pool.enabled ? "healthy" : "disabled"}
-                        label={pool.enabled ? "已启用" : "已停用"}
-                      />
-                      <code className="rounded-full bg-moon-100 px-2.5 py-1 text-[11px] text-moon-500">
-                        {pool.strategy}
-                      </code>
+              return (
+                <div key={pool.id} className="surface-card overflow-hidden">
+                  <div
+                    className="flex cursor-pointer flex-col gap-4 px-5 py-5 lg:flex-row lg:items-center lg:justify-between"
+                    onClick={() => toggleExpand(pool.id)}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="mt-1 text-moon-400">
+                        {isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <span className="font-medium text-moon-800">{pool.label}</span>
+                          <StatusBadge
+                            status={pool.enabled ? "healthy" : "disabled"}
+                            label={pool.enabled ? "已启用" : "已停用"}
+                          />
+                          <StrategyLabel strategy={pool.strategy} />
+                        </div>
+                        <p className="text-sm text-moon-500">
+                          成员 {pool.members.length} 个
+                        </p>
+                      </div>
                     </div>
-                    <p className="text-sm text-moon-500">
-                      共 {pool.members?.length ?? 0} 个成员
-                    </p>
-                  </div>
-                </div>
-                <div
-                  className="flex items-center gap-1"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
-                      render={<Button variant="ghost" size="icon" className="size-8" />}
-                    >
-                      <MoreHorizontal className="size-4" />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEdit(pool)}>
-                        编辑
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => togglePool(pool)}>
-                        {pool.enabled ? "停用" : "启用"}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        className="text-destructive"
-                        onClick={() => setDeleteTarget(pool)}
-                      >
-                        删除
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
 
-              {isOpen && (
-                <div className="border-t border-moon-200/60 px-5 pb-5 pt-4">
-                  {pool.members.length === 0 ? (
-                    <p className="py-4 text-center text-sm text-moon-400">
-                      暂无成员
-                    </p>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full min-w-[640px] text-sm">
-                        <thead>
-                          <tr className="text-left text-[11px] font-semibold uppercase tracking-[0.2em] text-moon-400">
-                            <th className="pb-3">优先级</th>
-                            <th className="pb-3">账号</th>
-                            <th className="pb-3 text-right">权重</th>
-                            <th className="pb-3">状态</th>
-                            <th className="pb-3 text-right">操作</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-moon-200/50">
-                          {pool.members.map((m) => (
-                            <tr key={m.id}>
-                              <td className="py-2">
+                    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          render={<Button variant="ghost" size="icon" className="size-8" />}
+                        >
+                          <MoreHorizontal className="size-4" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => openEdit(pool)}>编辑</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => togglePool(pool)}>
+                            {pool.enabled ? "停用" : "启用"}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() => setDeleteTarget(pool)}
+                          >
+                            删除
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div className="border-t border-moon-200/60 px-5 pb-5 pt-4">
+                      {pool.members.length === 0 ? (
+                        <div className="rounded-[1.25rem] border border-dashed border-moon-200/80 px-4 py-10 text-center text-sm text-moon-400">
+                          这个池还没有成员。先加入一个账号。
+                        </div>
+                      ) : (
+                        <div className="grid gap-3">
+                          {pool.members.map((member) => (
+                            <div
+                              key={member.id}
+                              className="grid gap-3 rounded-[1.15rem] border border-white/72 bg-white/72 px-4 py-4 md:grid-cols-[88px_minmax(0,1fr)_108px_116px_auto]"
+                            >
+                              <div>
+                                <p className="kicker">优先级</p>
                                 <Input
                                   type="number"
-                                  className="h-7 w-16 text-center text-xs"
-                                  defaultValue={m.priority}
+                                  className="mt-2 h-9 rounded-lg bg-white/90 text-center text-sm"
+                                  defaultValue={member.priority}
                                   onBlur={(e) =>
-                                    updateMember(
-                                      pool,
-                                      m,
-                                      "priority",
-                                      Number(e.target.value),
-                                    )
+                                    updateMember(pool, member, "priority", Number(e.target.value))
                                   }
                                 />
-                              </td>
-                              <td className="py-2 font-medium text-moon-800">
-                                {m.account_label}
-                              </td>
-                              <td className="py-2 text-right">
+                              </div>
+
+                              <div>
+                                <p className="kicker">成员</p>
+                                <p className="mt-2 font-medium text-moon-800">{member.account_label}</p>
+                              </div>
+
+                              <div>
+                                <p className="kicker">权重</p>
                                 <Input
                                   type="number"
-                                  className="ml-auto h-7 w-20 text-center text-xs"
-                                  defaultValue={m.weight}
+                                  className="mt-2 h-9 rounded-lg bg-white/90 text-center text-sm"
+                                  defaultValue={member.weight}
                                   onBlur={(e) =>
-                                    updateMember(
-                                      pool,
-                                      m,
-                                      "weight",
-                                      Number(e.target.value),
-                                    )
+                                    updateMember(pool, member, "weight", Number(e.target.value))
                                   }
                                 />
-                              </td>
-                              <td className="py-2">
-                                <StatusBadge
-                                  status={
-                                    m.account_status as
-                                      | "healthy"
-                                      | "degraded"
-                                      | "error"
-                                      | "disabled"
-                                  }
-                                />
-                              </td>
-                              <td className="py-2 text-right">
+                              </div>
+
+                              <div>
+                                <p className="kicker">状态</p>
+                                <div className="mt-2">
+                                  <StatusBadge
+                                    status={
+                                      member.account_status as
+                                        | "healthy"
+                                        | "degraded"
+                                        | "error"
+                                        | "disabled"
+                                    }
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="flex items-end justify-end">
                                 <Button
                                   variant="ghost"
                                   size="sm"
                                   className="text-xs text-destructive"
-                                  onClick={() => removeMember(pool, m)}
+                                  onClick={() => removeMember(pool, member)}
                                 >
                                   移除
                                 </Button>
-                              </td>
-                            </tr>
+                              </div>
+                            </div>
                           ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                        </div>
+                      )}
 
-                  {availableAccounts.length > 0 && (
-                    <div className="mt-4 flex items-center gap-2">
-                      <Select
-                        onValueChange={(v) => v && addMember(pool, Number(v))}
-                      >
-                        <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-moon-50 sm:w-72">
-                          <SelectValue placeholder="添加账号到池" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableAccounts.map((a) => (
-                            <SelectItem
-                              key={a.id}
-                              value={String(a.id)}
-                            >
-                              {a.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      {availableAccounts.length > 0 && (
+                        <div className="mt-4 flex items-center gap-2">
+                          <Select onValueChange={(v) => v && addMember(pool, Number(v))}>
+                            <SelectTrigger className="h-11 w-full rounded-xl border-white/75 bg-white/82 sm:w-72">
+                              <SelectValue placeholder="添加账号到池" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {availableAccounts.map((account) => (
+                                <SelectItem key={account.id} value={String(account.id)}>
+                                  {account.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
-          );
-        })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       <Dialog open={showForm} onOpenChange={setShowForm}>
         <DialogContent>
           <form onSubmit={handleSubmit}>
             <DialogHeader>
-              <DialogTitle>
-                {editId ? "编辑池" : "新增池"}
-              </DialogTitle>
+              <DialogTitle>{editId ? "编辑池" : "新增池"}</DialogTitle>
             </DialogHeader>
 
             <div className="space-y-4 py-4">
@@ -459,38 +502,27 @@ export default function PoolsPage() {
                   value={form.label}
                   onChange={(e) => setForm({ ...form, label: e.target.value })}
                   required
-                  placeholder="OpenAI 池"
+                  placeholder="主力池"
                 />
               </div>
 
               <div className="space-y-2">
                 <Label>策略</Label>
-                <Select
-                  value={form.strategy}
-                  onValueChange={(v) => v && setForm({ ...form, strategy: v })}
-                >
+                <Select value={form.strategy} onValueChange={(v) => v && setForm({ ...form, strategy: v })}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="priority-first-healthy">
-                      priority-first-healthy
-                    </SelectItem>
+                    <SelectItem value="priority-first-healthy">priority-first-healthy</SelectItem>
                     <SelectItem value="round-robin">round-robin</SelectItem>
-                    <SelectItem value="weighted-random">
-                      weighted-random
-                    </SelectItem>
+                    <SelectItem value="weighted-random">weighted-random</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             </div>
 
             <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setShowForm(false)}
-              >
+              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>
                 取消
               </Button>
               <Button type="submit">{editId ? "保存" : "创建"}</Button>
@@ -503,7 +535,7 @@ export default function PoolsPage() {
         open={deleteTarget !== null}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title="删除池"
-        description={`确认删除"${deleteTarget?.label ?? ""}"？关联的成员映射也将一并移除。`}
+        description={`确认删除"${deleteTarget?.label ?? ""}"？关联成员也会一起移除。`}
         onConfirm={confirmDelete}
       />
     </div>

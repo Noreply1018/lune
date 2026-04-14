@@ -14,20 +14,22 @@ import (
 )
 
 type Server struct {
-	logger     *log.Logger
-	mux        *http.ServeMux
-	store      *store.Store
-	cache      *store.RoutingCache
-	cpaAuthDir string
+	logger           *log.Logger
+	mux              *http.ServeMux
+	store            *store.Store
+	cache            *store.RoutingCache
+	cpaAuthDir       string
+	cpaManagementKey string
 }
 
-func New(logger *log.Logger, st *store.Store, cache *store.RoutingCache, cpaAuthDir string) *Server {
+func New(logger *log.Logger, st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKey string) *Server {
 	s := &Server{
-		logger:     logger,
-		mux:        http.NewServeMux(),
-		store:      st,
-		cache:      cache,
-		cpaAuthDir: cpaAuthDir,
+		logger:           logger,
+		mux:              http.NewServeMux(),
+		store:            st,
+		cache:            cache,
+		cpaAuthDir:       cpaAuthDir,
+		cpaManagementKey: cpaManagementKey,
 	}
 	s.routes()
 	return s
@@ -46,7 +48,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 
 	// admin API
-	adminHandler := admin.NewHandler(s.store, s.cache, s.cpaAuthDir)
+	adminHandler := admin.NewHandler(s.store, s.cache, s.cpaAuthDir, s.cpaManagementKey)
 	adminWrap := func(next http.Handler) http.Handler {
 		return auth.AdminAuth(next, s.cache)
 	}

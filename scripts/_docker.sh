@@ -6,6 +6,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT"
 
+# Export LUNE_PORT for docker-compose.yml variable substitution.
+# Priority: env var > lune.yaml > default 7788
+if [[ -z "${LUNE_PORT:-}" ]] && [[ -f lune.yaml ]]; then
+  _port="$(grep -E '^[[:space:]]*port[[:space:]]*:' lune.yaml | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]')"
+  if [[ -n "$_port" ]]; then
+    export LUNE_PORT="$_port"
+  fi
+fi
+export LUNE_PORT="${LUNE_PORT:-7788}"
+
 resolve_lune_port() {
   local port
   port="$(docker compose port lune 7788 2>/dev/null | awk -F: 'NF{print $NF}' | tail -n 1)"

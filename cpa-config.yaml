@@ -5,6 +5,10 @@ port: 8317
 
 auth-dir: "/app/cpa-auth"
 
+remote-management:
+  allow-remote: true
+  secret-key: "lune-cpa-management-dev"
+
 api-keys:
   - "sk-cpa-default"
 

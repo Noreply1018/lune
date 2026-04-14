@@ -8,7 +8,7 @@ COPY web/ ./
 RUN npm run build
 
 # -- Stage 2: Build Go binary --
-FROM golang:1.24 AS builder
+FROM golang:1.25 AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -22,7 +22,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /lune ./cmd/lune
 FROM debian:bookworm-slim
 
 WORKDIR /app
-RUN mkdir -p /app/data
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/data
 
 COPY --from=builder /lune /usr/local/bin/lune
 

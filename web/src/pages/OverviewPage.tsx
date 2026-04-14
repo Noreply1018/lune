@@ -1,35 +1,31 @@
 import { useEffect, useState } from "react";
-import StatCard from "@/components/StatCard";
-import StatusBadge from "@/components/StatusBadge";
 import DataTable, { type Column } from "@/components/DataTable";
 import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
+import StatusBadge from "@/components/StatusBadge";
 import { api } from "@/lib/api";
-import { pct, latency, compact, relativeTime, shortDate } from "@/lib/fmt";
+import { compact, latency, pct, relativeTime, shortDate } from "@/lib/fmt";
 import { estimateCost, formatCost } from "@/lib/pricing";
 import type { Overview, RequestLog } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
-  Users,
-  Layers,
-  Key,
   Activity,
-  Zap,
-  Server,
   AlertTriangle,
+  ArrowUpRight,
+  Globe,
+  Key,
+  Layers,
   RefreshCw,
   ShieldCheck,
-  Globe,
+  Users,
 } from "lucide-react";
 
 const requestColumns: Column<RequestLog>[] = [
   {
     key: "time",
     header: "时间",
-    render: (r) => (
-      <span className="text-moon-500">{shortDate(r.created_at)}</span>
-    ),
+    render: (r) => <span className="text-moon-500">{shortDate(r.created_at)}</span>,
     tone: "secondary",
   },
   {
@@ -41,17 +37,13 @@ const requestColumns: Column<RequestLog>[] = [
   {
     key: "token",
     header: "令牌",
-    render: (r) => (
-      <span className="text-moon-500">{r.access_token_name}</span>
-    ),
+    render: (r) => <span className="text-moon-500">{r.access_token_name}</span>,
     tone: "secondary",
   },
   {
     key: "account",
     header: "账号",
-    render: (r) => (
-      <span className="text-moon-500">{r.account_label}</span>
-    ),
+    render: (r) => <span className="text-moon-500">{r.account_label}</span>,
     tone: "secondary",
   },
   {
@@ -69,19 +61,6 @@ const requestColumns: Column<RequestLog>[] = [
     key: "latency",
     header: "延迟",
     render: (r) => <span className="text-moon-500">{latency(r.latency_ms)}</span>,
-    align: "right",
-    tone: "numeric",
-  },
-  {
-    key: "tokens",
-    header: "Token 用量",
-    render: (r) => (
-      <span className="text-moon-500">
-        {r.input_tokens != null
-          ? `${compact(r.input_tokens)}/${compact(r.output_tokens ?? 0)}`
-          : "-"}
-      </span>
-    ),
     align: "right",
     tone: "numeric",
   },
@@ -124,49 +103,44 @@ export default function OverviewPage() {
 
   useEffect(() => {
     load();
-    const interval = setInterval(() => {
-      load(true);
-    }, 10_000);
+    const interval = setInterval(() => load(true), 10_000);
     return () => clearInterval(interval);
   }, []);
 
   if (loading) {
     return (
       <div className="space-y-8">
-        <Skeleton className="h-24 rounded-[1.5rem]" />
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.95fr)]">
-          <Skeleton className="h-56 rounded-[1.5rem]" />
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-32 rounded-[1.5rem]" />
-            ))}
-          </div>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-32 rounded-[1.5rem]" />
-          ))}
-        </div>
-        <div className="grid gap-6 xl:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.25fr)]">
-          <Skeleton className="h-72 rounded-[1.5rem]" />
-          <Skeleton className="h-72 rounded-[1.5rem]" />
+        <Skeleton className="h-28 rounded-[1.5rem]" />
+        <Skeleton className="h-[28rem] rounded-[2rem]" />
+        <div className="grid gap-6 xl:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.15fr)]">
+          <Skeleton className="h-80 rounded-[1.6rem]" />
+          <Skeleton className="h-80 rounded-[1.6rem]" />
         </div>
       </div>
     );
   }
 
-  const o = data;
+  const overview = data;
   const totalUsage =
-    (o?.token_usage_24h?.input ?? 0) + (o?.token_usage_24h?.output ?? 0);
-  const totalAccounts = o?.total_accounts ?? 0;
-  const cpaAccounts = o?.accounts_by_source?.cpa ?? 0;
-  const openaiCompatAccounts = o?.accounts_by_source?.openai_compat ?? 0;
+    (overview?.token_usage_24h?.input ?? 0) +
+    (overview?.token_usage_24h?.output ?? 0);
+  const cpaAccounts = overview?.accounts_by_source?.cpa ?? 0;
+  const openaiCompatAccounts = overview?.accounts_by_source?.openai_compat ?? 0;
+  const serviceStatus = overview?.cpa_status;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-10">
       <PageHeader
-        eyebrow="Lune 控制台"
+        eyebrow="Overview / Console"
         title="总览"
+        description="一眼看清供给、健康与最近 24 小时流量。"
+        meta={
+          <>
+            <span>账号 {overview?.total_accounts ?? 0}</span>
+            <span>池 {overview?.total_pools ?? 0}</span>
+            <span>访问令牌 {overview?.total_tokens ?? 0}</span>
+          </>
+        }
         actions={
           <Button size="sm" variant="outline" onClick={() => load()}>
             <RefreshCw className="size-4" />
@@ -176,11 +150,14 @@ export default function OverviewPage() {
       />
 
       {refreshError && (
-        <section className="rounded-[1.5rem] border border-amber-200 bg-amber-50/90 p-4">
+        <section className="surface-card border-amber-200/70 bg-amber-50/80 px-4 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 size-4 text-amber-700" />
-              <p className="text-sm font-medium text-amber-900">总览刷新失败</p>
+              <div>
+                <p className="text-sm font-medium text-amber-900">总览刷新失败</p>
+                <p className="mt-1 text-sm text-amber-800/80">{refreshError}</p>
+              </div>
             </div>
             <Button size="sm" variant="outline" onClick={() => load()}>
               重试
@@ -189,163 +166,212 @@ export default function OverviewPage() {
         </section>
       )}
 
-      <section className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.95fr)]">
-        <article className="relative overflow-hidden rounded-[1.6rem] border border-lunar-200/80 bg-[linear-gradient(145deg,rgba(249,251,255,0.98),rgba(233,240,255,0.96))] p-6 shadow-[0_24px_70px_-45px_rgba(46,76,142,0.45)] sm:p-7">
-          <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-lunar-500/60 to-transparent" />
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-lunar-700">CPA 核心状态</p>
-              <div className="flex items-center gap-3">
-                <h2 className="text-3xl font-semibold tracking-tight text-moon-900 sm:text-[2.6rem]">
-                  {o?.cpa_status?.label ?? "未连接"}
+      <section className="surface-section hero-glow relative overflow-hidden px-6 py-6 sm:px-7 sm:py-7">
+        <div className="absolute right-[-3rem] top-[-2rem] h-44 w-44 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.96),rgba(255,255,255,0)_68%)] blur-xl" />
+        <div className="absolute left-[42%] top-12 h-48 w-48 rounded-full bg-[radial-gradient(circle,rgba(134,125,193,0.18),rgba(134,125,193,0)_72%)] blur-3xl" />
+        <div className="grid gap-8 xl:grid-cols-[minmax(0,1.18fr)_minmax(320px,0.82fr)]">
+          <div className="space-y-8">
+            <div className="space-y-4">
+              <p className="eyebrow-label">Moonlight Surface</p>
+              <div className="space-y-3">
+                <h2 className="font-editorial text-[2.4rem] font-semibold tracking-[-0.065em] text-moon-800 sm:text-[3.45rem]">
+                  今夜的网关
                 </h2>
-                {o?.cpa_status ? (
-                  <StatusBadge
-                    status={
-                      o.cpa_status.status === "healthy"
-                        ? "healthy"
-                        : o.cpa_status.status === "error"
-                          ? "error"
-                          : "degraded"
-                    }
-                    label={o.cpa_status.status}
-                  />
-                ) : (
-                  <span className="rounded-full bg-red-100 px-2.5 py-1 text-xs font-medium text-red-700">
-                    未配置
-                  </span>
-                )}
+                <p className="max-w-2xl text-sm leading-7 text-moon-500 sm:text-[15px]">
+                  当前控制面、账号供给与最近请求都收拢在这一屏里。先看状态，再看流量，不让首页变成一面卡片墙。
+                </p>
               </div>
             </div>
-            <span className="flex size-11 items-center justify-center rounded-2xl border border-lunar-200 bg-white/80 text-lunar-700">
-              <Server className="size-5" />
-            </span>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-[1.25rem] border border-white/72 bg-white/62 px-4 py-4">
+                <p className="kicker">服务状态</p>
+                <div className="mt-3 flex items-center gap-3">
+                  {serviceStatus ? (
+                    <StatusBadge
+                      status={
+                        serviceStatus.status === "healthy"
+                          ? "healthy"
+                          : serviceStatus.status === "error"
+                            ? "error"
+                            : "degraded"
+                      }
+                    />
+                  ) : (
+                    <StatusBadge status="disabled" label="未配置" />
+                  )}
+                </div>
+                <p className="mt-3 text-sm text-moon-500">
+                  {serviceStatus?.last_checked_at
+                    ? `最近检查 ${relativeTime(serviceStatus.last_checked_at)}`
+                    : "尚未连接 CPA 控制面"}
+                </p>
+              </div>
+
+              <div className="rounded-[1.25rem] border border-white/72 bg-white/62 px-4 py-4">
+                <p className="kicker">供给概况</p>
+                <p className="mt-3 text-[1.5rem] font-semibold tracking-[-0.05em] text-moon-800">
+                  {overview?.total_accounts ?? 0}
+                </p>
+                <p className="mt-2 text-sm text-moon-500">
+                  直连 {openaiCompatAccounts} · CPA {cpaAccounts}
+                </p>
+              </div>
+
+              <div className="rounded-[1.25rem] border border-white/72 bg-white/62 px-4 py-4">
+                <p className="kicker">24h 请求</p>
+                <p className="mt-3 text-[1.5rem] font-semibold tracking-[-0.05em] text-moon-800">
+                  {compact(overview?.requests_24h ?? 0)}
+                </p>
+                <p className="mt-2 text-sm text-moon-500">
+                  成功率 {pct(overview?.success_rate_24h ?? 0)}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-4">
+              {[
+                {
+                  label: "可用账号",
+                  value: compact(overview?.healthy_accounts ?? 0),
+                  icon: Users,
+                },
+                {
+                  label: "池",
+                  value: compact(overview?.total_pools ?? 0),
+                  icon: Layers,
+                },
+                {
+                  label: "令牌",
+                  value: compact(overview?.total_tokens ?? 0),
+                  icon: Key,
+                },
+                {
+                  label: "Token",
+                  value: compact(totalUsage),
+                  icon: Activity,
+                },
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  className="rounded-[1.15rem] border border-white/70 bg-white/56 px-4 py-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs tracking-[0.16em] text-moon-400">{item.label}</p>
+                    <item.icon className="size-4 text-moon-400" />
+                  </div>
+                  <p className="mt-2 text-lg font-semibold tracking-[-0.04em] text-moon-800">
+                    {item.value}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
 
-          {o?.cpa_status ? (
-            <div className="mt-6 flex flex-wrap gap-3">
-              <div className="flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-4 py-2">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moon-400">账号单元</span>
-                <span className="text-lg font-semibold text-moon-900" style={{ fontFamily: '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif' }}>
-                  {compact(cpaAccounts)}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-4 py-2">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moon-400">健康</span>
-                <span className="text-lg font-semibold text-moon-900" style={{ fontFamily: '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif' }}>
-                  {compact(o.cpa_status.accounts_healthy)}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-4 py-2">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moon-400">即将到期</span>
-                <span className="text-lg font-semibold text-moon-900" style={{ fontFamily: '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif' }}>
-                  {compact(o.cpa_status.accounts_expiring)}
-                </span>
-              </div>
-              {o.cpa_status.last_checked_at && (
-                <div className="flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-4 py-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moon-400">检查于</span>
-                  <span className="text-sm font-medium text-moon-600">{relativeTime(o.cpa_status.last_checked_at)}</span>
+          <aside className="space-y-4">
+            <div className="rounded-[1.45rem] border border-white/72 bg-white/70 px-5 py-5">
+              <div className="flex items-center justify-between gap-3 border-b border-moon-200/60 pb-4">
+                <div>
+                  <p className="kicker">当前控制平面</p>
+                  <p className="mt-1 text-sm text-moon-500">Default CPA 与账号健康摘要</p>
                 </div>
-              )}
-            </div>
-          ) : (
-            <p className="mt-4 text-sm text-moon-500">配置 CPA 服务后可启用 Provider Channel 和 Device Code 登录。</p>
-          )}
-        </article>
+                <ShieldCheck className="size-4 text-lunar-600" />
+              </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
-          <StatCard
-            label="请求成功率"
-            value={pct(o?.success_rate_24h ?? 0)}
-            sub="24h"
-            icon={ShieldCheck}
-            variant="hero"
-          />
-          <StatCard
-            label="24h 请求量"
-            value={compact(o?.requests_24h ?? 0)}
-            icon={Activity}
-          />
-          <StatCard
-            label="24h Token"
-            value={compact(totalUsage)}
-            sub={`${compact(o?.token_usage_24h?.input ?? 0)} in / ${compact(o?.token_usage_24h?.output ?? 0)} out`}
-            icon={Zap}
-          />
+              <div className="space-y-4 pt-4">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-moon-500">服务</span>
+                  <span className="font-medium text-moon-700">
+                    {serviceStatus?.label ?? "未配置"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-moon-500">健康账号</span>
+                  <span className="font-medium text-moon-700">
+                    {serviceStatus?.accounts_healthy ?? 0}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-moon-500">即将到期</span>
+                  <span className="font-medium text-moon-700">
+                    {serviceStatus?.accounts_expiring ?? 0}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-moon-500">直接接入</span>
+                  <span className="font-medium text-moon-700">
+                    {openaiCompatAccounts}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[1.45rem] border border-white/72 bg-[linear-gradient(180deg,rgba(243,239,250,0.92),rgba(255,255,255,0.74))] px-5 py-5">
+              <p className="kicker">24 小时摘要</p>
+              <div className="mt-4 space-y-4">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-moon-500">请求</span>
+                  <span className="text-lg font-semibold tracking-[-0.04em] text-moon-800">
+                    {compact(overview?.requests_24h ?? 0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-moon-500">成功率</span>
+                  <span className="text-lg font-semibold tracking-[-0.04em] text-moon-800">
+                    {pct(overview?.success_rate_24h ?? 0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-moon-500">输入 / 输出</span>
+                  <span className="font-medium text-moon-700">
+                    {compact(overview?.token_usage_24h?.input ?? 0)} / {compact(overview?.token_usage_24h?.output ?? 0)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </aside>
         </div>
       </section>
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          label="账号"
-          value={String(totalAccounts)}
-          icon={Users}
-          variant="compact"
-        />
-        <StatCard
-          label="直连 API"
-          value={String(openaiCompatAccounts)}
-          icon={Globe}
-          variant="compact"
-        />
-        <StatCard
-          label="池"
-          value={String(o?.total_pools ?? 0)}
-          icon={Layers}
-          variant="compact"
-        />
-        <StatCard
-          label="令牌"
-          value={String(o?.total_tokens ?? 0)}
-          icon={Key}
-          variant="compact"
-        />
-      </section>
-
-      <section className="grid gap-6 xl:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.25fr)]">
+      <section className="grid gap-6 xl:grid-cols-[minmax(320px,0.88fr)_minmax(0,1.12fr)]">
         <div className="space-y-4">
           <SectionHeading
-            title="账号健康度"
-            description="查看账号是否可用、最近检查时间以及当前阻塞错误。"
+            title="账号健康"
+            description="最近检查结果、当前可用性与阻塞错误。"
           />
-          <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
-            {(!o?.account_health || o.account_health.length === 0) && (
-              <p className="py-10 text-center text-sm text-moon-400">
-                暂未配置账号
-              </p>
+          <div className="surface-card overflow-hidden">
+            {(!overview?.account_health || overview.account_health.length === 0) && (
+              <div className="px-6 py-12 text-center text-sm text-moon-400">
+                还没有可观察的账号
+              </div>
             )}
-            {o?.account_health?.map((a, index) => (
+            {overview?.account_health?.map((account, index) => (
               <div
-                key={a.id}
+                key={account.id}
                 className={`flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-start sm:justify-between ${
                   index > 0 ? "border-t border-moon-200/60" : ""
-                } ${a.status === "disabled" ? "opacity-60" : ""}`}
+                } ${account.status === "disabled" ? "opacity-60" : ""}`}
               >
                 <div className="space-y-2">
                   <div className="flex items-center gap-3">
                     <StatusBadge
                       status={
-                        a.status as
-                          | "healthy"
-                          | "degraded"
-                          | "error"
-                          | "disabled"
+                        account.status as "healthy" | "degraded" | "error" | "disabled"
                       }
                     />
-                    <span className="font-medium text-moon-800">{a.label}</span>
+                    <span className="font-medium text-moon-800">{account.label}</span>
                   </div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-moon-400">
-                    {a.last_checked_at
-                      ? `最近检查 ${relativeTime(a.last_checked_at)}`
+                  <p className="text-sm text-moon-500">
+                    {account.last_checked_at
+                      ? `最近检查 ${relativeTime(account.last_checked_at)}`
                       : "尚未检查"}
                   </p>
                 </div>
                 <div className="max-w-sm text-sm text-moon-500 sm:text-right">
-                  {a.last_error ? (
-                    <p className="text-status-red">{a.last_error}</p>
+                  {account.last_error ? (
+                    <p className="text-status-red">{account.last_error}</p>
                   ) : (
-                    <p>当前未发现错误。</p>
+                    <p>未发现阻塞错误。</p>
                   )}
                 </div>
               </div>
@@ -356,12 +382,30 @@ export default function OverviewPage() {
         <div className="space-y-4">
           <SectionHeading
             title="最近请求"
-            description="查看最新流量样本，包括模型别名、令牌和上游账号。"
+            description="最新流量样本，用来快速判断路由、令牌与状态码。"
+            action={
+              <span className="inline-flex items-center gap-1 text-sm text-moon-500">
+                最近 24h
+                <ArrowUpRight className="size-4" />
+              </span>
+            }
           />
-          <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
+          <div className="surface-card overflow-hidden">
+            <div className="flex items-center justify-between border-b border-moon-200/60 px-4 py-3">
+              <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-moon-500">
+                <span className="inline-flex items-center gap-2">
+                  <Globe className="size-4 text-moon-400" />
+                  直连 {openaiCompatAccounts}
+                </span>
+                <span className="inline-flex items-center gap-2">
+                  <Users className="size-4 text-moon-400" />
+                  CPA {cpaAccounts}
+                </span>
+              </div>
+            </div>
             <DataTable
               columns={requestColumns}
-              rows={o?.recent_requests ?? []}
+              rows={overview?.recent_requests ?? []}
               rowKey={(r) => r.id}
               empty="暂无最近请求"
             />

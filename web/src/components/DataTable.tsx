@@ -34,7 +34,7 @@ export default function DataTable<T>({
   if (rows.length === 0) {
     return (
       <p className="py-12 text-center text-sm text-moon-400">
-        {empty ?? "No data"}
+        {empty ?? "暂无数据"}
       </p>
     );
   }
@@ -46,7 +46,7 @@ export default function DataTable<T>({
             <TableHead
               key={col.key}
               className={cn(
-                "h-11 px-4 text-[11px] font-semibold uppercase tracking-[0.2em] text-moon-400",
+                "h-11 px-4 text-[11px] font-semibold tracking-[0.18em] text-moon-400",
                 col.align === "right" && "text-right",
                 col.align === "center" && "text-center",
                 col.className,
@@ -61,13 +61,13 @@ export default function DataTable<T>({
         {rows.map((row) => (
           <TableRow
             key={rowKey(row)}
-            className="border-moon-200/55 transition-colors hover:bg-moon-100/40"
+            className="border-moon-200/55 transition-colors hover:bg-[rgba(241,239,250,0.34)]"
           >
             {columns.map((col) => (
               <TableCell
                 key={col.key}
                 className={cn(
-                  "px-4 py-3.5 align-middle",
+                  "px-4 py-4 align-middle",
                   col.align === "right" && "text-right",
                   col.align === "center" && "text-center",
                   col.tone === "primary" && "font-medium text-moon-800",
