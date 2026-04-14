@@ -40,31 +40,31 @@ function expiryBadge(date: string | null) {
   const exp = new Date(date).getTime();
   if (Number.isNaN(exp)) return null;
   const diff = exp - now;
-  if (diff <= 0) return <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700"><AlertTriangle className="size-3" />Expired</span>;
-  if (diff <= 24 * 60 * 60 * 1000) return <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700"><AlertTriangle className="size-3" />Expiring today</span>;
-  if (diff <= 7 * 24 * 60 * 60 * 1000) return <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-yellow-100 px-1.5 py-0.5 text-[10px] font-medium text-yellow-700"><AlertTriangle className="size-3" />Expiring soon</span>;
+  if (diff <= 0) return <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700"><AlertTriangle className="size-3" />已过期</span>;
+  if (diff <= 24 * 60 * 60 * 1000) return <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700"><AlertTriangle className="size-3" />今日到期</span>;
+  if (diff <= 7 * 24 * 60 * 60 * 1000) return <span className="ml-1 inline-flex items-center gap-0.5 rounded-md bg-yellow-100 px-1.5 py-0.5 text-[10px] font-medium text-yellow-700"><AlertTriangle className="size-3" />即将到期</span>;
   return null;
 }
 
 const linkedColumns: Column<Account>[] = [
   {
     key: "label",
-    header: "Label",
+    header: "标签",
     render: (r) => <span className="font-medium text-moon-800">{r.label}</span>,
     tone: "primary",
   },
   {
     key: "subtype",
-    header: "Subtype",
+    header: "类型",
     render: (r) => (
       <span className="text-sm text-moon-600">
-        {r.cpa_account_key ? "Credential-backed account" : "Provider channel"}
+        {r.cpa_account_key ? "凭据型账号" : "Provider 通道"}
       </span>
     ),
   },
   {
     key: "provider",
-    header: "Provider",
+    header: "提供商",
     render: (r) => (
       <span className="rounded-md bg-lunar-100/60 px-2 py-0.5 text-xs font-medium text-lunar-700">
         {r.cpa_provider}
@@ -73,17 +73,17 @@ const linkedColumns: Column<Account>[] = [
   },
   {
     key: "email",
-    header: "Email",
+    header: "邮箱",
     render: (r) => r.cpa_email ? <span className="text-sm text-moon-600">{r.cpa_email}</span> : <span className="text-sm text-moon-400">-</span>,
   },
   {
     key: "plan",
-    header: "Plan",
+    header: "套餐",
     render: (r) => r.cpa_plan_type ? <span className="text-sm text-moon-600">{r.cpa_plan_type}</span> : <span className="text-sm text-moon-400">-</span>,
   },
   {
     key: "status",
-    header: "Status",
+    header: "状态",
     render: (r) => (
       <span className="inline-flex items-center">
         <StatusBadge status={r.enabled ? r.status : "disabled"} />
@@ -109,21 +109,31 @@ export default function CpaServicePage() {
 
   function load() {
     setLoading(true);
+    let cancelled = false;
+
     Promise.all([
-      api.get<CpaService | null>("/cpa/service"),
-      api.get<Account[]>("/accounts"),
-    ])
-      .then(([svc, accounts]) => {
-        setService(svc ?? null);
-        setLinkedAccounts(
-          (accounts ?? []).filter((a) => a.source_kind === "cpa"),
-        );
-      })
-      .catch(() => toast("Failed to load CPA service", "error"))
-      .finally(() => setLoading(false));
+      api.get<CpaService | null>("/cpa/service").catch((err) => {
+        if (!cancelled) toast("加载 CPA 服务失败", "error");
+        return null;
+      }),
+      api.get<Account[]>("/accounts").catch(() => [] as Account[]),
+    ]).then(([svc, accounts]) => {
+      if (cancelled) return;
+      setService(svc ?? null);
+      setLinkedAccounts(
+        (accounts ?? []).filter((a) => a.source_kind === "cpa"),
+      );
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    return () => { cancelled = true; };
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    const cancel = load();
+    return cancel;
+  }, []);
 
   function openEdit() {
     if (service) {
@@ -147,11 +157,11 @@ export default function CpaServicePage() {
         api_key: form.api_key || undefined,
         enabled: true,
       });
-      toast(service ? "CPA service updated" : "CPA service configured");
+      toast(service ? "CPA 服务已更新" : "CPA 服务已配置");
       setShowForm(false);
       load();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Operation failed", "error");
+      toast(err instanceof Error ? err.message : "操作失败", "error");
     }
   }
 
@@ -161,13 +171,13 @@ export default function CpaServicePage() {
       const result = await api.post<CpaServiceTestResult>("/cpa/service/test", {});
       if (result.reachable) {
         toast(
-          `Connected (${result.latency_ms}ms) - ${result.providers?.length ?? 0} providers available`,
+          `已连接 (${result.latency_ms}ms) - ${result.providers?.length ?? 0} 个提供商可用`,
         );
       } else {
-        toast(result.error || "Connection failed", "error");
+        toast(result.error || "连接失败", "error");
       }
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Test failed", "error");
+      toast(err instanceof Error ? err.message : "测试失败", "error");
     } finally {
       setTesting(false);
     }
@@ -178,21 +188,21 @@ export default function CpaServicePage() {
     const next = !service.enabled;
     try {
       await api.post(`/cpa/service/${next ? "enable" : "disable"}`);
-      toast(next ? "CPA service enabled" : "CPA service disabled");
+      toast(next ? "CPA 服务已启用" : "CPA 服务已停用");
       load();
     } catch {
-      toast("Failed to update CPA service", "error");
+      toast("更新 CPA 服务失败", "error");
     }
   }
 
   async function confirmDelete() {
     try {
       await api.delete("/cpa/service");
-      toast("CPA service removed");
+      toast("CPA 服务已删除");
       setShowDelete(false);
       load();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Failed to delete", "error");
+      toast(err instanceof Error ? err.message : "删除失败", "error");
       setShowDelete(false);
     }
   }
@@ -413,7 +423,7 @@ export default function CpaServicePage() {
                   value={form.label}
                   onChange={(e) => setForm({ ...form, label: e.target.value })}
                   required
-                  placeholder="Local CPA"
+                  placeholder="本地 CPA"
                 />
               </div>
               <div className="space-y-2">

@@ -32,7 +32,7 @@ const TIME_RANGES = [
 const logColumns: Column<RequestLog>[] = [
   {
     key: "time",
-    header: "Time",
+    header: "时间",
     render: (r) => (
       <span className="text-moon-500">{shortDate(r.created_at)}</span>
     ),
@@ -40,13 +40,13 @@ const logColumns: Column<RequestLog>[] = [
   },
   {
     key: "model",
-    header: "Model",
+    header: "模型",
     render: (r) => <span className="font-medium">{r.model_alias}</span>,
     tone: "primary",
   },
   {
     key: "token",
-    header: "Token",
+    header: "令牌",
     render: (r) => (
       <span className="text-moon-500">{r.access_token_name}</span>
     ),
@@ -54,7 +54,7 @@ const logColumns: Column<RequestLog>[] = [
   },
   {
     key: "account",
-    header: "Account",
+    header: "账号",
     render: (r) => (
       <span className="text-moon-500">{r.account_label}</span>
     ),
@@ -62,7 +62,7 @@ const logColumns: Column<RequestLog>[] = [
   },
   {
     key: "status",
-    header: "Status",
+    header: "状态",
     render: (r) => (
       <StatusBadge
         status={r.success ? "healthy" : "error"}
@@ -73,7 +73,7 @@ const logColumns: Column<RequestLog>[] = [
   },
   {
     key: "io",
-    header: "In / Out",
+    header: "输入 / 输出",
     render: (r) =>
       r.input_tokens != null ? (
         <span className="text-moon-500">
@@ -87,7 +87,7 @@ const logColumns: Column<RequestLog>[] = [
   },
   {
     key: "latency",
-    header: "Latency",
+    header: "延迟",
     render: (r) => (
       <span className="text-moon-500">{latency(r.latency_ms)}</span>
     ),
@@ -96,7 +96,7 @@ const logColumns: Column<RequestLog>[] = [
   },
   {
     key: "cost",
-    header: "Est. Cost",
+    header: "预估成本",
     render: (r) => {
       const cost = r.input_tokens != null
         ? estimateCost(r.target_model || r.model_alias, r.input_tokens, r.output_tokens ?? 0)
@@ -140,38 +140,46 @@ export default function UsagePage() {
   }
 
   function loadStats() {
+    let cancelled = false;
     api
       .get<UsageStats>(`/usage?${buildQuery()}`)
-      .then(setStats)
-      .catch(() => toast("加载用量数据失败", "error"))
-      .finally(() => setLoading(false));
+      .then((d) => { if (!cancelled) setStats(d); })
+      .catch(() => { if (!cancelled) toast("加载用量数据失败", "error"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }
 
   useEffect(() => {
+    let cancelled = false;
     Promise.all([
       api.get<Account[]>("/accounts").catch(() => []),
       api.get<AccessToken[]>("/tokens").catch(() => []),
     ]).then(([a, t]) => {
+      if (cancelled) return;
       setAccounts(a ?? []);
       setTokensList(t ?? []);
     });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
     setLoading(true);
-    loadStats();
+    const cancel = loadStats();
+    return cancel;
   }, [range, filterToken, filterAccount, filterModel, filterSource, page]);
 
   useEffect(() => {
     if (viewTab !== "latency") return;
+    let cancelled = false;
     setLatencyLoading(true);
     const params = new URLSearchParams({ period: range, bucket: latencyBucket });
     if (filterModel !== "all") params.set("model", filterModel);
     api
       .get<LatencyBucket[]>(`/usage/latency?${params}`)
-      .then((d) => setLatencyData(d ?? []))
-      .catch(() => toast("加载延迟数据失败", "error"))
-      .finally(() => setLatencyLoading(false));
+      .then((d) => { if (!cancelled) setLatencyData(d ?? []); })
+      .catch(() => { if (!cancelled) toast("加载延迟数据失败", "error"); })
+      .finally(() => { if (!cancelled) setLatencyLoading(false); });
+    return () => { cancelled = true; };
   }, [viewTab, range, filterModel, latencyBucket]);
 
   const models = Array.from(
@@ -185,35 +193,35 @@ export default function UsagePage() {
   const byAccountCols: Column<UsageStats["by_account"][0]>[] = [
     {
       key: "account",
-      header: "Account",
+      header: "账号",
       render: (r) => (
         <span className="font-medium text-moon-800">{r.account_label}</span>
       ),
     },
     {
       key: "requests",
-      header: "Requests",
+      header: "请求数",
       render: (r) => compact(r.requests),
       align: "right",
       tone: "numeric",
     },
     {
       key: "input",
-      header: "Input",
+      header: "输入",
       render: (r) => compact(r.input_tokens),
       align: "right",
       tone: "numeric",
     },
     {
       key: "output",
-      header: "Output",
+      header: "输出",
       render: (r) => compact(r.output_tokens),
       align: "right",
       tone: "numeric",
     },
     {
       key: "total",
-      header: "Total",
+      header: "合计",
       render: (r) => compact(r.input_tokens + r.output_tokens),
       align: "right",
       tone: "numeric",
@@ -223,35 +231,35 @@ export default function UsagePage() {
   const byTokenCols: Column<UsageStats["by_token"][0]>[] = [
     {
       key: "token",
-      header: "Token",
+      header: "令牌",
       render: (r) => (
         <span className="font-medium text-moon-800">{r.token_name}</span>
       ),
     },
     {
       key: "requests",
-      header: "Requests",
+      header: "请求数",
       render: (r) => compact(r.requests),
       align: "right",
       tone: "numeric",
     },
     {
       key: "input",
-      header: "Input",
+      header: "输入",
       render: (r) => compact(r.input_tokens),
       align: "right",
       tone: "numeric",
     },
     {
       key: "output",
-      header: "Output",
+      header: "输出",
       render: (r) => compact(r.output_tokens),
       align: "right",
       tone: "numeric",
     },
     {
       key: "total",
-      header: "Total",
+      header: "合计",
       render: (r) => compact(r.input_tokens + r.output_tokens),
       align: "right",
       tone: "numeric",
@@ -364,7 +372,7 @@ export default function UsagePage() {
 
           <Select value={filterSource} onValueChange={(v) => { if (v) { setFilterSource(v); setPage(1); } }}>
             <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90">
-              <SelectValue placeholder="Source" />
+              <SelectValue placeholder="来源" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部来源</SelectItem>
@@ -537,7 +545,7 @@ export default function UsagePage() {
                   <Skeleton className="h-[300px] rounded-xl" />
                 ) : latencyData.length === 0 ? (
                   <div className="flex h-[300px] items-center justify-center text-sm text-moon-400">
-                    No latency data for this range
+                    当前范围内暂无延迟数据
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height={300}>

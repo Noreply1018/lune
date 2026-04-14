@@ -44,7 +44,7 @@ const PROVIDER_TEMPLATES = [
   { value: "together", label: "Together AI", base_url: "https://api.together.xyz/v1" },
   { value: "openrouter", label: "OpenRouter", base_url: "https://openrouter.ai/api/v1" },
   { value: "moonshot", label: "Moonshot", base_url: "https://api.moonshot.cn/v1" },
-  { value: "custom", label: "Custom", base_url: "" },
+  { value: "custom", label: "自定义", base_url: "" },
 ];
 
 const CPA_PROVIDERS = [
@@ -142,7 +142,7 @@ function Sparkline({ data }: { data: LatencyBucket[] }) {
 function ExpiryBadge({ date }: { date: string | null }) {
   const status = expiryStatus(date);
   if (!status || status === "ok") return null;
-  const label = status === "expired" ? "Expired" : status === "today" ? "Expiring today" : "Expiring soon";
+  const label = status === "expired" ? "已过期" : status === "today" ? "今日到期" : "即将到期";
   const cls = status === "expired" || status === "today"
     ? "bg-red-100 text-red-700"
     : "bg-yellow-100 text-yellow-700";
@@ -191,19 +191,29 @@ export default function AccountsPage() {
 
   function load() {
     setLoading(true);
+    let cancelled = false;
+
     Promise.all([
-      api.get<Account[]>("/accounts"),
-      api.get<CpaService | null>("/cpa/service"),
-    ])
-      .then(([accs, svc]) => {
-        setAccounts(accs ?? []);
-        setCpaService(svc ?? null);
-      })
-      .catch(() => toast("Failed to load accounts", "error"))
-      .finally(() => setLoading(false));
+      api.get<Account[]>("/accounts").catch((err) => {
+        if (!cancelled) toast("加载账号列表失败", "error");
+        return null;
+      }),
+      api.get<CpaService | null>("/cpa/service").catch(() => null),
+    ]).then(([accs, svc]) => {
+      if (cancelled) return;
+      if (accs !== null) setAccounts(accs ?? []);
+      setCpaService(svc ?? null);
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    return () => { cancelled = true; };
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    const cancel = load();
+    return cancel;
+  }, []);
 
   useEffect(() => {
     if (accounts.length === 0) return;
@@ -284,10 +294,10 @@ export default function AccountsPage() {
         };
         if (editId) {
           await api.put(`/accounts/${editId}`, body);
-          toast("Account updated");
+          toast("账号已更新");
         } else {
           await api.post("/accounts", body);
-          toast("Account created");
+          toast("账号已创建");
         }
       } else {
         const body: Record<string, unknown> = {
@@ -308,17 +318,17 @@ export default function AccountsPage() {
         }
         if (editId) {
           await api.put(`/accounts/${editId}`, body);
-          toast("Account updated");
+          toast("账号已更新");
         } else {
           body.api_key = openaiForm.api_key;
           await api.post("/accounts", body);
-          toast("Account created");
+          toast("账号已创建");
         }
       }
       setShowForm(false);
       load();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Operation failed", "error");
+      toast(err instanceof Error ? err.message : "操作失败", "error");
     }
   }
 
@@ -333,7 +343,7 @@ export default function AccountsPage() {
       setAccounts((prev) =>
         prev.map((x) => (x.id === a.id ? { ...x, enabled: !next } : x)),
       );
-      toast("Failed to update account", "error");
+      toast("更新账号失败", "error");
     }
   }
 
@@ -341,10 +351,10 @@ export default function AccountsPage() {
     if (!deleteTarget) return;
     try {
       await api.delete(`/accounts/${deleteTarget.id}`);
-      toast("Account deleted");
+      toast("账号已删除");
       load();
     } catch {
-      toast("Failed to delete account", "error");
+      toast("删除账号失败", "error");
     } finally {
       setDeleteTarget(null);
     }
@@ -359,12 +369,12 @@ export default function AccountsPage() {
         api_key: openaiForm.api_key,
       });
       if (result.reachable) {
-        toast(`Connected in ${result.latency_ms}ms — ${result.models?.length ?? 0} models available`);
+        toast(`连接成功，延迟 ${result.latency_ms}ms — 发现 ${result.models?.length ?? 0} 个模型`);
       } else {
-        toast(result.error || "Connection failed", "error");
+        toast(result.error || "连接失败", "error");
       }
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Test failed", "error");
+      toast(err instanceof Error ? err.message : "测试失败", "error");
     } finally {
       setTesting(false);
     }
@@ -373,43 +383,43 @@ export default function AccountsPage() {
   const columns: Column<Account>[] = [
     {
       key: "label",
-      header: "Label",
+      header: "标签",
       render: (r) => <span className="font-medium text-moon-800">{r.label}</span>,
       tone: "primary",
     },
     {
       key: "source",
-      header: "Source",
+      header: "来源",
       render: (r) =>
         r.source_kind === "cpa" ? (
           <span
             className="rounded-md bg-lunar-100/60 px-2 py-0.5 text-xs font-medium text-lunar-700"
-            title={r.cpa_account_key ? "Credential-backed CPA account" : "CPA provider channel"}
+            title={r.cpa_account_key ? "凭据型 CPA 账号" : "CPA Provider 通道"}
           >
             CPA - {r.cpa_provider}
           </span>
         ) : (
           <span className="rounded-md bg-moon-100/60 px-2 py-0.5 text-xs font-medium text-moon-600">
-            OpenAI compat
+            OpenAI 兼容
           </span>
         ),
     },
     {
       key: "unit_type",
-      header: "Unit Type",
+      header: "单元类型",
       render: (r) =>
         r.source_kind === "cpa" ? (
           <span className="text-sm text-moon-600">
-            {r.cpa_account_key ? "Credential-backed account" : "Provider channel"}
+            {r.cpa_account_key ? "凭据型账号" : "Provider 通道"}
           </span>
         ) : (
-          <span className="text-sm text-moon-600">Direct API credential</span>
+          <span className="text-sm text-moon-600">直连 API 凭据</span>
         ),
       tone: "secondary",
     },
     {
       key: "endpoint",
-      header: "Endpoint",
+      header: "接入地址",
       render: (r) => (
         <code className="text-xs text-moon-500">
           {r.runtime?.base_url ?? r.base_url}
@@ -419,7 +429,7 @@ export default function AccountsPage() {
     },
     {
       key: "status",
-      header: "Status",
+      header: "状态",
       render: (r) => (
         <span className="inline-flex items-center">
           <StatusBadge status={r.enabled ? r.status : "disabled"} />
@@ -432,10 +442,10 @@ export default function AccountsPage() {
     },
     {
       key: "budget",
-      header: "Budget",
+      header: "额度",
       render: (r) =>
         r.source_kind === "cpa" ? (
-          <span className="text-sm text-moon-400">Managed by CPA</span>
+          <span className="text-sm text-moon-400">由 CPA 管理</span>
         ) : r.quota_total > 0 ? (
           <span className="text-sm text-moon-500">
             {r.quota_unit === "USD" ? "$" : r.quota_unit === "CNY" ? "\u00a5" : ""}
@@ -449,7 +459,7 @@ export default function AccountsPage() {
     },
     {
       key: "latency",
-      header: "Latency (24h)",
+      header: "延迟 (24h)",
       render: (r) => <Sparkline data={sparklines[r.id] ?? []} />,
       tone: "secondary",
     },
@@ -466,16 +476,16 @@ export default function AccountsPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => openEdit(r)}>
-              Edit
+              编辑
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => toggleAccount(r)}>
-              {r.enabled ? "Disable" : "Enable"}
+              {r.enabled ? "停用" : "启用"}
             </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => setDeleteTarget(r)}
             >
-              Delete
+              删除
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

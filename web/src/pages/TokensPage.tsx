@@ -47,14 +47,20 @@ export default function TokensPage() {
 
   function load() {
     setLoading(true);
-    api
-      .get<AccessToken[]>("/tokens")
-      .then((d) => setTokens(d ?? []))
-      .catch(() => toast("加载令牌失败", "error"))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+
+    api.get<AccessToken[]>("/tokens")
+      .then((d) => { if (!cancelled) setTokens(d ?? []); })
+      .catch(() => { if (!cancelled) toast("加载令牌失败", "error"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+
+    return () => { cancelled = true; };
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    const cancel = load();
+    return cancel;
+  }, []);
 
   function openCreate() {
     setEditId(null);
@@ -153,7 +159,7 @@ export default function TokensPage() {
   const columns: Column<AccessToken>[] = [
     {
       key: "name",
-      header: "Name",
+      header: "名称",
       render: (r) => (
         <span className="font-medium text-moon-800">{r.name}</span>
       ),
@@ -161,7 +167,7 @@ export default function TokensPage() {
     },
     {
       key: "token",
-      header: "Token",
+      header: "令牌",
       render: (r) => (
         <div className="flex items-center gap-1">
           <code className="text-xs text-moon-500">{r.token_masked}</code>
@@ -172,7 +178,7 @@ export default function TokensPage() {
     },
     {
       key: "usage",
-      header: "Usage",
+      header: "用量",
       className: "min-w-[160px]",
       render: (r) => (
         <UsageBar used={r.used_tokens} total={r.quota_tokens} />
@@ -181,7 +187,7 @@ export default function TokensPage() {
     },
     {
       key: "last_used",
-      header: "Last Used",
+      header: "最近使用",
       render: (r) => (
         <span className="text-moon-500">
           {relativeTime(r.last_used_at)}
@@ -203,16 +209,16 @@ export default function TokensPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => openEdit(r)}>
-              Edit
+              编辑
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => toggleToken(r)}>
-              {r.enabled ? "Disable" : "Enable"}
+              {r.enabled ? "停用" : "启用"}
             </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => setDeleteTarget(r)}
             >
-              Delete
+              删除
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -271,7 +277,7 @@ export default function TokensPage() {
 
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="token-name">Name</Label>
+                <Label htmlFor="token-name">名称</Label>
                 <Input
                   id="token-name"
                   value={form.name}
@@ -284,9 +290,9 @@ export default function TokensPage() {
               {!editId && (
                 <div className="space-y-2">
                   <Label htmlFor="token-value">
-                    Token{" "}
+                    令牌值{" "}
                     <span className="font-normal text-moon-400">
-                      (auto-generated if empty)
+                      （留空自动生成）
                     </span>
                   </Label>
                   <Input
@@ -301,7 +307,7 @@ export default function TokensPage() {
               )}
 
               <div className="space-y-2">
-                <Label htmlFor="token-quota">Token Quota</Label>
+                <Label htmlFor="token-quota">Token 配额</Label>
                 <Input
                   id="token-quota"
                   type="number"
@@ -314,7 +320,7 @@ export default function TokensPage() {
                   }
                 />
                 <p className="text-xs text-moon-400">
-                  0 = unlimited
+                  0 = 不限制
                 </p>
               </div>
             </div>

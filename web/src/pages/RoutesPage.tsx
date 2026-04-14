@@ -59,21 +59,31 @@ export default function RoutesPage() {
 
   function load() {
     setLoading(true);
+    let cancelled = false;
+
     Promise.all([
-      api.get<ModelRoute[]>("/routes"),
-      api.get<Pool[]>("/pools"),
-      api.get<SystemSettings>("/settings"),
-    ])
-      .then(([r, p, s]) => {
-        setRoutes(r ?? []);
-        setPools(p ?? []);
-        setDefaultPoolId(s?.default_pool_id ?? null);
-      })
-      .catch(() => toast("加载路由失败", "error"))
-      .finally(() => setLoading(false));
+      api.get<ModelRoute[]>("/routes").catch((err) => {
+        if (!cancelled) toast("加载路由失败", "error");
+        return null;
+      }),
+      api.get<Pool[]>("/pools").catch(() => null),
+      api.get<SystemSettings>("/settings").catch(() => null),
+    ]).then(([r, p, s]) => {
+      if (cancelled) return;
+      if (r !== null) setRoutes(r ?? []);
+      if (p !== null) setPools(p ?? []);
+      if (s !== null) setDefaultPoolId(s?.default_pool_id ?? null);
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    return () => { cancelled = true; };
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    const cancel = load();
+    return cancel;
+  }, []);
 
   async function updateDefaultPool(poolId: string | null) {
     if (poolId === null) return;
@@ -154,7 +164,7 @@ export default function RoutesPage() {
   const columns: Column<ModelRoute>[] = [
     {
       key: "alias",
-      header: "Alias",
+      header: "别名",
       render: (r) => (
         <span className="font-medium text-moon-800">{r.alias}</span>
       ),
@@ -162,7 +172,7 @@ export default function RoutesPage() {
     },
     {
       key: "target_model",
-      header: "Target Model",
+      header: "目标模型",
       render: (r) => (
         <code className="text-xs text-moon-500">{r.target_model}</code>
       ),
@@ -170,7 +180,7 @@ export default function RoutesPage() {
     },
     {
       key: "pool",
-      header: "Pool",
+      header: "池",
       render: (r) => (
         <span className="text-moon-500">{r.pool_label || "-"}</span>
       ),
@@ -178,7 +188,7 @@ export default function RoutesPage() {
     },
     {
       key: "enabled",
-      header: "Enabled",
+      header: "启用",
       render: (r) => (
         <Switch
           checked={r.enabled}
@@ -201,13 +211,13 @@ export default function RoutesPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => openEdit(r)}>
-              Edit
+              编辑
             </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => setDeleteTarget(r)}
             >
-              Delete
+              删除
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -258,10 +268,10 @@ export default function RoutesPage() {
                   onValueChange={updateDefaultPool}
                 >
                   <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-white/90 lg:w-72">
-                    <SelectValue placeholder="None" />
+                    <SelectValue placeholder="无" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">None</SelectItem>
+                    <SelectItem value="none">无</SelectItem>
                     {enabledPools.map((p) => (
                       <SelectItem key={p.id} value={String(p.id)}>
                         {p.label}
@@ -311,7 +321,7 @@ export default function RoutesPage() {
 
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="route-alias">Alias</Label>
+                <Label htmlFor="route-alias">别名</Label>
                 <Input
                   id="route-alias"
                   value={form.alias}
@@ -324,7 +334,7 @@ export default function RoutesPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="route-target">Target Model</Label>
+                <Label htmlFor="route-target">目标模型</Label>
                 <Input
                   id="route-target"
                   value={form.target_model}
@@ -338,14 +348,13 @@ export default function RoutesPage() {
                   form.target_model &&
                   form.alias === form.target_model && (
                     <p className="text-xs text-moon-400">
-                      Alias and target are the same — model name is passed
-                      through unchanged.
+                      别名与目标相同 — 模型名将原样透传。
                     </p>
                   )}
               </div>
 
               <div className="space-y-2">
-                <Label>Pool</Label>
+                <Label>池</Label>
                 <Select
                   value={form.pool_id !== null ? String(form.pool_id) : ""}
                   onValueChange={(v) =>
@@ -353,7 +362,7 @@ export default function RoutesPage() {
                   }
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select a pool" />
+                    <SelectValue placeholder="选择池" />
                   </SelectTrigger>
                   <SelectContent>
                     {enabledPools.map((p) => (
@@ -370,7 +379,7 @@ export default function RoutesPage() {
                   checked={form.enabled}
                   onCheckedChange={(v) => setForm({ ...form, enabled: v })}
                 />
-                <Label>Enabled</Label>
+                <Label>启用</Label>
               </div>
             </div>
 

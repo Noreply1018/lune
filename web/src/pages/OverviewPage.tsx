@@ -26,7 +26,7 @@ import {
 const requestColumns: Column<RequestLog>[] = [
   {
     key: "time",
-    header: "Time",
+    header: "时间",
     render: (r) => (
       <span className="text-moon-500">{shortDate(r.created_at)}</span>
     ),
@@ -34,13 +34,13 @@ const requestColumns: Column<RequestLog>[] = [
   },
   {
     key: "model",
-    header: "Model",
+    header: "模型",
     render: (r) => <span className="font-medium">{r.model_alias}</span>,
     tone: "primary",
   },
   {
     key: "token",
-    header: "Token",
+    header: "令牌",
     render: (r) => (
       <span className="text-moon-500">{r.access_token_name}</span>
     ),
@@ -48,7 +48,7 @@ const requestColumns: Column<RequestLog>[] = [
   },
   {
     key: "account",
-    header: "Account",
+    header: "账号",
     render: (r) => (
       <span className="text-moon-500">{r.account_label}</span>
     ),
@@ -56,7 +56,7 @@ const requestColumns: Column<RequestLog>[] = [
   },
   {
     key: "status",
-    header: "Status",
+    header: "状态",
     render: (r) => (
       <StatusBadge
         status={r.success ? "healthy" : "error"}
@@ -67,14 +67,14 @@ const requestColumns: Column<RequestLog>[] = [
   },
   {
     key: "latency",
-    header: "Latency",
+    header: "延迟",
     render: (r) => <span className="text-moon-500">{latency(r.latency_ms)}</span>,
     align: "right",
     tone: "numeric",
   },
   {
     key: "tokens",
-    header: "Tokens",
+    header: "Token 用量",
     render: (r) => (
       <span className="text-moon-500">
         {r.input_tokens != null
@@ -87,7 +87,7 @@ const requestColumns: Column<RequestLog>[] = [
   },
   {
     key: "cost",
-    header: "Est. Cost",
+    header: "预估成本",
     render: (r) => {
       const cost = r.input_tokens != null
         ? estimateCost(r.target_model || r.model_alias, r.input_tokens, r.output_tokens ?? 0)
@@ -104,7 +104,6 @@ const requestColumns: Column<RequestLog>[] = [
 export default function OverviewPage() {
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
-  const [lastSuccessAt, setLastSuccessAt] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
   function load(silent = false) {
@@ -113,11 +112,10 @@ export default function OverviewPage() {
       .get<Overview>("/overview")
       .then((next) => {
         setData(next);
-        setLastSuccessAt(new Date().toISOString());
         setRefreshError(null);
       })
       .catch((err) => {
-        setRefreshError(err instanceof Error ? err.message : "Refresh failed");
+        setRefreshError(err instanceof Error ? err.message : "刷新失败");
       })
       .finally(() => {
         if (!silent) setLoading(false);
@@ -160,9 +158,7 @@ export default function OverviewPage() {
   const o = data;
   const totalUsage =
     (o?.token_usage_24h?.input ?? 0) + (o?.token_usage_24h?.output ?? 0);
-  const healthyCount = o?.healthy_accounts ?? 0;
   const totalAccounts = o?.total_accounts ?? 0;
-  const stale = Boolean(refreshError && lastSuccessAt);
   const cpaAccounts = o?.accounts_by_source?.cpa ?? 0;
   const openaiCompatAccounts = o?.accounts_by_source?.openai_compat ?? 0;
 
@@ -171,24 +167,10 @@ export default function OverviewPage() {
       <PageHeader
         eyebrow="Lune 控制台"
         title="总览"
-        description="查看 CPA 连接状态、可路由账号单元以及当前请求健康度。"
-        meta={
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <span>
-              {healthyCount} 个健康账号，覆盖 {o?.total_pools ?? 0} 个池、{o?.total_tokens ?? 0} 个启用令牌。
-            </span>
-            <span>
-              最近成功刷新：{lastSuccessAt ? relativeTime(lastSuccessAt) : "暂无"}
-            </span>
-            <span className={stale ? "text-amber-700" : "text-moon-500"}>
-              数据状态：{stale ? "已过期" : "实时"}
-            </span>
-          </div>
-        }
         actions={
           <Button size="sm" variant="outline" onClick={() => load()}>
             <RefreshCw className="size-4" />
-            立即刷新
+            刷新
           </Button>
         }
       />
@@ -198,14 +180,7 @@ export default function OverviewPage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 size-4 text-amber-700" />
-              <div>
-                <p className="text-sm font-medium text-amber-900">总览刷新失败</p>
-                <p className="mt-1 text-sm text-amber-800/80">
-                  {stale
-                    ? `当前展示的是 ${relativeTime(lastSuccessAt!)} 的缓存数据。`
-                    : "暂时没有可用的新鲜数据。"}
-                </p>
-              </div>
+              <p className="text-sm font-medium text-amber-900">总览刷新失败</p>
             </div>
             <Button size="sm" variant="outline" onClick={() => load()}>
               重试
@@ -220,33 +195,26 @@ export default function OverviewPage() {
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-3">
               <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-lunar-700">CPA 核心状态</p>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-3xl font-semibold tracking-tight text-moon-900 sm:text-[2.6rem]">
-                    {o?.cpa_status?.label ?? "CPA 服务未连接"}
-                  </h2>
-                  {o?.cpa_status ? (
-                    <StatusBadge
-                      status={
-                        o.cpa_status.status === "healthy"
-                          ? "healthy"
-                          : o.cpa_status.status === "error"
-                            ? "error"
-                            : "degraded"
-                      }
-                      label={o.cpa_status.status}
-                    />
-                  ) : (
-                    <span className="rounded-full bg-red-100 px-2.5 py-1 text-xs font-medium text-red-700">
-                      未配置
-                    </span>
-                  )}
-                </div>
-                <p className="max-w-[46ch] text-sm leading-6 text-moon-600">
-                  {o?.cpa_status
-                    ? `CPA 当前管理 ${o.cpa_status.accounts_total} 个账号单元，其中 ${o.cpa_status.accounts_healthy} 个可正常路由，${o.cpa_status.accounts_expiring} 个即将到期。`
-                    : "配置 CPA 服务后，可启用 Provider Channel、Device Code 登录和账号导入能力。"}
-                </p>
+              <div className="flex items-center gap-3">
+                <h2 className="text-3xl font-semibold tracking-tight text-moon-900 sm:text-[2.6rem]">
+                  {o?.cpa_status?.label ?? "未连接"}
+                </h2>
+                {o?.cpa_status ? (
+                  <StatusBadge
+                    status={
+                      o.cpa_status.status === "healthy"
+                        ? "healthy"
+                        : o.cpa_status.status === "error"
+                          ? "error"
+                          : "degraded"
+                    }
+                    label={o.cpa_status.status}
+                  />
+                ) : (
+                  <span className="rounded-full bg-red-100 px-2.5 py-1 text-xs font-medium text-red-700">
+                    未配置
+                  </span>
+                )}
               </div>
             </div>
             <span className="flex size-11 items-center justify-center rounded-2xl border border-lunar-200 bg-white/80 text-lunar-700">
@@ -254,49 +222,55 @@ export default function OverviewPage() {
             </span>
           </div>
 
-          <div className="mt-6 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-white/80 bg-white/70 p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-moon-400">CPA 账号单元</p>
-              <p className="mt-2 text-2xl font-semibold text-moon-900" style={{ fontFamily: '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif' }}>
-                {compact(cpaAccounts)}
-              </p>
-              <p className="mt-1 text-xs leading-5 text-moon-500">当前由 CPA 服务托管的可路由单元。</p>
+          {o?.cpa_status ? (
+            <div className="mt-6 flex flex-wrap gap-3">
+              <div className="flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-4 py-2">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moon-400">账号单元</span>
+                <span className="text-lg font-semibold text-moon-900" style={{ fontFamily: '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif' }}>
+                  {compact(cpaAccounts)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-4 py-2">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moon-400">健康</span>
+                <span className="text-lg font-semibold text-moon-900" style={{ fontFamily: '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif' }}>
+                  {compact(o.cpa_status.accounts_healthy)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-4 py-2">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moon-400">即将到期</span>
+                <span className="text-lg font-semibold text-moon-900" style={{ fontFamily: '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif' }}>
+                  {compact(o.cpa_status.accounts_expiring)}
+                </span>
+              </div>
+              {o.cpa_status.last_checked_at && (
+                <div className="flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-4 py-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moon-400">检查于</span>
+                  <span className="text-sm font-medium text-moon-600">{relativeTime(o.cpa_status.last_checked_at)}</span>
+                </div>
+              )}
             </div>
-            <div className="rounded-2xl border border-white/80 bg-white/70 p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-moon-400">健康中</p>
-              <p className="mt-2 text-2xl font-semibold text-moon-900" style={{ fontFamily: '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif' }}>
-                {compact(o?.cpa_status?.accounts_healthy ?? 0)}
-              </p>
-              <p className="mt-1 text-xs leading-5 text-moon-500">当前可参与路由的 CPA 账号单元。</p>
-            </div>
-            <div className="rounded-2xl border border-white/80 bg-white/70 p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-moon-400">最近检查</p>
-              <p className="mt-2 text-2xl font-semibold text-moon-900" style={{ fontFamily: '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif' }}>
-                {o?.cpa_status?.last_checked_at ? relativeTime(o.cpa_status.last_checked_at) : "从未"}
-              </p>
-              <p className="mt-1 text-xs leading-5 text-moon-500">控制台最近一次记录到的 CPA 健康检查时间。</p>
-            </div>
-          </div>
+          ) : (
+            <p className="mt-4 text-sm text-moon-500">配置 CPA 服务后可启用 Provider Channel 和 Device Code 登录。</p>
+          )}
         </article>
 
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
           <StatCard
             label="请求成功率"
             value={pct(o?.success_rate_24h ?? 0)}
-            sub="过去 24 小时全量请求的成功率。"
+            sub="24h"
             icon={ShieldCheck}
             variant="hero"
           />
           <StatCard
-            label="24 小时请求量"
+            label="24h 请求量"
             value={compact(o?.requests_24h ?? 0)}
-            sub="最近一天观察到的请求总数。"
             icon={Activity}
           />
           <StatCard
-            label="24 小时 Token 吞吐"
+            label="24h Token"
             value={compact(totalUsage)}
-            sub={`${compact(o?.token_usage_24h?.input ?? 0)} input / ${compact(o?.token_usage_24h?.output ?? 0)} output`}
+            sub={`${compact(o?.token_usage_24h?.input ?? 0)} in / ${compact(o?.token_usage_24h?.output ?? 0)} out`}
             icon={Zap}
           />
         </div>
@@ -304,30 +278,26 @@ export default function OverviewPage() {
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          label="账号总数"
+          label="账号"
           value={String(totalAccounts)}
-          sub="所有来源下已配置的路由账号单元。"
           icon={Users}
           variant="compact"
         />
         <StatCard
-          label="直连 API 账号"
+          label="直连 API"
           value={String(openaiCompatAccounts)}
-          sub="由 Lune 直接管理的 OpenAI-Compatible 账号。"
           icon={Globe}
           variant="compact"
         />
         <StatCard
           label="池"
           value={String(o?.total_pools ?? 0)}
-          sub="当前可选的路由池。"
           icon={Layers}
           variant="compact"
         />
         <StatCard
-          label="启用令牌"
+          label="令牌"
           value={String(o?.total_tokens ?? 0)}
-          sub="当前可用的客户端访问令牌。"
           icon={Key}
           variant="compact"
         />
@@ -367,7 +337,7 @@ export default function OverviewPage() {
                   </div>
                   <p className="text-xs uppercase tracking-[0.18em] text-moon-400">
                     {a.last_checked_at
-                      ? `Last checked ${relativeTime(a.last_checked_at)}`
+                      ? `最近检查 ${relativeTime(a.last_checked_at)}`
                       : "尚未检查"}
                   </p>
                 </div>

@@ -56,19 +56,29 @@ export default function PoolsPage() {
 
   function load() {
     setLoading(true);
+    let cancelled = false;
+
     Promise.all([
-      api.get<Pool[]>("/pools"),
-      api.get<Account[]>("/accounts"),
-    ])
-      .then(([p, a]) => {
-        setPools(p ?? []);
-        setAccounts(a ?? []);
-      })
-      .catch(() => toast("加载池失败", "error"))
-      .finally(() => setLoading(false));
+      api.get<Pool[]>("/pools").catch((err) => {
+        if (!cancelled) toast("加载池列表失败", "error");
+        return null;
+      }),
+      api.get<Account[]>("/accounts").catch(() => null),
+    ]).then(([p, a]) => {
+      if (cancelled) return;
+      if (p !== null) setPools(p ?? []);
+      if (a !== null) setAccounts(a ?? []);
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    return () => { cancelled = true; };
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    const cancel = load();
+    return cancel;
+  }, []);
 
   function toggleExpand(id: number) {
     setExpanded((prev) => {
@@ -282,14 +292,14 @@ export default function PoolsPage() {
                       </span>
                       <StatusBadge
                         status={pool.enabled ? "healthy" : "disabled"}
-                        label={pool.enabled ? "Enabled" : "Disabled"}
+                        label={pool.enabled ? "已启用" : "已停用"}
                       />
                       <code className="rounded-full bg-moon-100 px-2.5 py-1 text-[11px] text-moon-500">
                         {pool.strategy}
                       </code>
                     </div>
                     <p className="text-sm text-moon-500">
-                      {pool.members?.length ?? 0} member{pool.members.length === 1 ? "" : "s"} in this pool.
+                      共 {pool.members?.length ?? 0} 个成员
                     </p>
                   </div>
                 </div>
@@ -305,16 +315,16 @@ export default function PoolsPage() {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onClick={() => openEdit(pool)}>
-                        Edit
+                        编辑
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => togglePool(pool)}>
-                        {pool.enabled ? "Disable" : "Enable"}
+                        {pool.enabled ? "停用" : "启用"}
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         className="text-destructive"
                         onClick={() => setDeleteTarget(pool)}
                       >
-                        Delete
+                        删除
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -325,18 +335,18 @@ export default function PoolsPage() {
                 <div className="border-t border-moon-200/60 px-5 pb-5 pt-4">
                   {pool.members.length === 0 ? (
                     <p className="py-4 text-center text-sm text-moon-400">
-                      No members
+                      暂无成员
                     </p>
                   ) : (
                     <div className="overflow-x-auto">
                       <table className="w-full min-w-[640px] text-sm">
                         <thead>
                           <tr className="text-left text-[11px] font-semibold uppercase tracking-[0.2em] text-moon-400">
-                            <th className="pb-3">Priority</th>
-                            <th className="pb-3">Account</th>
-                            <th className="pb-3 text-right">Weight</th>
-                            <th className="pb-3">Status</th>
-                            <th className="pb-3 text-right">Actions</th>
+                            <th className="pb-3">优先级</th>
+                            <th className="pb-3">账号</th>
+                            <th className="pb-3 text-right">权重</th>
+                            <th className="pb-3">状态</th>
+                            <th className="pb-3 text-right">操作</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-moon-200/50">
@@ -393,7 +403,7 @@ export default function PoolsPage() {
                                   className="text-xs text-destructive"
                                   onClick={() => removeMember(pool, m)}
                                 >
-                                  Remove
+                                  移除
                                 </Button>
                               </td>
                             </tr>
@@ -409,7 +419,7 @@ export default function PoolsPage() {
                         onValueChange={(v) => v && addMember(pool, Number(v))}
                       >
                         <SelectTrigger className="h-11 w-full rounded-xl border-moon-200 bg-moon-50 sm:w-72">
-                          <SelectValue placeholder="Add account to pool" />
+                          <SelectValue placeholder="添加账号到池" />
                         </SelectTrigger>
                         <SelectContent>
                           {availableAccounts.map((a) => (
@@ -443,18 +453,18 @@ export default function PoolsPage() {
 
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="pool-label">Label</Label>
+                <Label htmlFor="pool-label">标签</Label>
                 <Input
                   id="pool-label"
                   value={form.label}
                   onChange={(e) => setForm({ ...form, label: e.target.value })}
                   required
-                  placeholder="OpenAI Pool"
+                  placeholder="OpenAI 池"
                 />
               </div>
 
               <div className="space-y-2">
-                <Label>Strategy</Label>
+                <Label>策略</Label>
                 <Select
                   value={form.strategy}
                   onValueChange={(v) => v && setForm({ ...form, strategy: v })}
@@ -493,7 +503,7 @@ export default function PoolsPage() {
         open={deleteTarget !== null}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title="删除池"
-        description={`Are you sure you want to delete "${deleteTarget?.label ?? ""}"? This will also remove all member associations.`}
+        description={`确认删除"${deleteTarget?.label ?? ""}"？关联的成员映射也将一并移除。`}
         onConfirm={confirmDelete}
       />
     </div>
