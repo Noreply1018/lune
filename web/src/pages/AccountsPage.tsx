@@ -991,6 +991,9 @@ export default function AccountsPage() {
       {/* Device Code Login Dialog */}
       <Dialog open={showDeviceCode} onOpenChange={(open) => {
         if (!open) {
+          if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
+            api.post(`/accounts/cpa/login-sessions/${loginSession.id}/cancel`).catch(() => {});
+          }
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
         }
@@ -1186,6 +1189,12 @@ export default function AccountsPage() {
   // --- Device Code Login ---
   function startDeviceCodeLogin() {
     if (!cpaService) return;
+    // cancel existing session if still active
+    if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
+      api.post(`/accounts/cpa/login-sessions/${loginSession.id}/cancel`).catch(() => {});
+    }
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
     setLoginSession(null);
     setLoginLoading(true);
     setShowDeviceCode(true);
