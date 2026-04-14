@@ -19,7 +19,6 @@
 
 ```bash
 go run ./cmd/lune         # 启动服务
-open http://127.0.0.1:7788/admin
 ```
 
 如果你要直接体验带 CPA 的完整后台，推荐用下面这条作为日常开发入口：
@@ -32,7 +31,7 @@ docker compose up -d cpa && go run ./cmd/lune
 
 - `go run ./cmd/lune` 只会启动 Lune，不会启动 CPA 进程
 - `docker compose up -d cpa` 才是把本地 CPA 容器拉起来
-- `lune.yaml` 里的 `cpa_base_url` / `cpa_api_key` 只负责让 Lune 自动连上已经在运行的 CPA，不负责把它启动起来
+- 本地 `lune.yaml` 里的 `cpa_base_url` / `cpa_api_key` 只负责让 Lune 自动连上已经在运行的 CPA，不负责把它启动起来
 
 ## CLI
 
@@ -53,7 +52,9 @@ lune check                # 校验数据库并打印摘要
 | `LUNE_ADMIN_TOKEN` | 管理令牌覆盖 | 自动生成 |
 | `LUNE_CPA_AUTH_DIR` | CPA 凭据文件目录 | `./cpa-auth` |
 
-`lune.yaml` 示例：
+仓库提供 [lune.example.yaml](/home/lh/projects/lune/lune.example.yaml) 作为示例配置；本地使用时复制为 `lune.yaml` 后再按环境修改。`lune.yaml` 被 `.gitignore` 忽略，用来保存本机目录、地址和 key 等本地值。
+
+`lune.example.yaml` 示例：
 
 ```yaml
 port: 7788
@@ -117,13 +118,50 @@ docker compose up -d cpa && go run ./cmd/lune
 - CPA 是外部 Docker 服务，不是这个 Go 进程里的一个子模块，所以 `go run ./cmd/lune` 不会顺手把 CPA 也启动
 - 第一次开发时先执行一次 `docker compose up -d cpa`，后面通常只需要反复 `go run ./cmd/lune`
 - 如果 Docker Desktop、WSL 或宿主机重启过，需要先确认 CPA 容器已经重新起来
-- `lune.yaml` 已预配置 `http://127.0.0.1:8317` 和默认 key；只要本地 8317 上真的有 CPA 在跑，Lune 首次启动就会自动写入 `Default CPA`
+- 本地 `lune.yaml` 可预配置 `http://127.0.0.1:8317` 和默认 key；只要本地 8317 上真的有 CPA 在跑，Lune 首次启动就会自动写入 `Default CPA`
 
 如果你想确认 CPA 是否已经在运行，可以执行：
 
 ```bash
 docker compose ps cpa
 ```
+
+### 开发启动与重启
+
+如果你只是想手动重启当前 Lune 进程，直接运行：
+
+```bash
+./scripts/dev-restart.sh
+```
+
+这个脚本会按下面的优先级自动解析当前端口，然后杀掉旧进程并重新启动：
+
+- `LUNE_PORT`
+- 本地 `lune.yaml` 里的 `port`
+- 默认值 `7788`
+
+如果你希望改完文件后自动重启，推荐使用 `air`。它是一个 Go 开发期的开源 live reload 工具：监听文件变化，自动重新编译并重启当前进程，不需要你手工 `Ctrl+C` 再 `go run`。
+
+首次安装：
+
+```bash
+go install github.com/air-verse/air@latest
+```
+
+日常使用：
+
+```bash
+air
+```
+
+当前仓库已提交 [`.air.toml`](/home/lh/projects/lune/.air.toml) 作为默认配置：
+
+- 构建产物输出到 `tmp/`
+- 监听 `go` 文件和本地 `lune.yaml`
+- 忽略 `data/`、`cpa-auth/`、`web/`、`internal/site/dist/` 等目录
+- 保存 Go 文件或 `lune.yaml` 后会自动重新编译并重启
+
+`air` 适合日常后端开发；如果你只是偶尔想强制刷新一次进程，用 `./scripts/dev-restart.sh` 更直接。
 
 ```bash
 go build ./cmd/lune                            # 构建
@@ -155,7 +193,7 @@ CPA（[cli-proxy-api](https://hub.docker.com/r/eceasy/cli-proxy-api)）是外部
 需要区分两件事：
 
 - 自动启动 CPA：只有 `docker compose up -d` 或 `docker compose up -d cpa` 会做这件事
-- 自动配置默认 CPA 连接：Lune 启动时如果发现 `LUNE_CPA_BASE_URL` / `lune.yaml` 里有配置，就会自动写入默认 CPA Service
+- 自动配置默认 CPA 连接：Lune 启动时如果发现 `LUNE_CPA_BASE_URL` / 本地 `lune.yaml` 里有配置，就会自动写入默认 CPA Service
 
 也就是说，`自动配置` 不等于 `自动启动`。前提始终是：对应地址上的 CPA 服务已经可达。
 
