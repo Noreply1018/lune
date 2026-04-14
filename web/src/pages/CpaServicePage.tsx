@@ -112,7 +112,7 @@ export default function CpaServicePage() {
     let cancelled = false;
 
     Promise.all([
-      api.get<CpaService | null>("/cpa/service").catch((err) => {
+      api.get<CpaService | null>("/cpa/service").catch(() => {
         if (!cancelled) toast("加载 CPA 服务失败", "error");
         return null;
       }),

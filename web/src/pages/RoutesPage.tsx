@@ -62,7 +62,7 @@ export default function RoutesPage() {
     let cancelled = false;
 
     Promise.all([
-      api.get<ModelRoute[]>("/routes").catch((err) => {
+      api.get<ModelRoute[]>("/routes").catch(() => {
         if (!cancelled) toast("加载路由失败", "error");
         return null;
       }),

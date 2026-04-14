@@ -194,7 +194,7 @@ export default function AccountsPage() {
     let cancelled = false;
 
     Promise.all([
-      api.get<Account[]>("/accounts").catch((err) => {
+      api.get<Account[]>("/accounts").catch(() => {
         if (!cancelled) toast("加载账号列表失败", "error");
         return null;
       }),

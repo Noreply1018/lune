@@ -59,7 +59,7 @@ export default function PoolsPage() {
     let cancelled = false;
 
     Promise.all([
-      api.get<Pool[]>("/pools").catch((err) => {
+      api.get<Pool[]>("/pools").catch(() => {
         if (!cancelled) toast("加载池列表失败", "error");
         return null;
       }),
