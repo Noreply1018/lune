@@ -4,14 +4,15 @@ services:
     container_name: lune
     restart: unless-stopped
     ports:
-      - "7788:7788"
+      - "127.0.0.1:${LUNE_PORT:-7788}:${LUNE_PORT:-7788}"
     environment:
-      LUNE_PORT: "7788"
+      LUNE_PORT: "${LUNE_PORT:-7788}"
       LUNE_DATA_DIR: "/app/data"
       LUNE_ADMIN_TOKEN: "${LUNE_ADMIN_TOKEN:-}"
       LUNE_CPA_AUTH_DIR: "/app/cpa-auth"
       LUNE_CPA_BASE_URL: "http://cpa:8317"
       LUNE_CPA_API_KEY: "${CPA_API_KEY:-sk-cpa-default}"
+      LUNE_CPA_MANAGEMENT_KEY: "lune-cpa-management-dev"
     volumes:
       - lune-data:/app/data
       - cpa-auth:/app/cpa-auth

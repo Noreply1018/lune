@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type CpaAuthFile struct {
@@ -124,6 +125,46 @@ func ScanAuthDirKeyed(dir string) ([]ScannedAccount, error) {
 		}
 		key := AccountKeyFromFilename(e.Name())
 		result = append(result, ScannedAccount{Key: key, File: f})
+	}
+	return result, nil
+}
+
+type DetailedScannedAccount struct {
+	Key        string
+	Path       string
+	ModifiedAt time.Time
+	File       CpaAuthFile
+}
+
+func ScanAuthDirDetailed(dir string) ([]DetailedScannedAccount, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var result []DetailedScannedAccount
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var f CpaAuthFile
+		if err := json.Unmarshal(data, &f); err != nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		result = append(result, DetailedScannedAccount{
+			Key:        AccountKeyFromFilename(e.Name()),
+			Path:       path,
+			ModifiedAt: info.ModTime(),
+			File:       f,
+		})
 	}
 	return result, nil
 }

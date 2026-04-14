@@ -3,6 +3,9 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"strconv"
 	"time"
 )
 
@@ -59,18 +62,40 @@ func (s *Store) UpdateAccount(id int64, a *Account) error {
 }
 
 func (s *Store) EnableAccount(id int64) error {
-	_, err := s.db.Exec(`UPDATE accounts SET enabled=1, updated_at=datetime('now') WHERE id=?`, id)
-	return err
+	res, err := s.db.Exec(`UPDATE accounts SET enabled=1, updated_at=datetime('now') WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		return nil
+	}
+	return s.execByLegacyID(`UPDATE accounts SET enabled=1, updated_at=datetime('now') WHERE id=?`, id)
 }
 
 func (s *Store) DisableAccount(id int64) error {
-	_, err := s.db.Exec(`UPDATE accounts SET enabled=0, status='disabled', updated_at=datetime('now') WHERE id=?`, id)
-	return err
+	res, err := s.db.Exec(`UPDATE accounts SET enabled=0, status='disabled', updated_at=datetime('now') WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		return nil
+	}
+	return s.execByLegacyID(`UPDATE accounts SET enabled=0, status='disabled', updated_at=datetime('now') WHERE id=?`, id)
 }
 
 func (s *Store) DeleteAccount(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM accounts WHERE id=?`, id)
-	return err
+	res, err := s.db.Exec(`DELETE FROM accounts WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		return nil
+	}
+	// fallback: scan raw IDs for legacy string-keyed rows
+	return s.execByLegacyID(`DELETE FROM accounts WHERE id=?`, id)
 }
 
 func (s *Store) UpdateAccountHealth(id int64, status, lastError string) error {
@@ -144,25 +169,31 @@ type rowScanner interface {
 
 func scanAccountRow(row rowScanner) (*Account, error) {
 	var a Account
+	var idRaw any
 	var enabled, cpaDisabled int
 	var allowlistJSON string
-	var createdAt, updatedAt string
+	var createdAt, updatedAt sql.NullString
 	var cpaServiceID sql.NullInt64
 	var cpaExpiredAt, cpaLastRefreshAt sql.NullString
-	err := row.Scan(&a.ID, &a.Label, &a.BaseURL, &a.APIKey, &enabled, &a.Status, &a.QuotaTotal, &a.QuotaUsed, &a.QuotaUnit, &a.Notes, &allowlistJSON, &a.LastCheckedAt, &a.LastError, &createdAt, &updatedAt,
+	err := row.Scan(&idRaw, &a.Label, &a.BaseURL, &a.APIKey, &enabled, &a.Status, &a.QuotaTotal, &a.QuotaUsed, &a.QuotaUnit, &a.Notes, &allowlistJSON, &a.LastCheckedAt, &a.LastError, &createdAt, &updatedAt,
 		&a.SourceKind, &a.Provider, &cpaServiceID, &a.CpaProvider, &a.CpaAccountKey,
 		&a.CpaEmail, &a.CpaPlanType, &a.CpaOpenaiID, &cpaExpiredAt, &cpaLastRefreshAt, &cpaDisabled)
 	if err != nil {
 		return nil, err
 	}
+	a.ID = normalizeAccountID(idRaw)
 	a.Enabled = enabled != 0
 	a.CpaDisabled = cpaDisabled != 0
 	_ = json.Unmarshal([]byte(allowlistJSON), &a.ModelAllowlist)
 	if a.ModelAllowlist == nil {
 		a.ModelAllowlist = []string{}
 	}
-	a.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
-	a.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
+	if createdAt.Valid {
+		a.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt.String)
+	}
+	if updatedAt.Valid {
+		a.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt.String)
+	}
 	if cpaServiceID.Valid {
 		id := cpaServiceID.Int64
 		a.CpaServiceID = &id
@@ -179,6 +210,34 @@ func scanAccountRow(row rowScanner) (*Account, error) {
 	return &a, nil
 }
 
+func normalizeAccountID(v any) int64 {
+	switch x := v.(type) {
+	case int64:
+		return x
+	case int:
+		return int64(x)
+	case []byte:
+		return normalizeAccountID(string(x))
+	case string:
+		if x == "" {
+			return 0
+		}
+		if n, err := strconv.ParseInt(x, 10, 64); err == nil {
+			return n
+		}
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(x))
+		return int64(h.Sum64() & 0x7fffffffffffffff)
+	default:
+		if n, err := strconv.ParseInt(fmt.Sprint(v), 10, 64); err == nil {
+			return n
+		}
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(fmt.Sprint(v)))
+		return int64(h.Sum64() & 0x7fffffffffffffff)
+	}
+}
+
 func scanAccount(row *sql.Row) (*Account, error) {
 	return scanAccountRow(row)
 }
@@ -192,7 +251,7 @@ func (s *Store) UpdateAccountCpaMetadata(id int64, expiredAt, lastRefreshAt *str
 }
 
 func (s *Store) ListCpaAccountsWithKey() ([]Account, error) {
-	rows, err := s.db.Query(`SELECT `+accountColumns+` FROM accounts WHERE source_kind = 'cpa' AND cpa_account_key != '' ORDER BY id`)
+	rows, err := s.db.Query(`SELECT ` + accountColumns + ` FROM accounts WHERE source_kind = 'cpa' AND cpa_account_key != '' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -207,4 +266,45 @@ func (s *Store) FindAccountByCpaKey(serviceID int64, accountKey string) (*Accoun
 		return nil, nil
 	}
 	return a, err
+}
+
+// execByLegacyID handles legacy accounts whose id column stores a string value.
+// normalizeAccountID hashes such strings to int64, but the DB still holds the original string.
+// This scans all raw IDs, finds the one whose hash matches, and executes the query with the original value.
+// It also handles JS Number precision loss: large int64 values get truncated when passed through
+// JavaScript's JSON.parse/stringify cycle (IEEE 754 double has ~15-17 significant digits).
+func (s *Store) execByLegacyID(query string, targetID int64) error {
+	rows, err := s.db.Query(`SELECT id FROM accounts`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rawID any
+		if err := rows.Scan(&rawID); err != nil {
+			continue
+		}
+		normalized := normalizeAccountID(rawID)
+		// exact match
+		if normalized == targetID {
+			_, err := s.db.Exec(query, rawID)
+			return err
+		}
+		// JS Number precision loss: int64 values > 2^53 lose low-order bits when
+		// round-tripped through JavaScript Number. Two different int64 values may
+		// map to the same JS Number. We consider a match if the difference is
+		// small enough to be explained by IEEE 754 double rounding.
+		if normalized > 1<<53 || normalized < -(1<<53) {
+			diff := normalized - targetID
+			if diff < 0 {
+				diff = -diff
+			}
+			// max ULP gap for numbers in this range is ~1024; use 2048 as safety margin
+			if diff < 2048 {
+				_, err := s.db.Exec(query, rawID)
+				return err
+			}
+		}
+	}
+	return nil
 }

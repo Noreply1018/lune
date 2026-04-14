@@ -20,20 +20,22 @@ import (
 )
 
 type Handler struct {
-	store      *store.Store
-	cache      *store.RoutingCache
-	cpaAuthDir string
-	sessions   *cpa.SessionStore
-	logger     *log.Logger
+	store            *store.Store
+	cache            *store.RoutingCache
+	cpaAuthDir       string
+	cpaManagementKey string
+	sessions         *cpa.SessionStore
+	logger           *log.Logger
 }
 
-func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir string) *Handler {
+func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string) *Handler {
 	return &Handler{
-		store:      s,
-		cache:      c,
-		cpaAuthDir: cpaAuthDir,
-		sessions:   cpa.NewSessionStore(),
-		logger:     log.Default(),
+		store:            s,
+		cache:            c,
+		cpaAuthDir:       cpaAuthDir,
+		cpaManagementKey: cpaManagementKey,
+		sessions:         cpa.NewSessionStore(),
+		logger:           log.Default(),
 	}
 }
 
@@ -424,7 +426,8 @@ func (h *Handler) listTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range tokens {
-		tokens[i].Token = maskKey(tokens[i].Token)
+		tokens[i].TokenMasked = maskKey(tokens[i].Token)
+		tokens[i].Token = ""
 	}
 	webutil.WriteList(w, tokens, len(tokens))
 }
@@ -469,7 +472,8 @@ func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	h.cache.Invalidate()
 	req.ID = id
-	req.Token = maskKey(req.Token)
+	req.TokenMasked = maskKey(req.Token)
+	req.Token = ""
 	webutil.WriteData(w, 200, req)
 }
 
@@ -514,24 +518,72 @@ func (h *Handler) deleteToken(w http.ResponseWriter, r *http.Request) {
 
 // --- Settings ---
 
+type systemSettingsResponse struct {
+	AdminTokenMasked     string `json:"admin_token_masked"`
+	DefaultPoolID        *int64 `json:"default_pool_id"`
+	HealthCheckInterval  int    `json:"health_check_interval"`
+	RequestTimeout       int    `json:"request_timeout"`
+	MaxRetryAttempts     int    `json:"max_retry_attempts"`
+}
+
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := h.store.GetSettings()
 	if err != nil {
 		h.internalError(w, err)
 		return
 	}
-	// hide admin_token
-	if _, ok := settings["admin_token"]; ok {
-		settings["admin_token"] = maskKey(settings["admin_token"])
+
+	resp := systemSettingsResponse{
+		AdminTokenMasked:    maskKey(settings["admin_token"]),
+		HealthCheckInterval: 60,
+		RequestTimeout:      30,
+		MaxRetryAttempts:    1,
 	}
-	webutil.WriteData(w, 200, settings)
+	if v, err := strconv.ParseInt(settings["default_pool_id"], 10, 64); err == nil && v > 0 {
+		resp.DefaultPoolID = &v
+	}
+	if v, err := strconv.Atoi(settings["health_check_interval"]); err == nil && v > 0 {
+		resp.HealthCheckInterval = v
+	}
+	if v, err := strconv.Atoi(settings["request_timeout"]); err == nil && v > 0 {
+		resp.RequestTimeout = v
+	}
+	if v, err := strconv.Atoi(settings["max_retry_attempts"]); err == nil && v >= 0 {
+		resp.MaxRetryAttempts = v
+	}
+	webutil.WriteData(w, 200, resp)
 }
 
 func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
-	var pairs map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&pairs); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
+	}
+	pairs := make(map[string]string)
+	for k, v := range raw {
+		s := strings.TrimSpace(string(v))
+		if s == "null" || s == "" {
+			pairs[k] = ""
+			continue
+		}
+		// try as string first
+		var str string
+		if json.Unmarshal(v, &str) == nil {
+			pairs[k] = str
+			continue
+		}
+		// try as number
+		var num float64
+		if json.Unmarshal(v, &num) == nil {
+			if num == float64(int(num)) {
+				pairs[k] = strconv.Itoa(int(num))
+			} else {
+				pairs[k] = strconv.FormatFloat(num, 'f', -1, 64)
+			}
+			continue
+		}
+		pairs[k] = s
 	}
 	if err := h.store.UpdateSettings(pairs); err != nil {
 		h.internalError(w, err)
@@ -559,13 +611,57 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 		TokenName:  r.URL.Query().Get("token_name"),
 		SourceKind: r.URL.Query().Get("source_kind"),
 	}
+
+	if filter.TokenName == "" {
+		filter.TokenName = r.URL.Query().Get("token")
+	}
+	filter.Model = r.URL.Query().Get("model")
+	if acStr := r.URL.Query().Get("account"); acStr != "" {
+		if v, err := strconv.ParseInt(acStr, 10, 64); err == nil && v > 0 {
+			filter.AccountID = v
+		}
+	}
+
+	if filter.From == "" && filter.To == "" {
+		switch r.URL.Query().Get("range") {
+		case "1h":
+			filter.From = time.Now().UTC().Add(-1 * time.Hour).Format("2006-01-02 15:04:05")
+		case "24h", "":
+			filter.From = time.Now().UTC().Add(-24 * time.Hour).Format("2006-01-02 15:04:05")
+		case "7d":
+			filter.From = time.Now().UTC().Add(-7 * 24 * time.Hour).Format("2006-01-02 15:04:05")
+		case "30d":
+			filter.From = time.Now().UTC().Add(-30 * 24 * time.Hour).Format("2006-01-02 15:04:05")
+		case "all":
+			// no lower bound
+		}
+	}
+
+	page := 1
+	if v := r.URL.Query().Get("page"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			webutil.WriteAdminError(w, 400, "bad_request", "invalid page parameter")
+			return
+		}
+		page = n
+	}
+	pageSize := 50
+	if v := r.URL.Query().Get("page_size"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			webutil.WriteAdminError(w, 400, "bad_request", "invalid page_size parameter")
+			return
+		}
+		pageSize = n
+	}
 	if v := r.URL.Query().Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
 			webutil.WriteAdminError(w, 400, "bad_request", "invalid limit parameter")
 			return
 		}
-		filter.Limit = n
+		pageSize = n
 	}
 	if v := r.URL.Query().Get("offset"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -574,13 +670,31 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filter.Offset = n
+	} else {
+		filter.Offset = (page - 1) * pageSize
+	}
+	filter.Limit = pageSize
+
+	summary, err := h.store.GetUsageSummary(filter)
+	if err != nil {
+		h.internalError(w, err)
+		return
 	}
 	logs, total, err := h.store.GetUsage(filter)
 	if err != nil {
 		h.internalError(w, err)
 		return
 	}
-	webutil.WriteList(w, logs, total)
+	if logs == nil {
+		logs = []store.RequestLog{}
+	}
+	summary.Logs = store.UsageLogPage{
+		Items:    logs,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	}
+	webutil.WriteData(w, 200, summary)
 }
 
 func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
@@ -592,7 +706,8 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 	routes, _ := h.store.ListRoutes()
 	tokens, _ := h.store.ListTokens()
 	for i := range tokens {
-		tokens[i].Token = maskKey(tokens[i].Token)
+		tokens[i].TokenMasked = maskKey(tokens[i].Token)
+		tokens[i].Token = ""
 	}
 	settings, _ := h.store.GetSettings()
 	if _, ok := settings["admin_token"]; ok {
@@ -996,7 +1111,7 @@ func generateToken() string {
 	return "sk-lune-" + hex.EncodeToString(b)
 }
 
-// --- CPA Login Sessions ---
+// --- CPA Login Sessions (Device Code Flow) ---
 
 func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -1037,11 +1152,11 @@ func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
 	go h.pollLoginSession(ctx, session, svc)
 
 	webutil.WriteData(w, 201, map[string]any{
-		"id":                   session.ID,
-		"status":               session.Status,
-		"verification_uri":     session.VerificationURI,
-		"user_code":            session.UserCode,
-		"expires_at":           session.ExpiresAt.Format(time.RFC3339),
+		"id":                    session.ID,
+		"status":                session.Status,
+		"verification_uri":      session.VerificationURI,
+		"user_code":             session.UserCode,
+		"expires_at":            session.ExpiresAt.Format(time.RFC3339),
 		"poll_interval_seconds": session.PollInterval,
 	})
 }
@@ -1054,7 +1169,6 @@ func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSessio
 	for {
 		select {
 		case <-ctx.Done():
-			// check if cancelled or expired
 			s := h.sessions.GetSession(session.ID)
 			if s != nil && s.Status == "pending" {
 				h.sessions.UpdateStatus(session.ID, "expired", "expired_token", "Device code expired")
@@ -1066,12 +1180,8 @@ func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSessio
 				return
 			}
 
-			tokenResp, err := cpa.PollForToken(ctx, session.DeviceCode)
+			tokenResp, err := cpa.PollForToken(ctx, session.DeviceAuthID, session.UserCode)
 			if err != nil {
-				if ctx.Err() != nil {
-					// context cancelled or deadline exceeded — let ctx.Done() handle it
-					continue
-				}
 				if errors.Is(err, cpa.ErrAuthorizationPending) {
 					continue
 				}
@@ -1115,7 +1225,6 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 	expiredAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
 	lastRefresh := time.Now().Format(time.RFC3339)
 
-	// write credential file to cpa-auth directory
 	authFile := &cpa.CpaAuthFile{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
@@ -1132,41 +1241,13 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 		return
 	}
 
-	// create local account record (no tokens stored in DB)
-	label := fmt.Sprintf("codex - %s (%s)", info.Email, planType)
-	account := &store.Account{
-		Label:         label,
-		SourceKind:    "cpa",
-		CpaServiceID:  &svc.ID,
-		CpaProvider:   "codex",
-		CpaAccountKey: accountKey,
-		CpaEmail:      info.Email,
-		CpaPlanType:   planType,
-		CpaOpenaiID:   info.AccountID,
-		CpaExpiredAt:  &expiredAt,
-		CpaLastRefreshAt: &lastRefresh,
-		Enabled:       true,
-	}
-
-	id, err := h.store.CreateAccount(account)
+	account, err := h.upsertImportedCpaAccount(svc, accountKey, authFile, "", true, "", nil)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
-			// account already exists — update session with existing account
-			existing, _ := h.store.FindAccountByCpaKey(svc.ID, accountKey)
-			if existing != nil {
-				h.fillAccountResponse(existing)
-				h.sessions.CompleteSession(session.ID, existing.ID, existing)
-				h.cache.Invalidate()
-				return
-			}
-		}
-		h.sessions.UpdateStatus(session.ID, "failed", "account_create_error", fmt.Sprintf("Failed to create account: %v", err))
+		h.sessions.UpdateStatus(session.ID, "failed", "import_error", fmt.Sprintf("Failed to create account: %v", err))
 		return
 	}
 
-	account.ID = id
-	h.fillAccountResponse(account)
-	h.sessions.CompleteSession(session.ID, id, account)
+	h.sessions.CompleteSession(session.ID, account.ID, account)
 	h.cache.Invalidate()
 }
 
@@ -1189,6 +1270,8 @@ func (h *Handler) getLoginSession(w http.ResponseWriter, r *http.Request) {
 		resp["user_code"] = session.UserCode
 		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
 		resp["poll_interval_seconds"] = session.PollInterval
+	case "authorized":
+		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
 	case "succeeded":
 		if session.AccountID != nil {
 			resp["account_id"] = *session.AccountID
@@ -1211,6 +1294,68 @@ func (h *Handler) cancelLoginSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) cpaManagementClient(svc *store.CpaService) (*cpa.ManagementClient, error) {
+	if strings.TrimSpace(h.cpaManagementKey) == "" {
+		return nil, fmt.Errorf("cpa_management_key is not configured")
+	}
+	return cpa.NewManagementClient(svc.BaseURL, h.cpaManagementKey), nil
+}
+
+func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey string, f *cpa.CpaAuthFile, label string, enabled bool, notes string, modelAllowlist []string) (*store.Account, error) {
+	planType := ""
+	openaiID := f.AccountID
+	if info, err := cpa.ParseAccountInfo(f.AccessToken); err == nil {
+		planType = info.PlanType
+		if info.AccountID != "" {
+			openaiID = info.AccountID
+		}
+	}
+	if label == "" {
+		label = fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType)
+	}
+
+	var expiredAt, lastRefreshAt *string
+	if f.Expired != "" {
+		expiredAt = &f.Expired
+	}
+	if f.LastRefresh != "" {
+		lastRefreshAt = &f.LastRefresh
+	}
+
+	account := &store.Account{
+		Label:            label,
+		SourceKind:       "cpa",
+		CpaServiceID:     &svc.ID,
+		CpaProvider:      f.Type,
+		CpaAccountKey:    accountKey,
+		CpaEmail:         f.Email,
+		CpaPlanType:      planType,
+		CpaOpenaiID:      openaiID,
+		CpaExpiredAt:     expiredAt,
+		CpaLastRefreshAt: lastRefreshAt,
+		CpaDisabled:      f.Disabled,
+		Enabled:          enabled,
+		Notes:            notes,
+		ModelAllowlist:   modelAllowlist,
+	}
+
+	id, err := h.store.CreateAccount(account)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			existing, findErr := h.store.FindAccountByCpaKey(svc.ID, accountKey)
+			if findErr == nil && existing != nil {
+				h.fillAccountResponse(existing)
+				return existing, nil
+			}
+		}
+		return nil, err
+	}
+
+	account.ID = id
+	h.fillAccountResponse(account)
+	return account, nil
 }
 
 // --- CPA Import ---
@@ -1312,47 +1457,7 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// parse plan_type from JWT if available
-	planType := ""
-	openaiID := f.AccountID
-	if info, err := cpa.ParseAccountInfo(f.AccessToken); err == nil {
-		planType = info.PlanType
-		if info.AccountID != "" {
-			openaiID = info.AccountID
-		}
-	}
-
-	label := req.Label
-	if label == "" {
-		label = fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType)
-	}
-
-	var expiredAt, lastRefreshAt *string
-	if f.Expired != "" {
-		expiredAt = &f.Expired
-	}
-	if f.LastRefresh != "" {
-		lastRefreshAt = &f.LastRefresh
-	}
-
-	account := &store.Account{
-		Label:            label,
-		SourceKind:       "cpa",
-		CpaServiceID:     &svc.ID,
-		CpaProvider:      f.Type,
-		CpaAccountKey:    req.AccountKey,
-		CpaEmail:         f.Email,
-		CpaPlanType:      planType,
-		CpaOpenaiID:      openaiID,
-		CpaExpiredAt:     expiredAt,
-		CpaLastRefreshAt: lastRefreshAt,
-		CpaDisabled:      f.Disabled,
-		Enabled:          req.Enabled,
-		Notes:            req.Notes,
-		ModelAllowlist:   req.ModelAllowlist,
-	}
-
-	id, err := h.store.CreateAccount(account)
+	account, err := h.upsertImportedCpaAccount(svc, req.AccountKey, f, req.Label, req.Enabled, req.Notes, req.ModelAllowlist)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			webutil.WriteAdminError(w, 409, "duplicate", "This account has already been imported")
@@ -1361,10 +1466,7 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
-
 	h.cache.Invalidate()
-	account.ID = id
-	h.fillAccountResponse(account)
 	webutil.WriteData(w, 201, account)
 }
 

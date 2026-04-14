@@ -30,5 +30,13 @@ func isLocalhost(r *http.Request) bool {
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	return host == "127.0.0.1" || host == "::1"
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	// Trust loopback and private networks. When running in Docker,
+	// requests arrive from the bridge network (e.g. 172.17.0.1) which
+	// is a private IP. Security is enforced at the Docker layer by
+	// binding the published port to 127.0.0.1 in docker-compose.yml.
+	return ip.IsLoopback() || ip.IsPrivate()
 }

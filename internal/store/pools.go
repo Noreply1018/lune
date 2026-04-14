@@ -124,7 +124,11 @@ func (s *Store) CountPools() (int, error) {
 }
 
 func (s *Store) listPoolMembers(poolID int64) ([]PoolMember, error) {
-	rows, err := s.db.Query(`SELECT id, pool_id, account_id, priority, weight FROM pool_members WHERE pool_id=? ORDER BY priority, id`, poolID)
+	rows, err := s.db.Query(
+		`SELECT pm.id, pm.pool_id, pm.account_id, COALESCE(a.label, '') AS account_label, COALESCE(a.status, '') AS account_status, pm.priority, pm.weight
+		 FROM pool_members pm
+		 LEFT JOIN accounts a ON a.id = pm.account_id
+		 WHERE pm.pool_id=? ORDER BY pm.priority, pm.id`, poolID)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +137,7 @@ func (s *Store) listPoolMembers(poolID int64) ([]PoolMember, error) {
 	var members []PoolMember
 	for rows.Next() {
 		var m PoolMember
-		if err := rows.Scan(&m.ID, &m.PoolID, &m.AccountID, &m.Priority, &m.Weight); err != nil {
+		if err := rows.Scan(&m.ID, &m.PoolID, &m.AccountID, &m.AccountLabel, &m.AccountStatus, &m.Priority, &m.Weight); err != nil {
 			return nil, err
 		}
 		members = append(members, m)

@@ -173,8 +173,8 @@ export default function AccountsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [testing, setTesting] = useState(false);
 
-  // device code login
-  const [showDeviceCode, setShowDeviceCode] = useState(false);
+  // CPA OAuth login
+  const [showCpaLogin, setShowCpaLogin] = useState(false);
   const [loginSession, setLoginSession] = useState<LoginSession | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -493,16 +493,30 @@ export default function AccountsPage() {
     },
   ];
 
+  const enabledAccounts = accounts.filter((account) => account.enabled).length;
+  const cpaAccounts = accounts.filter((account) => account.source_kind === "cpa").length;
+  const directAccounts = accounts.filter((account) => account.source_kind === "openai_compat").length;
+  const expiringAccounts = accounts.filter(
+    (account) =>
+      account.source_kind === "cpa" &&
+      (() => {
+        const status = expiryStatus(account.cpa_expired_at);
+        return status === "today" || status === "soon" || status === "expired";
+      })(),
+  ).length;
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-10">
       <PageHeader
-        eyebrow="工作区"
+        eyebrow="Accounts / Resources"
         title="账号"
-        description="管理可参与路由的上游执行单元，包括直连 API 凭据和 CPA 托管账号。"
+        description="管理上游执行单元，包括直连 API 与 CPA 托管账号。"
         meta={
-          <span>
-            已配置 {accounts.length} 个账号单元 • 已启用 {accounts.filter((account) => account.enabled).length} 个
-          </span>
+          <>
+            <span>总数 {accounts.length}</span>
+            <span>已启用 {enabledAccounts}</span>
+            <span>CPA {cpaAccounts}</span>
+          </>
         }
         actions={
           <Button size="sm" onClick={openCreate}>
@@ -512,16 +526,127 @@ export default function AccountsPage() {
         }
       />
 
+      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.18fr)_minmax(320px,0.82fr)]">
+        <div className="surface-section px-5 py-5 sm:px-6 sm:py-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-2">
+              <p className="eyebrow-label">资源面板</p>
+              <h2 className="text-[1.15rem] font-semibold tracking-[-0.03em] text-moon-800 sm:text-[1.25rem]">
+                这里维护所有可参与路由的执行单元
+              </h2>
+              <p className="max-w-2xl text-sm leading-7 text-moon-500">
+                直连账号负责稳定接入，CPA 账号负责托管凭据与订阅型入口。这一页更像资源清单，而不是营销式概览。
+              </p>
+            </div>
+            <span className="flex size-12 items-center justify-center rounded-[1.2rem] border border-white/75 bg-white/70 text-lunar-700">
+              <KeyRound className="size-5" />
+            </span>
+          </div>
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-[1.25rem] border border-white/72 bg-white/68 px-4 py-4">
+              <p className="kicker">总账号数</p>
+              <p className="mt-3 text-[1.55rem] font-semibold tracking-[-0.05em] text-moon-800">
+                {accounts.length}
+              </p>
+            </div>
+            <div className="rounded-[1.25rem] border border-white/72 bg-white/68 px-4 py-4">
+              <p className="kicker">已启用</p>
+              <p className="mt-3 text-[1.55rem] font-semibold tracking-[-0.05em] text-moon-800">
+                {enabledAccounts}
+              </p>
+            </div>
+            <div className="rounded-[1.25rem] border border-white/72 bg-white/68 px-4 py-4">
+              <p className="kicker">Direct API</p>
+              <p className="mt-3 text-[1.55rem] font-semibold tracking-[-0.05em] text-moon-800">
+                {directAccounts}
+              </p>
+            </div>
+            <div className="rounded-[1.25rem] border border-white/72 bg-white/68 px-4 py-4">
+              <p className="kicker">CPA 托管</p>
+              <p className="mt-3 text-[1.55rem] font-semibold tracking-[-0.05em] text-moon-800">
+                {cpaAccounts}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
+          <div className="surface-card px-5 py-5">
+            <p className="eyebrow-label">行动面板</p>
+            <div className="mt-3 space-y-3">
+              <button
+                type="button"
+                onClick={openCreate}
+                className="flex w-full items-center justify-between rounded-[1.05rem] border border-white/70 bg-white/72 px-4 py-3 text-left transition hover:border-lunar-300"
+              >
+                <span>
+                  <span className="block text-sm font-medium text-moon-800">新增账号</span>
+                  <span className="mt-1 block text-xs text-moon-500">新增直连 API 或 CPA 托管单元。</span>
+                </span>
+                <ArrowRight className="size-4 text-moon-400" />
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/admin/cpa-service")}
+                className="flex w-full items-center justify-between rounded-[1.05rem] border border-white/70 bg-white/72 px-4 py-3 text-left transition hover:border-lunar-300"
+              >
+                <span>
+                  <span className="block text-sm font-medium text-moon-800">CPA 服务</span>
+                  <span className="mt-1 block text-xs text-moon-500">
+                    {cpaService ? "查看服务健康与远端导入。" : "配置后才能新增托管账号。"}
+                  </span>
+                </span>
+                <ExternalLink className="size-4 text-moon-400" />
+              </button>
+            </div>
+          </div>
+
+          <div className="surface-card px-5 py-5">
+            <p className="eyebrow-label">资源健康</p>
+            <div className="mt-4 space-y-3 text-sm text-moon-500">
+              <div className="flex items-center justify-between gap-3 border-b border-moon-200/60 pb-3">
+                <span>CPA 服务</span>
+                <span className="font-medium text-moon-700">
+                  {cpaService ? (cpaService.enabled ? "已连接" : "已配置 / 已停用") : "未配置"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3 border-b border-moon-200/60 pb-3">
+                <span>临近到期</span>
+                <span className="font-medium text-moon-700">{expiringAccounts}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span>启用比例</span>
+                <span className="font-medium text-moon-700">
+                  {accounts.length > 0 ? `${Math.round((enabledAccounts / accounts.length) * 100)}%` : "暂无"}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section className="space-y-4">
         <SectionHeading
           title="账号列表"
-          description="每一行都是一个可路由执行单元。直连 API 账号展示本地预算；CPA 账号继承 CPA 服务的鉴权与刷新状态。"
+          description="每一行都是一个可路由执行单元。先看来源与状态，再判断预算与延迟。"
         />
 
         {loading ? (
           <Skeleton className="h-64 rounded-[1.5rem]" />
         ) : (
-          <div className="overflow-hidden rounded-[1.6rem] border border-moon-200/70 bg-white/85">
+          <div className="surface-card overflow-hidden">
+            <div className="flex flex-col gap-2 border-b border-moon-200/60 px-4 py-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="eyebrow-label">资源清单</p>
+                <p className="mt-1 text-sm text-moon-500">
+                  先看标签、来源和状态，再判断预算与最近延迟。
+                </p>
+              </div>
+              <p className="text-sm text-moon-500">
+                Direct API {directAccounts} / CPA {cpaAccounts}
+              </p>
+            </div>
             <DataTable
               columns={columns}
               rows={accounts}
@@ -605,7 +730,7 @@ export default function AccountsPage() {
                       <div>
                         <p className="text-sm font-medium text-amber-900">当前无法使用 CPA 入口</p>
                         <p className="mt-1 text-sm text-amber-800/80">
-                          需要先配置 CPA 服务，才能创建 CPA Channel、执行 Device Code 登录或导入已有账号。
+                          需要先配置 CPA 服务，才能创建 CPA Channel、执行 OAuth 登录或导入已有账号。
                         </p>
                       </div>
                       <Button
@@ -658,7 +783,7 @@ export default function AccountsPage() {
                   type="button"
                   onClick={() => {
                     setShowSourcePicker(false);
-                    startDeviceCodeLogin();
+                    startCpaOAuthLogin();
                   }}
                   className="flex items-start gap-4 rounded-2xl border border-moon-200 px-5 py-4 text-left transition hover:border-lunar-400 hover:bg-lunar-50/30"
                 >
@@ -666,7 +791,7 @@ export default function AccountsPage() {
                     <KeyRound className="size-5" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="font-medium text-moon-800">Device Code Login</span>
+                    <span className="font-medium text-moon-800">OAuth 登录</span>
                     <span className="mt-1 block text-sm text-moon-500">
                       通过 OAuth 登录，创建凭据型 CPA 账号。
                     </span>
@@ -998,8 +1123,8 @@ export default function AccountsPage() {
         onConfirm={confirmDelete}
       />
 
-      {/* Device Code Login Dialog */}
-      <Dialog open={showDeviceCode} onOpenChange={(open) => {
+      {/* CPA OAuth Login Dialog */}
+      <Dialog open={showCpaLogin} onOpenChange={(open) => {
         if (!open) {
           if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
             api.post(`/accounts/cpa/login-sessions/${loginSession.id}/cancel`).catch(() => {});
@@ -1007,101 +1132,128 @@ export default function AccountsPage() {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
         }
-        setShowDeviceCode(open);
+        setShowCpaLogin(open);
       }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Device Code 登录</DialogTitle>
+            <DialogTitle>CPA Device Code 登录</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="rounded-2xl border border-moon-200/70 bg-moon-50/70 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-moon-400">会话摘要</p>
-              <div className="mt-3 grid gap-3 text-sm sm:grid-cols-3">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-moon-400">CPA 服务</p>
-                  <p className="mt-1 font-medium text-moon-800">{cpaService?.label ?? "未配置"}</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-moon-400">Provider</p>
-                  <p className="mt-1 font-medium text-moon-800">OpenAI / Codex</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-moon-400">结果</p>
-                  <p className="mt-1 font-medium text-moon-800">将创建一个凭据型 CPA 账号</p>
-                </div>
-              </div>
-            </div>
-            {loginLoading && !loginSession && (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="size-6 animate-spin text-moon-400" />
-              </div>
-            )}
-            {loginSession?.status === "pending" && (
-              <>
-                <div className="space-y-2">
-                  <p className="text-sm text-moon-600">请打开以下地址：</p>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 rounded-md bg-moon-50 px-3 py-2 text-sm">{loginSession.verification_uri}</code>
-                    <Button size="icon" variant="outline" onClick={() => window.open(loginSession.verification_uri, "_blank")}>
-                      <ExternalLink className="size-4" />
-                    </Button>
+          {(() => {
+            const status = getOAuthDialogStatus(loginSession, loginLoading);
+
+            return (
+              <div className="space-y-5 py-4">
+                <div className="rounded-[1.35rem] border border-white/75 bg-white/62 px-4 py-4">
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div>
+                      <p className="eyebrow-label">CPA 服务</p>
+                      <p className="mt-2 text-sm font-medium text-moon-800">{cpaService?.label ?? "未配置"}</p>
+                    </div>
+                    <div>
+                      <p className="eyebrow-label">授权方式</p>
+                      <p className="mt-2 text-sm font-medium text-moon-800">Device Code</p>
+                    </div>
+                    <div>
+                      <p className="eyebrow-label">结果</p>
+                      <p className="mt-2 text-sm font-medium text-moon-800">创建凭据型 CPA 账号</p>
+                    </div>
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <p className="text-sm text-moon-600">输入以下验证码：</p>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 rounded-lg bg-moon-50 px-4 py-3 text-center text-lg font-mono font-bold tracking-widest">{loginSession.user_code}</code>
-                    <Button size="icon" variant="outline" onClick={() => {
-                      navigator.clipboard.writeText(loginSession.user_code ?? "");
-                      toast("验证码已复制");
-                    }}>
-                      <Copy className="size-4" />
-                    </Button>
+
+                <div className="space-y-3">
+                  <div className="rounded-[1.25rem] border border-white/72 bg-[linear-gradient(180deg,rgba(243,239,250,0.82),rgba(255,255,255,0.72))] px-4 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-moon-800">{status.title}</p>
+                        <p className="mt-1 text-sm leading-6 text-moon-500">{status.description}</p>
+                      </div>
+                      {loginSession?.expires_at && loginSession.status !== "succeeded" ? (
+                        <span className="shrink-0 rounded-full border border-white/75 bg-white/75 px-2.5 py-1">
+                          <CountdownTimer expiresAt={loginSession.expires_at} />
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
+
+                  {loginLoading && !loginSession ? (
+                    <div className="flex items-center gap-2 text-sm text-moon-500">
+                      <Loader2 className="size-4 animate-spin" />
+                      正在创建登录会话...
+                    </div>
+                  ) : null}
+
+                  {loginSession && loginSession.status === "pending" && loginSession.user_code ? (
+                    <div className="rounded-[1.15rem] border border-white/72 bg-white/72 px-4 py-5">
+                      <p className="text-sm font-medium text-moon-800">在浏览器中打开验证页，并输入以下验证码</p>
+                      <div className="mt-4 flex items-center justify-center gap-3">
+                        <code className="rounded-xl bg-moon-50/90 px-6 py-4 text-center text-2xl font-mono font-bold tracking-[0.32em] text-moon-800">
+                          {loginSession.user_code}
+                        </code>
+                      </div>
+                      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            navigator.clipboard.writeText(loginSession.user_code ?? "");
+                            toast("验证码已复制");
+                          }}
+                        >
+                          <Copy className="size-4" />
+                          复制验证码
+                        </Button>
+                        <Button
+                          onClick={() => loginSession.verification_uri && window.open(loginSession.verification_uri, "_blank")}
+                          disabled={!loginSession.verification_uri}
+                        >
+                          <ExternalLink className="size-4" />
+                          打开验证页
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {loginSession?.status === "pending" && loginSession.user_code ? (
+                    <div className="flex items-center gap-2 rounded-[1rem] border border-white/72 bg-white/68 px-4 py-3 text-sm text-moon-500">
+                      <Loader2 className="size-4 animate-spin" />
+                      正在等待授权完成...
+                    </div>
+                  ) : null}
+
+                  {loginSession?.status === "authorized" ? (
+                    <div className="flex items-center gap-2 rounded-[1rem] border border-white/72 bg-white/68 px-4 py-3 text-sm text-moon-600">
+                      <Loader2 className="size-4 animate-spin" />
+                      授权已确认，正在完成账号导入...
+                    </div>
+                  ) : null}
+
+                  {loginSession?.status === "succeeded" && loginSession.account ? (
+                    <div className="rounded-[1.1rem] border border-status-green/20 bg-status-green/10 px-4 py-4 text-sm text-moon-700">
+                      <p className="font-medium text-moon-800">已创建账号</p>
+                      <div className="mt-2 space-y-1">
+                        <p>标签：{loginSession.account.label}</p>
+                        <p>邮箱：{loginSession.account.cpa_email || "-"}</p>
+                        <p>套餐：{loginSession.account.cpa_plan_type || "-"}</p>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {(loginSession?.status === "failed" || loginSession?.status === "expired") ? (
+                    <div className="rounded-[1.1rem] border border-status-red/20 bg-status-red/10 px-4 py-4 text-sm text-moon-700">
+                      <p className="font-medium text-moon-800">
+                        {loginSession.status === "expired" ? "已过期" : "登录失败"}
+                      </p>
+                      <p className="mt-1">
+                        {loginSession.error_message || (loginSession.status === "expired" ? "登录已过期，请重新开始。" : "请重试")}
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
-                <div className="flex items-center gap-2 text-sm text-moon-500">
-                  <Loader2 className="size-4 animate-spin" />
-                  <span>等待授权中...</span>
-                  {loginSession.expires_at && (
-                    <span className="ml-auto">
-                      <CountdownTimer expiresAt={loginSession.expires_at} />
-                    </span>
-                  )}
-                </div>
-              </>
-            )}
-            {loginSession?.status === "authorized" && (
-              <div className="flex items-center gap-2 py-4 text-sm text-moon-600">
-                <Loader2 className="size-4 animate-spin" />
-                已授权，正在完成账号创建...
               </div>
-            )}
-            {loginSession?.status === "succeeded" && (
-              <div className="space-y-3">
-                <div className="rounded-lg bg-green-50 p-4 text-sm text-green-800">
-                  账号创建成功
-                </div>
-                {loginSession.account && (
-                  <div className="space-y-1 text-sm text-moon-600">
-                    <p><span className="font-medium">标签：</span>{loginSession.account.label}</p>
-                    <p><span className="font-medium">邮箱：</span>{loginSession.account.cpa_email}</p>
-                    <p><span className="font-medium">套餐：</span>{loginSession.account.cpa_plan_type}</p>
-                  </div>
-                )}
-              </div>
-            )}
-            {(loginSession?.status === "failed" || loginSession?.status === "expired") && (
-              <div className="space-y-3">
-                <div className="rounded-lg bg-red-50 p-4 text-sm text-red-800">
-                  {loginSession.error_message || "登录失败"}
-                </div>
-                <Button variant="outline" onClick={startDeviceCodeLogin}>重试</Button>
-              </div>
-            )}
-          </div>
+            );
+          })()}
           <DialogFooter>
             {loginSession?.status === "succeeded" ? (
-              <Button onClick={() => { setShowDeviceCode(false); load(); }}>完成</Button>
+              <Button onClick={() => { setShowCpaLogin(false); load(); }}>完成</Button>
             ) : (
               <Button variant="outline" onClick={() => {
                 if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
@@ -1109,7 +1261,7 @@ export default function AccountsPage() {
                 }
                 if (pollRef.current) clearInterval(pollRef.current);
                 pollRef.current = null;
-                setShowDeviceCode(false);
+                setShowCpaLogin(false);
               }}>取消</Button>
             )}
           </DialogFooter>
@@ -1196,8 +1348,8 @@ export default function AccountsPage() {
     </div>
   );
 
-  // --- Device Code Login ---
-  function startDeviceCodeLogin() {
+  // --- CPA OAuth Login ---
+  function startCpaOAuthLogin() {
     if (!cpaService) return;
     // cancel existing session if still active
     if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
@@ -1207,7 +1359,7 @@ export default function AccountsPage() {
     pollRef.current = null;
     setLoginSession(null);
     setLoginLoading(true);
-    setShowDeviceCode(true);
+    setShowCpaLogin(true);
 
     api.post<LoginSession>("/accounts/cpa/login-sessions", { service_id: cpaService.id })
       .then((session) => {
@@ -1237,7 +1389,7 @@ export default function AccountsPage() {
       .catch((err) => {
         setLoginLoading(false);
         toast(err instanceof Error ? err.message : "无法发起登录流程", "error");
-        setShowDeviceCode(false);
+        setShowCpaLogin(false);
       });
   }
 
@@ -1302,3 +1454,65 @@ function CountdownTimer({ expiresAt }: { expiresAt: string }) {
   }, [expiresAt]);
   return <span className="inline-flex items-center gap-1 font-mono text-xs"><Clock className="size-3" />{remaining}</span>;
 }
+
+function getOAuthDialogStatus(session: LoginSession | null, loginLoading: boolean): {
+  tone: "neutral" | "success" | "error" | "pending";
+  title: string;
+  description: string;
+} {
+  if (loginLoading && !session) {
+    return {
+      tone: "pending",
+      title: "正在发起登录...",
+      description: "请稍候",
+    };
+  }
+
+  if (!session) {
+    return {
+      tone: "neutral",
+      title: "准备开始授权",
+      description: "请稍候",
+    };
+  }
+
+  if (session.status === "pending") {
+    return {
+      tone: "pending",
+      title: "等待授权",
+      description: "请在浏览器中完成授权",
+    };
+  }
+
+  if (session.status === "authorized") {
+    return {
+      tone: "pending",
+      title: "正在验证",
+      description: "正在完成账号导入...",
+    };
+  }
+
+  if (session.status === "succeeded") {
+    return {
+      tone: "success",
+      title: "授权成功",
+      description: "账号已创建",
+    };
+  }
+
+  if (session.status === "expired") {
+    return {
+      tone: "error",
+      title: "已过期",
+      description: session.error_message || "登录已过期，请重新开始。",
+    };
+  }
+
+  // failed / cancelled
+  return {
+    tone: "error",
+    title: "登录失败",
+    description: session.error_message || "请重试",
+  };
+}
+

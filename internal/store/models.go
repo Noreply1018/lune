@@ -71,17 +71,20 @@ type Pool struct {
 }
 
 type PoolMember struct {
-	ID        int64 `json:"id"`
-	PoolID    int64 `json:"pool_id"`
-	AccountID int64 `json:"account_id"`
-	Priority  int   `json:"priority"`
-	Weight    int   `json:"weight"`
+	ID            int64  `json:"id"`
+	PoolID        int64  `json:"pool_id"`
+	AccountID     int64  `json:"account_id"`
+	AccountLabel  string `json:"account_label"`
+	AccountStatus string `json:"account_status"`
+	Priority      int    `json:"priority"`
+	Weight        int    `json:"weight"`
 }
 
 type ModelRoute struct {
 	ID          int64     `json:"id"`
 	Alias       string    `json:"alias"`
 	PoolID      int64     `json:"pool_id"`
+	PoolLabel   string    `json:"pool_label"`
 	TargetModel string    `json:"target_model"`
 	Enabled     bool      `json:"enabled"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -91,7 +94,8 @@ type ModelRoute struct {
 type AccessToken struct {
 	ID          int64     `json:"id"`
 	Name        string    `json:"name"`
-	Token       string    `json:"token"`
+	Token       string    `json:"token,omitempty"`
+	TokenMasked string    `json:"token_masked,omitempty"`
 	Enabled     bool      `json:"enabled"`
 	QuotaTokens int64     `json:"quota_tokens"`
 	UsedTokens  int64     `json:"used_tokens"`
@@ -108,6 +112,7 @@ type RequestLog struct {
 	TargetModel     string `json:"target_model"`
 	PoolID          int64  `json:"pool_id"`
 	AccountID       int64  `json:"account_id"`
+	AccountLabel    string `json:"account_label"`
 	StatusCode      int    `json:"status_code"`
 	LatencyMs       int64  `json:"latency_ms"`
 	InputTokens     int64  `json:"input_tokens"`
@@ -118,4 +123,35 @@ type RequestLog struct {
 	ErrorMessage    string `json:"error_message"`
 	SourceKind      string `json:"source_kind"`
 	CreatedAt       string `json:"created_at"`
+}
+
+type UsageStats struct {
+	TotalRequests     int64            `json:"total_requests"`
+	TotalInputTokens  int64            `json:"total_input_tokens"`
+	TotalOutputTokens int64            `json:"total_output_tokens"`
+	ByAccount         []UsageByAccount `json:"by_account"`
+	ByToken           []UsageByToken   `json:"by_token"`
+	Logs              UsageLogPage     `json:"logs"`
+}
+
+type UsageByAccount struct {
+	AccountID    int64  `json:"account_id"`
+	AccountLabel string `json:"account_label"`
+	Requests     int64  `json:"requests"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+}
+
+type UsageByToken struct {
+	TokenName    string `json:"token_name"`
+	Requests     int64  `json:"requests"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+}
+
+type UsageLogPage struct {
+	Items    []RequestLog `json:"items"`
+	Total    int          `json:"total"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"page_size"`
 }

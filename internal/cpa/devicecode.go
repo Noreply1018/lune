@@ -6,39 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// flexInt handles JSON fields that may be either a number or a string-encoded number.
-type flexInt int
-
-func (fi *flexInt) UnmarshalJSON(b []byte) error {
-	// Try number first.
-	var n int
-	if err := json.Unmarshal(b, &n); err == nil {
-		*fi = flexInt(n)
-		return nil
-	}
-	// Try string.
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return fmt.Errorf("flexInt: cannot unmarshal %s", string(b))
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("flexInt: invalid number string %q", s)
-	}
-	*fi = flexInt(n)
-	return nil
-}
-
 const (
-	deviceCodeURL = "https://auth.openai.com/api/accounts/deviceauth/usercode"
-	tokenURL      = "https://auth.openai.com/api/accounts/deviceauth/token"
-	clientID      = "app_EMoamEEZ73f0CkXaXp7hrann"
-	scope         = "openid email profile offline_access"
+	deviceCodeURL      = "https://auth.openai.com/api/accounts/deviceauth/usercode"
+	tokenURL           = "https://auth.openai.com/api/accounts/deviceauth/token"
+	clientID           = "app_EMoamEEZ73f0CkXaXp7hrann"
+	scope              = "openid email profile offline_access"
+	defaultVerifyURI   = "https://auth.openai.com/codex/device"
+	defaultExpiresIn   = 900 // 15 minutes
+	defaultPollSeconds = 5
 )
 
 var (
@@ -49,20 +28,19 @@ var (
 )
 
 type DeviceCodeResponse struct {
-	DeviceCode      string  `json:"device_code"`
-	UserCode        string  `json:"user_code"`
-	VerificationURI string  `json:"verification_uri"`
-	VerificationURL string  `json:"verification_url"` // some providers use this instead
-	ExpiresIn       flexInt `json:"expires_in"`
-	Interval        flexInt `json:"interval"`
+	DeviceAuthID    string `json:"device_auth_id"`
+	UserCode        string `json:"user_code"`
+	VerificationURI string `json:"-"`
+	Interval        int    `json:"-"`
+	ExpiresIn       int    `json:"-"`
 }
 
 type TokenResponse struct {
-	AccessToken  string  `json:"access_token"`
-	RefreshToken string  `json:"refresh_token"`
-	IDToken      string  `json:"id_token"`
-	ExpiresIn    flexInt `json:"expires_in"`
-	TokenType    string  `json:"token_type"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	IDToken      string `json:"id_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
 }
 
 func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
@@ -84,28 +62,59 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
 		return nil, fmt.Errorf("device code request failed: HTTP %d", resp.StatusCode)
 	}
 
-	var dcr DeviceCodeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&dcr); err != nil {
+	// Parse with raw fields since format varies
+	var raw struct {
+		DeviceAuthID string `json:"device_auth_id"`
+		UserCode     string `json:"user_code"`
+		Interval     json.RawMessage `json:"interval"`
+		ExpiresIn    json.RawMessage `json:"expires_in"`
+		ExpiresAt    string          `json:"expires_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
 	}
-	if dcr.VerificationURI == "" && dcr.VerificationURL != "" {
-		dcr.VerificationURI = dcr.VerificationURL
+
+	dcr := &DeviceCodeResponse{
+		DeviceAuthID:    raw.DeviceAuthID,
+		UserCode:        raw.UserCode,
+		VerificationURI: defaultVerifyURI,
+		Interval:        defaultPollSeconds,
+		ExpiresIn:       defaultExpiresIn,
 	}
-	if dcr.VerificationURI == "" {
-		dcr.VerificationURI = "https://auth.openai.com/codex/device"
+
+	// Parse interval (may be string or number)
+	if len(raw.Interval) > 0 {
+		if n := parseFlexInt(raw.Interval); n > 0 {
+			dcr.Interval = n
+		}
 	}
-	if dcr.ExpiresIn == 0 {
-		dcr.ExpiresIn = 900 // default 15 minutes
+
+	// Parse expiry: prefer expires_in (seconds), fallback to expires_at (ISO timestamp)
+	if len(raw.ExpiresIn) > 0 {
+		if n := parseFlexInt(raw.ExpiresIn); n > 0 {
+			dcr.ExpiresIn = n
+		}
+	} else if raw.ExpiresAt != "" {
+		if t, err := time.Parse(time.RFC3339, raw.ExpiresAt); err == nil {
+			secs := int(time.Until(t).Seconds())
+			if secs > 0 {
+				dcr.ExpiresIn = secs
+			}
+		}
 	}
-	if dcr.Interval == 0 {
-		dcr.Interval = 5
-	}
-	return &dcr, nil
+
+	return dcr, nil
 }
 
-func PollForToken(ctx context.Context, deviceCode string) (*TokenResponse, error) {
-	body := fmt.Sprintf(`{"device_code":"%s","grant_type":"urn:ietf:params:oauth:grant-type:device_code","client_id":"%s"}`, deviceCode, clientID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(body))
+func PollForToken(ctx context.Context, deviceAuthID, userCode string) (*TokenResponse, error) {
+	payload := map[string]string{
+		"device_auth_id": deviceAuthID,
+		"user_code":      userCode,
+		"grant_type":     "urn:ietf:params:oauth:grant-type:device_code",
+		"client_id":      clientID,
+	}
+	payloadBytes, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(payloadBytes)))
 	if err != nil {
 		return nil, err
 	}
@@ -126,14 +135,30 @@ func PollForToken(ctx context.Context, deviceCode string) (*TokenResponse, error
 		return &tr, nil
 	}
 
-	// parse error response
+	// Parse error response — may be flat or nested
 	var errResp struct {
-		Error string `json:"error"`
+		Error   any    `json:"error"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
 	}
 	json.NewDecoder(resp.Body).Decode(&errResp)
 
-	switch errResp.Error {
-	case "authorization_pending":
+	errCode := errResp.Code
+	if errCode == "" {
+		switch e := errResp.Error.(type) {
+		case string:
+			errCode = e
+		case map[string]any:
+			if code, ok := e["code"].(string); ok {
+				errCode = code
+			} else if msg, ok := e["message"].(string); ok {
+				errCode = msg
+			}
+		}
+	}
+
+	switch errCode {
+	case "authorization_pending", "deviceauth_authorization_unknown":
 		return nil, ErrAuthorizationPending
 	case "slow_down":
 		return nil, ErrSlowDown
@@ -142,6 +167,22 @@ func PollForToken(ctx context.Context, deviceCode string) (*TokenResponse, error
 	case "access_denied":
 		return nil, ErrAccessDenied
 	default:
-		return nil, fmt.Errorf("token poll error: %s (HTTP %d)", errResp.Error, resp.StatusCode)
+		return nil, fmt.Errorf("token poll error: %s (HTTP %d)", errCode, resp.StatusCode)
 	}
+}
+
+// parseFlexInt parses a JSON value that may be a number or a string-encoded number.
+func parseFlexInt(raw json.RawMessage) int {
+	var n int
+	if json.Unmarshal(raw, &n) == nil {
+		return n
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		var v int
+		if _, err := fmt.Sscanf(s, "%d", &v); err == nil {
+			return v
+		}
+	}
+	return 0
 }

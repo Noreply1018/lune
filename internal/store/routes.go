@@ -5,7 +5,11 @@ import (
 )
 
 func (s *Store) ListRoutes() ([]ModelRoute, error) {
-	rows, err := s.db.Query(`SELECT id, alias, pool_id, target_model, enabled, created_at, updated_at FROM model_routes ORDER BY id`)
+	rows, err := s.db.Query(
+		`SELECT r.id, r.alias, r.pool_id, COALESCE(p.label, '') AS pool_label, r.target_model, r.enabled, r.created_at, r.updated_at
+		 FROM model_routes r
+		 LEFT JOIN pools p ON p.id = r.pool_id
+		 ORDER BY r.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +60,7 @@ func scanRouteRow(row rowScanner) (*ModelRoute, error) {
 	var r ModelRoute
 	var enabled int
 	var createdAt, updatedAt string
-	err := row.Scan(&r.ID, &r.Alias, &r.PoolID, &r.TargetModel, &enabled, &createdAt, &updatedAt)
+	err := row.Scan(&r.ID, &r.Alias, &r.PoolID, &r.PoolLabel, &r.TargetModel, &enabled, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
