@@ -77,7 +77,7 @@ cpa-auth/
 
 | 字段 | 说明 | Lune 是否需要 |
 |---|---|---|
-| access_token | OAuth access token（JWT） | 写入时需要，不存入 Lune DB |
+| access_token | OAuth access token（可能是 opaque token，不保证是 JWT） | 写入时需要，不存入 Lune DB |
 | refresh_token | OAuth refresh token | 写入时需要，不存入 Lune DB |
 | id_token | OIDC id token（JWT） | 写入时需要，不存入 Lune DB |
 | account_id | OpenAI 账号 UUID | 读取，存入 cpa_openai_id |
@@ -250,10 +250,10 @@ client_id 是 OpenAI 官方 Codex CLI 的 client_id。
 
 登录成功后，Lune 需要：
 
-1. 从 access_token JWT 中解析账号元信息：
-   - email: 从 `https://api.openai.com/profile` claim 提取
-   - plan_type: 从 `https://api.openai.com/auth` claim 的 chatgpt_plan_type 提取
-   - account_id: 从 `https://api.openai.com/auth` claim 的 chatgpt_account_id 提取
+1. 优先从 `id_token` 解析账号元信息；若缺失或不含所需字段，再回退到 `access_token`：
+   - email: 优先取标准 `email` claim，也兼容 `https://api.openai.com/profile` claim
+   - plan_type: 优先取 `https://api.openai.com/auth` claim 的 `chatgpt_plan_type`
+   - account_id: 优先取 `https://api.openai.com/auth` claim 的 `chatgpt_account_id`，必要时回退到 `sub`
 2. 计算过期时间：`expired = now + expires_in`
 3. 构造 JSON 文件：
 

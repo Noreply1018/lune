@@ -519,11 +519,11 @@ func (h *Handler) deleteToken(w http.ResponseWriter, r *http.Request) {
 // --- Settings ---
 
 type systemSettingsResponse struct {
-	AdminTokenMasked     string `json:"admin_token_masked"`
-	DefaultPoolID        *int64 `json:"default_pool_id"`
-	HealthCheckInterval  int    `json:"health_check_interval"`
-	RequestTimeout       int    `json:"request_timeout"`
-	MaxRetryAttempts     int    `json:"max_retry_attempts"`
+	AdminTokenMasked    string `json:"admin_token_masked"`
+	DefaultPoolID       *int64 `json:"default_pool_id"`
+	HealthCheckInterval int    `json:"health_check_interval"`
+	RequestTimeout      int    `json:"request_timeout"`
+	MaxRetryAttempts    int    `json:"max_retry_attempts"`
 }
 
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -1210,7 +1210,7 @@ func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSessio
 }
 
 func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService, tokenResp *cpa.TokenResponse) {
-	info, err := cpa.ParseAccountInfo(tokenResp.AccessToken)
+	info, err := cpa.ParseAccountInfoFromTokens(tokenResp.IDToken, tokenResp.AccessToken)
 	if err != nil {
 		h.sessions.UpdateStatus(session.ID, "failed", "jwt_parse_error", fmt.Sprintf("Failed to parse JWT: %v", err))
 		return
@@ -1306,7 +1306,7 @@ func (h *Handler) cpaManagementClient(svc *store.CpaService) (*cpa.ManagementCli
 func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey string, f *cpa.CpaAuthFile, label string, enabled bool, notes string, modelAllowlist []string) (*store.Account, error) {
 	planType := ""
 	openaiID := f.AccountID
-	if info, err := cpa.ParseAccountInfo(f.AccessToken); err == nil {
+	if info, err := cpa.ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil {
 		planType = info.PlanType
 		if info.AccountID != "" {
 			openaiID = info.AccountID
@@ -1403,7 +1403,7 @@ func (h *Handler) listRemoteAccounts(w http.ResponseWriter, r *http.Request) {
 
 		// derive plan_type from JWT or filename
 		planType := ""
-		if info, err := cpa.ParseAccountInfo(s.File.AccessToken); err == nil {
+		if info, err := cpa.ParseAccountInfoFromTokens(s.File.IDToken, s.File.AccessToken); err == nil {
 			planType = info.PlanType
 		}
 
@@ -1503,7 +1503,7 @@ func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request)
 
 		planType := ""
 		openaiID := f.AccountID
-		if info, err := cpa.ParseAccountInfo(f.AccessToken); err == nil {
+		if info, err := cpa.ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil {
 			planType = info.PlanType
 			if info.AccountID != "" {
 				openaiID = info.AccountID

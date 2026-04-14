@@ -173,7 +173,7 @@ export default function AccountsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [testing, setTesting] = useState(false);
 
-  // CPA OAuth login
+  // CPA device code login
   const [showCpaLogin, setShowCpaLogin] = useState(false);
   const [loginSession, setLoginSession] = useState<LoginSession | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
@@ -730,7 +730,7 @@ export default function AccountsPage() {
                       <div>
                         <p className="text-sm font-medium text-amber-900">当前无法使用 CPA 入口</p>
                         <p className="mt-1 text-sm text-amber-800/80">
-                          需要先配置 CPA 服务，才能创建 CPA Channel、执行 OAuth 登录或导入已有账号。
+                          需要先配置 CPA 服务，才能创建 CPA Channel、执行 Device Code 登录或导入已有账号。
                         </p>
                       </div>
                       <Button
@@ -791,9 +791,9 @@ export default function AccountsPage() {
                     <KeyRound className="size-5" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="font-medium text-moon-800">OAuth 登录</span>
+                    <span className="font-medium text-moon-800">Device Code 登录</span>
                     <span className="mt-1 block text-sm text-moon-500">
-                      通过 OAuth 登录，创建凭据型 CPA 账号。
+                      通过 Device Code 登录，创建凭据型 CPA 账号。
                     </span>
                   </span>
                 </button>
@@ -1123,7 +1123,7 @@ export default function AccountsPage() {
         onConfirm={confirmDelete}
       />
 
-      {/* CPA OAuth Login Dialog */}
+      {/* CPA Device Code Login Dialog */}
       <Dialog open={showCpaLogin} onOpenChange={(open) => {
         if (!open) {
           if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
@@ -1139,7 +1139,7 @@ export default function AccountsPage() {
             <DialogTitle>CPA Device Code 登录</DialogTitle>
           </DialogHeader>
           {(() => {
-            const status = getOAuthDialogStatus(loginSession, loginLoading);
+            const status = getDeviceCodeDialogStatus(loginSession, loginLoading);
 
             return (
               <div className="space-y-5 py-4">
@@ -1348,7 +1348,7 @@ export default function AccountsPage() {
     </div>
   );
 
-  // --- CPA OAuth Login ---
+  // --- CPA Device Code Login ---
   function startCpaOAuthLogin() {
     if (!cpaService) return;
     // cancel existing session if still active
@@ -1455,7 +1455,7 @@ function CountdownTimer({ expiresAt }: { expiresAt: string }) {
   return <span className="inline-flex items-center gap-1 font-mono text-xs"><Clock className="size-3" />{remaining}</span>;
 }
 
-function getOAuthDialogStatus(session: LoginSession | null, loginLoading: boolean): {
+function getDeviceCodeDialogStatus(session: LoginSession | null, loginLoading: boolean): {
   tone: "neutral" | "success" | "error" | "pending";
   title: string;
   description: string;
@@ -1515,4 +1515,3 @@ function getOAuthDialogStatus(session: LoginSession | null, loginLoading: boolea
     description: session.error_message || "请重试",
   };
 }
-

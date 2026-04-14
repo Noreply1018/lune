@@ -3,6 +3,7 @@ package cpa
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -13,8 +14,47 @@ type AccountInfo struct {
 	AccountID string `json:"account_id"`
 }
 
-func ParseAccountInfo(accessToken string) (*AccountInfo, error) {
-	parts := strings.Split(accessToken, ".")
+func ParseAccountInfo(token string) (*AccountInfo, error) {
+	claims, err := parseJWTClaims(token)
+	if err != nil {
+		return nil, err
+	}
+
+	info := extractAccountInfo(claims)
+	if info.Email == "" {
+		return nil, fmt.Errorf("email not found in JWT claims")
+	}
+
+	return info, nil
+}
+
+func ParseAccountInfoFromTokens(idToken, accessToken string) (*AccountInfo, error) {
+	var errs []string
+
+	if strings.TrimSpace(idToken) != "" {
+		info, err := ParseAccountInfo(idToken)
+		if err == nil {
+			return info, nil
+		}
+		errs = append(errs, fmt.Sprintf("id_token: %v", err))
+	}
+
+	if strings.TrimSpace(accessToken) != "" {
+		info, err := ParseAccountInfo(accessToken)
+		if err == nil {
+			return info, nil
+		}
+		errs = append(errs, fmt.Sprintf("access_token: %v", err))
+	}
+
+	if len(errs) == 0 {
+		return nil, fmt.Errorf("no token available for account info")
+	}
+	return nil, errors.New(strings.Join(errs, "; "))
+}
+
+func parseJWTClaims(token string) (map[string]any, error) {
+	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid JWT: expected at least 2 parts, got %d", len(parts))
 	}
@@ -29,7 +69,24 @@ func ParseAccountInfo(accessToken string) (*AccountInfo, error) {
 		return nil, fmt.Errorf("parse JWT claims: %w", err)
 	}
 
+	return claims, nil
+}
+
+func extractAccountInfo(claims map[string]any) *AccountInfo {
 	info := &AccountInfo{}
+
+	if email, ok := claims["email"].(string); ok {
+		info.Email = email
+	}
+	if accountID, ok := claims["sub"].(string); ok {
+		info.AccountID = accountID
+	}
+	if planType, ok := claims["chatgpt_plan_type"].(string); ok {
+		info.PlanType = planType
+	}
+	if accountID, ok := claims["chatgpt_account_id"].(string); ok && accountID != "" {
+		info.AccountID = accountID
+	}
 
 	// extract email from https://api.openai.com/profile claim
 	if profile, ok := claims["https://api.openai.com/profile"].(map[string]any); ok {
@@ -48,9 +105,5 @@ func ParseAccountInfo(accessToken string) (*AccountInfo, error) {
 		}
 	}
 
-	if info.Email == "" {
-		return nil, fmt.Errorf("email not found in JWT claims")
-	}
-
-	return info, nil
+	return info
 }

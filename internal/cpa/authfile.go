@@ -23,7 +23,7 @@ type CpaAuthFile struct {
 
 func AccountKeyFromFile(f *CpaAuthFile) string {
 	plan := "unknown"
-	if info, err := ParseAccountInfo(f.AccessToken); err == nil && info.PlanType != "" {
+	if info, err := ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil && info.PlanType != "" {
 		plan = info.PlanType
 	}
 	return fmt.Sprintf("%s-%s-%s", f.Type, f.Email, plan)
