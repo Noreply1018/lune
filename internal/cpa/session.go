@@ -18,7 +18,7 @@ type LoginSession struct {
 	UserCode        string         `json:"user_code,omitempty"`
 	ExpiresAt       time.Time      `json:"expires_at"`
 	PollInterval    int            `json:"poll_interval_seconds"`
-	DeviceAuthID    string         `json:"-"` // never exposed to client
+	DeviceAuthID    string         `json:"-"` // stores device_code / device_auth_id, never exposed to client
 	ErrorCode       string         `json:"error_code,omitempty"`
 	ErrorMessage    string         `json:"error_message,omitempty"`
 	AccountID       *int64         `json:"account_id,omitempty"`
@@ -57,7 +57,7 @@ func (s *SessionStore) CreateSession(serviceID int64, dcr *DeviceCodeResponse) (
 		UserCode:        dcr.UserCode,
 		ExpiresAt:       time.Now().Add(time.Duration(dcr.ExpiresIn) * time.Second),
 		PollInterval:    dcr.Interval,
-		DeviceAuthID:    dcr.DeviceAuthID,
+		DeviceAuthID:    dcr.DeviceCode,
 	}
 
 	s.sessions[id] = session

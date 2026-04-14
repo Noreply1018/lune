@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -13,9 +15,11 @@ import (
 const (
 	deviceCodeURL      = "https://auth.openai.com/api/accounts/deviceauth/usercode"
 	tokenURL           = "https://auth.openai.com/api/accounts/deviceauth/token"
+	oauthTokenURL      = "https://auth.openai.com/oauth/token"
 	clientID           = "app_EMoamEEZ73f0CkXaXp7hrann"
 	scope              = "openid email profile offline_access"
 	defaultVerifyURI   = "https://auth.openai.com/codex/device"
+	defaultRedirectURI = "http://localhost:1455/auth/callback"
 	defaultExpiresIn   = 900 // 15 minutes
 	defaultPollSeconds = 5
 )
@@ -28,7 +32,7 @@ var (
 )
 
 type DeviceCodeResponse struct {
-	DeviceAuthID    string `json:"device_auth_id"`
+	DeviceCode      string `json:"device_code"`
 	UserCode        string `json:"user_code"`
 	VerificationURI string `json:"-"`
 	Interval        int    `json:"-"`
@@ -36,20 +40,25 @@ type DeviceCodeResponse struct {
 }
 
 type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	IDToken      string `json:"id_token"`
-	ExpiresIn    int    `json:"expires_in"`
-	TokenType    string `json:"token_type"`
+	AccessToken       string `json:"access_token"`
+	RefreshToken      string `json:"refresh_token"`
+	IDToken           string `json:"id_token"`
+	ExpiresIn         int    `json:"expires_in"`
+	TokenType         string `json:"token_type"`
+	AuthorizationCode string `json:"authorization_code"`
+	CodeVerifier      string `json:"code_verifier"`
 }
 
 func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
-	body := fmt.Sprintf(`{"client_id":"%s","scope":"%s"}`, clientID, scope)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, deviceCodeURL, strings.NewReader(body))
+	form := url.Values{
+		"client_id": {clientID},
+		"scope":     {scope},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, deviceCodeURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
@@ -64,20 +73,23 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
 
 	// Parse with raw fields since format varies
 	var raw struct {
-		DeviceAuthID string `json:"device_auth_id"`
-		UserCode     string `json:"user_code"`
-		Interval     json.RawMessage `json:"interval"`
-		ExpiresIn    json.RawMessage `json:"expires_in"`
-		ExpiresAt    string          `json:"expires_at"`
+		DeviceCode              string          `json:"device_code"`
+		DeviceAuthID            string          `json:"device_auth_id"`
+		UserCode                string          `json:"user_code"`
+		VerificationURI         string          `json:"verification_uri"`
+		VerificationURIComplete string          `json:"verification_uri_complete"`
+		Interval                json.RawMessage `json:"interval"`
+		ExpiresIn               json.RawMessage `json:"expires_in"`
+		ExpiresAt               string          `json:"expires_at"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
 	}
 
 	dcr := &DeviceCodeResponse{
-		DeviceAuthID:    raw.DeviceAuthID,
+		DeviceCode:      firstNonEmpty(raw.DeviceCode, raw.DeviceAuthID),
 		UserCode:        raw.UserCode,
-		VerificationURI: defaultVerifyURI,
+		VerificationURI: firstNonEmpty(raw.VerificationURIComplete, raw.VerificationURI, defaultVerifyURI),
 		Interval:        defaultPollSeconds,
 		ExpiresIn:       defaultExpiresIn,
 	}
@@ -106,19 +118,23 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
 	return dcr, nil
 }
 
-func PollForToken(ctx context.Context, deviceAuthID, userCode string) (*TokenResponse, error) {
-	payload := map[string]string{
-		"device_auth_id": deviceAuthID,
-		"user_code":      userCode,
-		"grant_type":     "urn:ietf:params:oauth:grant-type:device_code",
-		"client_id":      clientID,
+func PollForToken(ctx context.Context, deviceCode, userCode string) (*TokenResponse, error) {
+	form := url.Values{
+		"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"},
+		"client_id":  {clientID},
 	}
-	payloadBytes, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(payloadBytes)))
+	if strings.TrimSpace(deviceCode) != "" {
+		form.Set("device_code", deviceCode)
+		form.Set("device_auth_id", deviceCode)
+	}
+	if strings.TrimSpace(userCode) != "" {
+		form.Set("user_code", userCode)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
@@ -128,11 +144,24 @@ func PollForToken(ctx context.Context, deviceAuthID, userCode string) (*TokenRes
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		var tr TokenResponse
-		if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
 			return nil, err
 		}
-		return &tr, nil
+		tr, err := parseTokenSuccess(body)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(tr.AccessToken) != "" || strings.TrimSpace(tr.IDToken) != "" {
+			return tr, nil
+		}
+		if strings.TrimSpace(tr.AuthorizationCode) == "" {
+			return nil, fmt.Errorf("token poll succeeded but no tokens or authorization_code were returned")
+		}
+		if strings.TrimSpace(tr.CodeVerifier) == "" {
+			return nil, fmt.Errorf("token poll succeeded but code_verifier is missing")
+		}
+		return ExchangeAuthorizationCode(ctx, tr.AuthorizationCode, tr.CodeVerifier)
 	}
 
 	// Parse error response — may be flat or nested
@@ -171,6 +200,86 @@ func PollForToken(ctx context.Context, deviceAuthID, userCode string) (*TokenRes
 	}
 }
 
+func ExchangeAuthorizationCode(ctx context.Context, authorizationCode, codeVerifier string) (*TokenResponse, error) {
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {clientID},
+		"redirect_uri":  {defaultRedirectURI},
+		"code":          {authorizationCode},
+		"code_verifier": {codeVerifier},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, oauthTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("oauth token exchange failed: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	tr, err := parseTokenSuccess(body)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(tr.AccessToken) == "" && strings.TrimSpace(tr.IDToken) == "" {
+		return nil, fmt.Errorf("oauth token exchange succeeded but token payload is empty")
+	}
+	return tr, nil
+}
+
+func parseTokenSuccess(body []byte) (*TokenResponse, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode token response: %w", err)
+	}
+
+	flat := flattenRawObject(raw)
+	tr := &TokenResponse{
+		AccessToken:       rawString(flat["access_token"]),
+		RefreshToken:      rawString(flat["refresh_token"]),
+		IDToken:           rawString(flat["id_token"]),
+		TokenType:         rawString(flat["token_type"]),
+		AuthorizationCode: firstNonEmpty(rawString(flat["authorization_code"]), rawString(flat["code"])),
+		CodeVerifier:      rawString(flat["code_verifier"]),
+		ExpiresIn:         rawInt(flat["expires_in"]),
+	}
+	return tr, nil
+}
+
+func flattenRawObject(raw map[string]json.RawMessage) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(raw))
+	for k, v := range raw {
+		out[k] = v
+	}
+	for _, key := range []string{"data", "result", "tokens"} {
+		nested, ok := raw[key]
+		if !ok {
+			continue
+		}
+		var nestedMap map[string]json.RawMessage
+		if json.Unmarshal(nested, &nestedMap) == nil {
+			for k, v := range nestedMap {
+				if _, exists := out[k]; !exists {
+					out[k] = v
+				}
+			}
+		}
+	}
+	return out
+}
+
 // parseFlexInt parses a JSON value that may be a number or a string-encoded number.
 func parseFlexInt(raw json.RawMessage) int {
 	var n int
@@ -185,4 +294,28 @@ func parseFlexInt(raw json.RawMessage) int {
 		}
 	}
 	return 0
+}
+
+func rawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return ""
+}
+
+func rawInt(raw json.RawMessage) int {
+	return parseFlexInt(raw)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
