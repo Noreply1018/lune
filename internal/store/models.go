@@ -1,43 +1,41 @@
 package store
 
-import "time"
-
 type Account struct {
-	ID             int64     `json:"id"`
-	Label          string    `json:"label"`
-	BaseURL        string    `json:"base_url"`
-	APIKey         string    `json:"api_key,omitempty"`
-	APIKeySet      bool      `json:"api_key_set"`
-	APIKeyMasked   string    `json:"api_key_masked"`
-	Enabled        bool      `json:"enabled"`
-	Status         string    `json:"status"`
-	QuotaTotal     float64   `json:"quota_total"`
-	QuotaUsed      float64   `json:"quota_used"`
-	QuotaUnit      string    `json:"quota_unit"`
-	Notes          string    `json:"notes"`
-	ModelAllowlist []string  `json:"model_allowlist"`
-	LastCheckedAt  *string   `json:"last_checked_at"`
-	LastError      string    `json:"last_error"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID         int64  `json:"id"`
+	Label      string `json:"label"`
+	SourceKind string `json:"source_kind"`
 
-	// v2: source-aware fields
-	SourceKind    string `json:"source_kind"`
-	Provider      string `json:"provider"`
-	CpaServiceID  *int64 `json:"cpa_service_id,omitempty"`
-	CpaProvider   string `json:"cpa_provider,omitempty"`
-	CpaAccountKey string `json:"cpa_account_key,omitempty"`
+	// openai_compat fields
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key,omitempty"`
+	Provider string `json:"provider"`
 
-	// v3: CPA management adapter metadata
-	CpaEmail         string  `json:"cpa_email,omitempty"`
-	CpaPlanType      string  `json:"cpa_plan_type,omitempty"`
-	CpaOpenaiID      string  `json:"cpa_openai_id,omitempty"`
-	CpaExpiredAt     *string `json:"cpa_expired_at,omitempty"`
-	CpaLastRefreshAt *string `json:"cpa_last_refresh_at,omitempty"`
-	CpaDisabled      bool    `json:"cpa_disabled,omitempty"`
+	// cpa fields
+	CpaServiceID     *int64 `json:"cpa_service_id,omitempty"`
+	CpaProvider      string `json:"cpa_provider,omitempty"`
+	CpaAccountKey    string `json:"cpa_account_key,omitempty"`
+	CpaEmail         string `json:"cpa_email,omitempty"`
+	CpaPlanType      string `json:"cpa_plan_type,omitempty"`
+	CpaOpenaiID      string `json:"cpa_openai_id,omitempty"`
+	CpaExpiredAt     string `json:"cpa_expired_at,omitempty"`
+	CpaLastRefreshAt string `json:"cpa_last_refresh_at,omitempty"`
+	CpaDisabled      bool   `json:"cpa_disabled,omitempty"`
 
-	// computed at response time, not stored in DB
-	Runtime *AccountRuntime `json:"runtime,omitempty"`
+	// common fields
+	Enabled       bool    `json:"enabled"`
+	Status        string  `json:"status"`
+	Notes         string  `json:"notes"`
+	QuotaDisplay  string  `json:"quota_display"`
+	LastCheckedAt *string `json:"last_checked_at"`
+	LastError     string  `json:"last_error"`
+	CreatedAt     string  `json:"created_at"`
+	UpdatedAt     string  `json:"updated_at"`
+
+	// computed fields (not stored in DB)
+	APIKeySet    bool            `json:"api_key_set"`
+	APIKeyMasked string          `json:"api_key_masked"`
+	Models       []string        `json:"models"`
+	Runtime      *AccountRuntime `json:"runtime,omitempty"`
 }
 
 type AccountRuntime struct {
@@ -45,71 +43,53 @@ type AccountRuntime struct {
 	AuthMode string `json:"auth_mode"`
 }
 
-type CpaService struct {
-	ID            int64   `json:"id"`
-	Label         string  `json:"label"`
-	BaseURL       string  `json:"base_url"`
-	APIKey        string  `json:"api_key,omitempty"`
-	APIKeySet     bool    `json:"api_key_set"`
-	APIKeyMasked  string  `json:"api_key_masked"`
-	Enabled       bool    `json:"enabled"`
-	Status        string  `json:"status"`
-	LastCheckedAt *string `json:"last_checked_at"`
-	LastError     string  `json:"last_error"`
-	CreatedAt     string  `json:"created_at"`
-	UpdatedAt     string  `json:"updated_at"`
-}
-
 type Pool struct {
-	ID        int64        `json:"id"`
-	Label     string       `json:"label"`
-	Strategy  string       `json:"strategy"`
-	Enabled   bool         `json:"enabled"`
-	Members   []PoolMember `json:"members"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	ID        int64  `json:"id"`
+	Label     string `json:"label"`
+	Priority  int    `json:"priority"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+
+	// aggregated fields (populated at response time)
+	AccountCount        int      `json:"account_count"`
+	HealthyAccountCount int      `json:"healthy_account_count"`
+	Models              []string `json:"models"`
 }
 
 type PoolMember struct {
-	ID            int64  `json:"id"`
-	PoolID        int64  `json:"pool_id"`
-	AccountID     int64  `json:"account_id"`
-	AccountLabel  string `json:"account_label"`
-	AccountStatus string `json:"account_status"`
-	Priority      int    `json:"priority"`
-	Weight        int    `json:"weight"`
-}
+	ID        int64 `json:"id"`
+	PoolID    int64 `json:"pool_id"`
+	AccountID int64 `json:"account_id"`
+	Position  int   `json:"position"`
+	Enabled   bool  `json:"enabled"`
 
-type ModelRoute struct {
-	ID          int64     `json:"id"`
-	Alias       string    `json:"alias"`
-	PoolID      int64     `json:"pool_id"`
-	PoolLabel   string    `json:"pool_label"`
-	TargetModel string    `json:"target_model"`
-	Enabled     bool      `json:"enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	// JOIN field
+	Account *Account `json:"account,omitempty"`
 }
 
 type AccessToken struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Token       string    `json:"token,omitempty"`
-	TokenMasked string    `json:"token_masked,omitempty"`
-	Enabled     bool      `json:"enabled"`
-	QuotaTokens int64     `json:"quota_tokens"`
-	UsedTokens  int64     `json:"used_tokens"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	LastUsedAt  *string   `json:"last_used_at"`
+	ID         int64   `json:"id"`
+	Name       string  `json:"name"`
+	Token      string  `json:"token,omitempty"`
+	PoolID     *int64  `json:"pool_id"`
+	Enabled    bool    `json:"enabled"`
+	CreatedAt  string  `json:"created_at"`
+	UpdatedAt  string  `json:"updated_at"`
+	LastUsedAt *string `json:"last_used_at"`
+
+	// computed fields
+	TokenMasked string `json:"token_masked"`
+	IsGlobal    bool   `json:"is_global"`
+	PoolLabel   string `json:"pool_label,omitempty"`
 }
 
 type RequestLog struct {
 	ID              int64  `json:"id"`
 	RequestID       string `json:"request_id"`
 	AccessTokenName string `json:"access_token_name"`
-	ModelAlias      string `json:"model_alias"`
-	TargetModel     string `json:"target_model"`
+	ModelRequested  string `json:"model_requested"`
+	ModelActual     string `json:"model_actual"`
 	PoolID          int64  `json:"pool_id"`
 	AccountID       int64  `json:"account_id"`
 	AccountLabel    string `json:"account_label"`
@@ -125,13 +105,36 @@ type RequestLog struct {
 	CreatedAt       string `json:"created_at"`
 }
 
+type AccountModel struct {
+	ID        int64  `json:"id"`
+	AccountID int64  `json:"account_id"`
+	ModelID   string `json:"model_id"`
+	CreatedAt string `json:"created_at"`
+}
+
+type CpaService struct {
+	ID            int64   `json:"id"`
+	Label         string  `json:"label"`
+	BaseURL       string  `json:"base_url"`
+	APIKey        string  `json:"api_key,omitempty"`
+	ManagementKey string  `json:"management_key,omitempty"`
+	APIKeySet     bool    `json:"api_key_set"`
+	APIKeyMasked  string  `json:"api_key_masked"`
+	Enabled       bool    `json:"enabled"`
+	Status        string  `json:"status"`
+	LastCheckedAt *string `json:"last_checked_at"`
+	LastError     string  `json:"last_error"`
+	CreatedAt     string  `json:"created_at"`
+	UpdatedAt     string  `json:"updated_at"`
+}
+
 type UsageStats struct {
 	TotalRequests     int64            `json:"total_requests"`
+	SuccessRate       float64          `json:"success_rate"`
 	TotalInputTokens  int64            `json:"total_input_tokens"`
 	TotalOutputTokens int64            `json:"total_output_tokens"`
 	ByAccount         []UsageByAccount `json:"by_account"`
 	ByToken           []UsageByToken   `json:"by_token"`
-	Logs              UsageLogPage     `json:"logs"`
 }
 
 type UsageByAccount struct {
@@ -154,4 +157,31 @@ type UsageLogPage struct {
 	Total    int          `json:"total"`
 	Page     int          `json:"page"`
 	PageSize int          `json:"page_size"`
+}
+
+type Overview struct {
+	PoolsTotal       int     `json:"pools_total"`
+	PoolsHealthy     int     `json:"pools_healthy"`
+	AccountsTotal    int     `json:"accounts_total"`
+	AccountsHealthy  int     `json:"accounts_healthy"`
+	ModelsTotal      int     `json:"models_total"`
+	RequestsToday    int64   `json:"requests_today"`
+	SuccessRateToday float64 `json:"success_rate_today"`
+	GlobalToken      string  `json:"global_token"`
+	Alerts           []Alert `json:"alerts"`
+}
+
+type Alert struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	PoolID  int64  `json:"pool_id"`
+}
+
+// LatencyBucket holds percentile latencies for a single time bucket.
+type LatencyBucket struct {
+	Bucket string  `json:"bucket"`
+	P50    float64 `json:"p50"`
+	P95    float64 `json:"p95"`
+	P99    float64 `json:"p99"`
+	Count  int     `json:"count"`
 }

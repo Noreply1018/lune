@@ -2,7 +2,7 @@ package router
 
 import (
 	"errors"
-	"math/rand/v2"
+	"sort"
 
 	"lune/internal/store"
 )
@@ -22,158 +22,284 @@ func New(cache *store.RoutingCache) *Router {
 }
 
 type ResolvedRoute struct {
-	PoolID        int64
-	TargetModel   string
-	Alias         string
-	IsDefaultPool bool
+	PoolID      int64
+	TargetModel string
+	AccountID   int64
+	Account     store.Account
 }
 
-func (rt *Router) Resolve(modelAlias string) (*ResolvedRoute, error) {
-	route := rt.cache.FindRoute(modelAlias)
-	if route != nil {
-		return &ResolvedRoute{
-			PoolID:      route.PoolID,
-			TargetModel: route.TargetModel,
-			Alias:       modelAlias,
-		}, nil
+// Resolve finds the best (pool, account) for the given model.
+// tokenPoolID scopes to a specific pool (Pool Token); nil means global routing.
+// forceAccountID bypasses routing and sends to a specific account (inline test).
+func (rt *Router) Resolve(model string, tokenPoolID *int64, forceAccountID *int64) (*ResolvedRoute, error) {
+	snap := rt.cache.Get()
+
+	// Force-route to a specific account (for inline testing)
+	if forceAccountID != nil {
+		return rt.resolveToAccount(snap, model, *forceAccountID)
 	}
 
-	defaultPoolID := rt.cache.GetDefaultPoolID()
-	if defaultPoolID == 0 {
+	if tokenPoolID != nil {
+		// Pool Token: only route within the specified pool
+		return rt.resolveInPool(snap, model, *tokenPoolID)
+	}
+
+	// Global Token: use ModelIndex to find which accounts support this model
+	accountIDs, ok := snap.ModelIndex[model]
+	if ok && len(accountIDs) > 0 {
+		return rt.selectBestCandidate(snap, accountIDs, model, nil)
+	}
+
+	// Fallback: model not in index (discovery not yet complete)
+	return rt.resolveFallback(snap, model)
+}
+
+// SelectNextAccount finds the next available account for retry, excluding already-tried accounts.
+func (rt *Router) SelectNextAccount(model string, tokenPoolID *int64, exclude []int64) (*ResolvedRoute, error) {
+	snap := rt.cache.Get()
+
+	if tokenPoolID != nil {
+		return rt.resolveInPool(snap, model, *tokenPoolID, exclude...)
+	}
+
+	accountIDs, ok := snap.ModelIndex[model]
+	if ok && len(accountIDs) > 0 {
+		return rt.selectBestCandidate(snap, accountIDs, model, exclude)
+	}
+
+	return rt.resolveFallback(snap, model, exclude...)
+}
+
+func (rt *Router) resolveToAccount(snap *store.CacheSnapshot, model string, accountID int64) (*ResolvedRoute, error) {
+	acc, ok := snap.Accounts[accountID]
+	if !ok {
 		return nil, ErrNoRoute
 	}
-	pool := rt.cache.GetPool(defaultPoolID)
-	if pool == nil || !pool.Enabled {
-		return nil, ErrNoRoute
+	if !acc.Enabled {
+		return nil, ErrNoHealthyAccount
 	}
+
+	// Find which pool this account belongs to
+	var poolID int64
+	for pid, members := range snap.Members {
+		for _, m := range members {
+			if m.AccountID == accountID {
+				poolID = pid
+				break
+			}
+		}
+		if poolID > 0 {
+			break
+		}
+	}
+
 	return &ResolvedRoute{
-		PoolID:        defaultPoolID,
-		TargetModel:   modelAlias, // no rewrite for default pool
-		Alias:         modelAlias,
-		IsDefaultPool: true,
+		PoolID:      poolID,
+		TargetModel: model,
+		AccountID:   accountID,
+		Account:     *acc,
 	}, nil
 }
 
-type SelectedAccount struct {
-	Account store.Account
-	PoolID  int64
-}
-
-func (rt *Router) SelectAccount(poolID int64, targetModel string, exclude []int64) (*SelectedAccount, error) {
-	pool := rt.cache.GetPool(poolID)
-	if pool == nil {
-		return nil, ErrPoolDisabled
-	}
-	if !pool.Enabled {
+func (rt *Router) resolveInPool(snap *store.CacheSnapshot, model string, poolID int64, exclude ...int64) (*ResolvedRoute, error) {
+	pool, ok := snap.Pools[poolID]
+	if !ok || !pool.Enabled {
 		return nil, ErrPoolDisabled
 	}
 
-	snap := rt.cache.Get()
-
-	// build account lookup
-	accountMap := make(map[int64]*store.Account, len(snap.Accounts))
-	for i := range snap.Accounts {
-		accountMap[snap.Accounts[i].ID] = &snap.Accounts[i]
+	members, ok := snap.Members[poolID]
+	if !ok || len(members) == 0 {
+		return nil, ErrNoHealthyAccount
 	}
 
-	excludeSet := make(map[int64]bool, len(exclude))
-	for _, id := range exclude {
-		excludeSet[id] = true
-	}
+	excludeSet := makeExcludeSet(exclude)
 
-	// group members by priority
-	type priorityGroup struct {
-		priority int
-		members  []store.PoolMember
-	}
-	groups := make(map[int]*priorityGroup)
-	var priorities []int
-	for _, m := range pool.Members {
-		if _, exists := groups[m.Priority]; !exists {
-			groups[m.Priority] = &priorityGroup{priority: m.Priority}
-			priorities = append(priorities, m.Priority)
+	// Try accounts that have the model, in position order
+	for _, m := range members {
+		if !m.Enabled || excludeSet[m.AccountID] {
+			continue
 		}
-		groups[m.Priority].members = append(groups[m.Priority].members, m)
+		acc, ok := snap.Accounts[m.AccountID]
+		if !ok || !acc.Enabled {
+			continue
+		}
+		if acc.Status != "healthy" && acc.Status != "degraded" {
+			continue
+		}
+		if !accountHasModel(snap, m.AccountID, model) {
+			continue
+		}
+		return &ResolvedRoute{
+			PoolID:      poolID,
+			TargetModel: model,
+			AccountID:   m.AccountID,
+			Account:     *acc,
+		}, nil
 	}
 
-	// sort priorities ascending
-	for i := 0; i < len(priorities)-1; i++ {
-		for j := i + 1; j < len(priorities); j++ {
-			if priorities[j] < priorities[i] {
-				priorities[i], priorities[j] = priorities[j], priorities[i]
-			}
+	// Fallback within pool: try first healthy account regardless of model
+	for _, m := range members {
+		if !m.Enabled || excludeSet[m.AccountID] {
+			continue
 		}
-	}
-
-	// try each priority level
-	for _, p := range priorities {
-		group := groups[p]
-		var candidates []candidateAccount
-		for _, m := range group.members {
-			if excludeSet[m.AccountID] {
-				continue
-			}
-			acc := accountMap[m.AccountID]
-			if acc == nil || !acc.Enabled {
-				continue
-			}
-			if acc.Status != "healthy" && acc.Status != "degraded" {
-				continue
-			}
-			if !modelAllowed(acc.ModelAllowlist, targetModel) {
-				continue
-			}
-			candidates = append(candidates, candidateAccount{
-				account: *acc,
-				weight:  m.Weight,
-			})
+		acc, ok := snap.Accounts[m.AccountID]
+		if !ok || !acc.Enabled {
+			continue
 		}
-
-		if len(candidates) > 0 {
-			selected := weightedRandom(candidates)
-			return &SelectedAccount{
-				Account: selected,
-				PoolID:  poolID,
-			}, nil
+		if acc.Status != "healthy" && acc.Status != "degraded" {
+			continue
 		}
+		return &ResolvedRoute{
+			PoolID:      poolID,
+			TargetModel: model,
+			AccountID:   m.AccountID,
+			Account:     *acc,
+		}, nil
 	}
 
 	return nil, ErrNoHealthyAccount
 }
 
-type candidateAccount struct {
-	account store.Account
-	weight  int
+// candidate represents a (pool, account) pair for ranking.
+type candidate struct {
+	poolPriority int
+	position     int
+	poolID       int64
+	accountID    int64
 }
 
-func weightedRandom(candidates []candidateAccount) store.Account {
-	if len(candidates) == 1 {
-		return candidates[0].account
-	}
+func (rt *Router) selectBestCandidate(snap *store.CacheSnapshot, accountIDs []int64, model string, exclude []int64) (*ResolvedRoute, error) {
+	excludeSet := makeExcludeSet(exclude)
 
-	totalWeight := 0
-	for _, c := range candidates {
-		totalWeight += c.weight
-	}
+	var candidates []candidate
 
-	r := rand.IntN(totalWeight)
-	for _, c := range candidates {
-		r -= c.weight
-		if r < 0 {
-			return c.account
+	for _, accID := range accountIDs {
+		if excludeSet[accID] {
+			continue
+		}
+		acc, ok := snap.Accounts[accID]
+		if !ok || !acc.Enabled {
+			continue
+		}
+		if acc.Status != "healthy" && acc.Status != "degraded" {
+			continue
+		}
+
+		// Find this account's pool(s) and position
+		for poolID, members := range snap.Members {
+			pool, ok := snap.Pools[poolID]
+			if !ok || !pool.Enabled {
+				continue
+			}
+			for _, m := range members {
+				if m.AccountID == accID && m.Enabled {
+					candidates = append(candidates, candidate{
+						poolPriority: pool.Priority,
+						position:     m.Position,
+						poolID:       poolID,
+						accountID:    accID,
+					})
+				}
+			}
 		}
 	}
-	return candidates[len(candidates)-1].account
+
+	if len(candidates) == 0 {
+		return nil, ErrNoHealthyAccount
+	}
+
+	// Sort: pool priority ASC, then position ASC, then pool ID ASC
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].poolPriority != candidates[j].poolPriority {
+			return candidates[i].poolPriority < candidates[j].poolPriority
+		}
+		if candidates[i].position != candidates[j].position {
+			return candidates[i].position < candidates[j].position
+		}
+		return candidates[i].poolID < candidates[j].poolID
+	})
+
+	best := candidates[0]
+	acc := snap.Accounts[best.accountID]
+	return &ResolvedRoute{
+		PoolID:      best.poolID,
+		TargetModel: model,
+		AccountID:   best.accountID,
+		Account:     *acc,
+	}, nil
 }
 
-func modelAllowed(allowlist []string, model string) bool {
-	if len(allowlist) == 0 {
-		return true
+func (rt *Router) resolveFallback(snap *store.CacheSnapshot, model string, exclude ...int64) (*ResolvedRoute, error) {
+	excludeSet := makeExcludeSet(exclude)
+
+	// Sort pools by priority (ascending)
+	type poolEntry struct {
+		id       int64
+		priority int
 	}
-	for _, m := range allowlist {
-		if m == model {
+	var pools []poolEntry
+	for _, p := range snap.Pools {
+		if p.Enabled {
+			pools = append(pools, poolEntry{id: p.ID, priority: p.Priority})
+		}
+	}
+	sort.Slice(pools, func(i, j int) bool {
+		if pools[i].priority != pools[j].priority {
+			return pools[i].priority < pools[j].priority
+		}
+		return pools[i].id < pools[j].id
+	})
+
+	// Try the first healthy account from each pool in priority order
+	for _, pe := range pools {
+		members, ok := snap.Members[pe.id]
+		if !ok {
+			continue
+		}
+		for _, m := range members {
+			if !m.Enabled || excludeSet[m.AccountID] {
+				continue
+			}
+			acc, ok := snap.Accounts[m.AccountID]
+			if !ok || !acc.Enabled {
+				continue
+			}
+			if acc.Status != "healthy" && acc.Status != "degraded" {
+				continue
+			}
+			return &ResolvedRoute{
+				PoolID:      pe.id,
+				TargetModel: model,
+				AccountID:   m.AccountID,
+				Account:     *acc,
+			}, nil
+		}
+	}
+
+	return nil, ErrNoRoute
+}
+
+func accountHasModel(snap *store.CacheSnapshot, accountID int64, model string) bool {
+	// Check ModelIndex: iterate all account IDs for this model
+	accountIDs, ok := snap.ModelIndex[model]
+	if !ok {
+		return false
+	}
+	for _, id := range accountIDs {
+		if id == accountID {
 			return true
 		}
 	}
 	return false
+}
+
+func makeExcludeSet(exclude []int64) map[int64]bool {
+	if len(exclude) == 0 {
+		return nil
+	}
+	s := make(map[int64]bool, len(exclude))
+	for _, id := range exclude {
+		s[id] = true
+	}
+	return s
 }

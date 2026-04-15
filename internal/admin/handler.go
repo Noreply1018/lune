@@ -66,11 +66,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("POST /admin/api/pools/{id}/disable", h.disablePool)
 	handle("DELETE /admin/api/pools/{id}", h.deletePool)
 
-	// Routes
-	handle("GET /admin/api/routes", h.listRoutes)
-	handle("POST /admin/api/routes", h.createRoute)
-	handle("PUT /admin/api/routes/{id}", h.updateRoute)
-	handle("DELETE /admin/api/routes/{id}", h.deleteRoute)
+	// Pool Members
+	handle("GET /admin/api/pools/{id}/members", h.listPoolMembers)
+	handle("POST /admin/api/pools/{id}/members", h.addPoolMember)
+	handle("DELETE /admin/api/pools/{pool_id}/members/{member_id}", h.removePoolMember)
+	handle("PUT /admin/api/pools/{pool_id}/members/{member_id}", h.updatePoolMember)
 
 	// Tokens
 	handle("GET /admin/api/tokens", h.listTokens)
@@ -151,9 +151,6 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 		// clear fields that don't apply
 		req.BaseURL = ""
 		req.APIKey = ""
-		req.QuotaTotal = 0
-		req.QuotaUsed = 0
-		req.QuotaUnit = ""
 	default:
 		webutil.WriteAdminError(w, 400, "bad_request", "source_kind must be openai_compat or cpa")
 		return
@@ -199,9 +196,6 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 	if existing.SourceKind == "cpa" {
 		req.BaseURL = existing.BaseURL
 		req.APIKey = existing.APIKey
-		req.QuotaTotal = existing.QuotaTotal
-		req.QuotaUsed = existing.QuotaUsed
-		req.QuotaUnit = existing.QuotaUnit
 		req.Provider = existing.Provider
 	}
 
@@ -279,10 +273,7 @@ func (h *Handler) createPool(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "label is required")
 		return
 	}
-	if req.Strategy == "" {
-		req.Strategy = "priority-first-healthy"
-	}
-	id, err := h.store.CreatePool(&req)
+	id, err := h.store.CreatePool(req.Label, req.Priority, req.Enabled)
 	if err != nil {
 		h.internalError(w, err)
 		return
@@ -302,7 +293,7 @@ func (h *Handler) updatePool(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
-	if err := h.store.UpdatePool(id, &req); err != nil {
+	if err := h.store.UpdatePool(id, req.Label, req.Priority, req.Enabled); err != nil {
 		h.internalError(w, err)
 		return
 	}
@@ -350,68 +341,82 @@ func (h *Handler) deletePool(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
 }
 
-// --- Routes ---
+// --- Pool Members ---
 
-func (h *Handler) listRoutes(w http.ResponseWriter, r *http.Request) {
-	routes, err := h.store.ListRoutes()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	webutil.WriteList(w, routes, len(routes))
-}
-
-func (h *Handler) createRoute(w http.ResponseWriter, r *http.Request) {
-	var req store.ModelRoute
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
-		return
-	}
-	if req.Alias == "" || req.TargetModel == "" {
-		webutil.WriteAdminError(w, 400, "bad_request", "alias and target_model are required")
-		return
-	}
-	if req.PoolID == 0 {
-		webutil.WriteAdminError(w, 400, "bad_request", "pool_id is required")
-		return
-	}
-	id, err := h.store.CreateRoute(&req)
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	h.cache.Invalidate()
-	req.ID = id
-	webutil.WriteData(w, 201, req)
-}
-
-func (h *Handler) updateRoute(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) listPoolMembers(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
 		return
 	}
-	var req store.ModelRoute
+	members, err := h.store.ListPoolMembers(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteList(w, members, len(members))
+}
+
+func (h *Handler) addPoolMember(w http.ResponseWriter, r *http.Request) {
+	poolID, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		AccountID int64 `json:"account_id"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
-	if err := h.store.UpdateRoute(id, &req); err != nil {
+	if req.AccountID <= 0 {
+		webutil.WriteAdminError(w, 400, "bad_request", "account_id is required")
+		return
+	}
+	id, err := h.store.AddPoolMember(poolID, req.AccountID)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			webutil.WriteAdminError(w, 409, "duplicate", "account already in pool")
+			return
+		}
 		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
-	req.ID = id
-	webutil.WriteData(w, 200, req)
+	webutil.WriteData(w, 201, map[string]any{"id": id})
 }
 
-func (h *Handler) deleteRoute(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(w, r)
-	if !ok {
+func (h *Handler) removePoolMember(w http.ResponseWriter, r *http.Request) {
+	memberID, err := strconv.ParseInt(r.PathValue("member_id"), 10, 64)
+	if err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid member_id")
 		return
 	}
-	if err := h.store.DeleteRoute(id); err != nil {
+	if err := h.store.RemovePoolMember(memberID); err != nil {
 		h.internalError(w, err)
 		return
+	}
+	h.cache.Invalidate()
+	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) updatePoolMember(w http.ResponseWriter, r *http.Request) {
+	memberID, err := strconv.ParseInt(r.PathValue("member_id"), 10, 64)
+	if err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid member_id")
+		return
+	}
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	if req.Enabled != nil {
+		if err := h.store.UpdatePoolMember(memberID, *req.Enabled); err != nil {
+			h.internalError(w, err)
+			return
+		}
 	}
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
@@ -555,6 +560,13 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
+	allowedKeys := map[string]bool{
+		"default_pool_id":       true,
+		"health_check_interval": true,
+		"request_timeout":       true,
+		"max_retry_attempts":    true,
+	}
+
 	var raw map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
@@ -562,6 +574,10 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	pairs := make(map[string]string)
 	for k, v := range raw {
+		if !allowedKeys[k] {
+			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("unknown setting: %s", k))
+			return
+		}
 		s := strings.TrimSpace(string(v))
 		if s == "null" || s == "" {
 			pairs[k] = ""
@@ -653,6 +669,9 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 			webutil.WriteAdminError(w, 400, "bad_request", "invalid page_size parameter")
 			return
 		}
+		if n > 500 {
+			n = 500
+		}
 		pageSize = n
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -688,32 +707,57 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 	if logs == nil {
 		logs = []store.RequestLog{}
 	}
-	summary.Logs = store.UsageLogPage{
-		Items:    logs,
-		Total:    total,
-		Page:     page,
-		PageSize: pageSize,
+	resp := struct {
+		*store.UsageStats
+		Logs store.UsageLogPage `json:"logs"`
+	}{
+		UsageStats: summary,
+		Logs: store.UsageLogPage{
+			Items:    logs,
+			Total:    total,
+			Page:     page,
+			PageSize: pageSize,
+		},
 	}
-	webutil.WriteData(w, 200, summary)
+	webutil.WriteData(w, 200, resp)
 }
 
 func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
-	accounts, _ := h.store.ListAccounts()
+	accounts, err := h.store.ListAccounts()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	for i := range accounts {
 		h.fillAccountResponse(&accounts[i])
 	}
-	pools, _ := h.store.ListPools()
-	routes, _ := h.store.ListRoutes()
-	tokens, _ := h.store.ListTokens()
+	pools, err := h.store.ListPools()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	tokens, err := h.store.ListTokens()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		tokens[i].Token = ""
 	}
-	settings, _ := h.store.GetSettings()
+	settings, err := h.store.GetSettings()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	if _, ok := settings["admin_token"]; ok {
 		settings["admin_token"] = maskKey(settings["admin_token"])
 	}
-	cpaServices, _ := h.store.ListCpaServices()
+	cpaServices, err := h.store.ListCpaServices()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	for i := range cpaServices {
 		cpaServices[i].APIKeyMasked = maskKey(cpaServices[i].APIKey)
 		cpaServices[i].APIKeySet = cpaServices[i].APIKey != ""
@@ -724,7 +768,6 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 		"exported_at":   time.Now().UTC().Format(time.RFC3339),
 		"accounts":      accounts,
 		"pools":         pools,
-		"model_routes":  routes,
 		"access_tokens": tokens,
 		"settings":      settings,
 		"cpa_services":  cpaServices,
@@ -1239,7 +1282,7 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 		return
 	}
 
-	account, err := h.upsertImportedCpaAccount(svc, accountKey, authFile, "", true, "", nil)
+	account, err := h.upsertImportedCpaAccount(svc, accountKey, authFile, "", true, "")
 	if err != nil {
 		h.sessions.UpdateStatus(session.ID, "failed", "import_error", fmt.Sprintf("Failed to create account: %v", err))
 		return
@@ -1294,7 +1337,7 @@ func (h *Handler) cancelLoginSession(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey string, f *cpa.CpaAuthFile, label string, enabled bool, notes string, modelAllowlist []string) (*store.Account, error) {
+func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey string, f *cpa.CpaAuthFile, label string, enabled bool, notes string) (*store.Account, error) {
 	planType := ""
 	openaiID := f.AccountID
 	if info, err := cpa.ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil {
@@ -1307,12 +1350,12 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 		label = fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType)
 	}
 
-	var expiredAt, lastRefreshAt *string
+	var expiredAt, lastRefreshAt string
 	if f.Expired != "" {
-		expiredAt = &f.Expired
+		expiredAt = f.Expired
 	}
 	if f.LastRefresh != "" {
-		lastRefreshAt = &f.LastRefresh
+		lastRefreshAt = f.LastRefresh
 	}
 
 	account := &store.Account{
@@ -1329,7 +1372,6 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 		CpaDisabled:      f.Disabled,
 		Enabled:          enabled,
 		Notes:            notes,
-		ModelAllowlist:   modelAllowlist,
 	}
 
 	id, err := h.store.CreateAccount(account)
@@ -1420,12 +1462,11 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ServiceID      int64    `json:"service_id"`
-		AccountKey     string   `json:"account_key"`
-		Label          string   `json:"label"`
-		Enabled        bool     `json:"enabled"`
-		Notes          string   `json:"notes"`
-		ModelAllowlist []string `json:"model_allowlist"`
+		ServiceID  int64  `json:"service_id"`
+		AccountKey string `json:"account_key"`
+		Label      string `json:"label"`
+		Enabled    bool   `json:"enabled"`
+		Notes      string `json:"notes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
@@ -1448,7 +1489,7 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	account, err := h.upsertImportedCpaAccount(svc, req.AccountKey, f, req.Label, req.Enabled, req.Notes, req.ModelAllowlist)
+	account, err := h.upsertImportedCpaAccount(svc, req.AccountKey, f, req.Label, req.Enabled, req.Notes)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			webutil.WriteAdminError(w, 409, "duplicate", "This account has already been imported")
@@ -1501,12 +1542,12 @@ func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request)
 			}
 		}
 
-		var expiredAt, lastRefreshAt *string
+		var expiredAt, lastRefreshAt string
 		if f.Expired != "" {
-			expiredAt = &f.Expired
+			expiredAt = f.Expired
 		}
 		if f.LastRefresh != "" {
-			lastRefreshAt = &f.LastRefresh
+			lastRefreshAt = f.LastRefresh
 		}
 
 		account := &store.Account{

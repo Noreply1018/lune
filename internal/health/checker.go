@@ -2,8 +2,10 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -15,29 +17,30 @@ import (
 	"lune/internal/store"
 )
 
-const degradedLatencyThreshold = 5 * time.Second
+const (
+	degradedLatencyThreshold = 5 * time.Second
+	maxConcurrency           = 10
+)
 
 type Checker struct {
 	store      *store.Store
 	cache      *store.RoutingCache
-	logger     *log.Logger
 	client     *http.Client
 	cpaAuthDir string
 }
 
-func NewChecker(st *store.Store, cache *store.RoutingCache, logger *log.Logger, cpaAuthDir string) *Checker {
+func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir string) *Checker {
 	return &Checker{
 		store:      st,
 		cache:      cache,
-		logger:     logger,
-		client:     &http.Client{Timeout: 10 * time.Second},
+		client:     &http.Client{Timeout: 15 * time.Second},
 		cpaAuthDir: cpaAuthDir,
 	}
 }
 
 func (c *Checker) Run(ctx context.Context) {
 	interval := c.getInterval()
-	c.logger.Printf("health checker started (interval: %s)", interval)
+	slog.Info("health checker started", "interval", interval)
 
 	c.checkAll(ctx)
 
@@ -49,7 +52,7 @@ func (c *Checker) Run(ctx context.Context) {
 		case <-ticker.C:
 			c.checkAll(ctx)
 		case <-ctx.Done():
-			c.logger.Println("health checker stopped")
+			slog.Info("health checker stopped")
 			return
 		}
 	}
@@ -66,7 +69,10 @@ func (c *Checker) checkAll(ctx context.Context) {
 		return
 	}
 
+	// Semaphore-limited concurrency
+	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
+
 	for _, acc := range accounts {
 		if !acc.Enabled {
 			continue
@@ -74,6 +80,8 @@ func (c *Checker) checkAll(ctx context.Context) {
 		wg.Add(1)
 		go func(a store.Account) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			c.checkOne(ctx, a)
 		}(acc)
 	}
@@ -85,6 +93,7 @@ func (c *Checker) checkAll(ctx context.Context) {
 	c.cache.Invalidate()
 }
 
+// checkOne probes an account's health and discovers its available models.
 func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 	var url, apiKey string
 
@@ -97,7 +106,7 @@ func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 		url = fmt.Sprintf("%s/api/provider/%s/v1/models", strings.TrimRight(svc.BaseURL, "/"), acc.CpaProvider)
 		apiKey = svc.APIKey
 	} else {
-		url = fmt.Sprintf("%s/models", acc.BaseURL)
+		url = fmt.Sprintf("%s/models", strings.TrimRight(acc.BaseURL, "/"))
 		apiKey = acc.APIKey
 	}
 
@@ -118,19 +127,102 @@ func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 		c.store.UpdateAccountHealth(acc.ID, "error", err.Error())
 		return
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		c.store.UpdateAccountHealth(acc.ID, "error", fmt.Sprintf("HTTP %d", resp.StatusCode))
 		return
 	}
 
-	if latency > degradedLatencyThreshold {
-		c.store.UpdateAccountHealth(acc.ID, "degraded", fmt.Sprintf("slow response: %s", latency))
+	// Read response body for model discovery
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
+	if err != nil {
+		c.store.UpdateAccountHealth(acc.ID, "error", "failed to read models response")
 		return
 	}
 
-	c.store.UpdateAccountHealth(acc.ID, "healthy", "")
+	// Update health status
+	if latency > degradedLatencyThreshold {
+		c.store.UpdateAccountHealth(acc.ID, "degraded", fmt.Sprintf("slow response: %s", latency))
+	} else {
+		c.store.UpdateAccountHealth(acc.ID, "healthy", "")
+	}
+
+	// Parse and refresh discovered models
+	models := parseModelList(body)
+	if len(models) > 0 {
+		if err := c.store.RefreshAccountModels(acc.ID, models); err != nil {
+			slog.Error("failed to refresh account models", "account_id", acc.ID, "err", err)
+		}
+	}
+}
+
+// DiscoverModels triggers on-demand model discovery for a specific account.
+func (c *Checker) DiscoverModels(ctx context.Context, acc store.Account) ([]string, error) {
+	var url, apiKey string
+
+	if acc.SourceKind == "cpa" && acc.CpaServiceID != nil {
+		svc := c.cache.GetCpaService(*acc.CpaServiceID)
+		if svc == nil || !svc.Enabled {
+			return nil, fmt.Errorf("CPA service unreachable")
+		}
+		url = fmt.Sprintf("%s/api/provider/%s/v1/models", strings.TrimRight(svc.BaseURL, "/"), acc.CpaProvider)
+		apiKey = svc.APIKey
+	} else {
+		url = fmt.Sprintf("%s/models", strings.TrimRight(acc.BaseURL, "/"))
+		apiKey = acc.APIKey
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+
+	models := parseModelList(body)
+	if len(models) > 0 {
+		if err := c.store.RefreshAccountModels(acc.ID, models); err != nil {
+			return nil, fmt.Errorf("store models: %w", err)
+		}
+		c.cache.Invalidate()
+	}
+
+	return models, nil
+}
+
+func parseModelList(body []byte) []string {
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil
+	}
+	models := make([]string, 0, len(resp.Data))
+	for _, m := range resp.Data {
+		if m.ID != "" {
+			models = append(models, m.ID)
+		}
+	}
+	return models
 }
 
 func (c *Checker) checkCpaService(ctx context.Context, svc *store.CpaService) {
@@ -170,7 +262,7 @@ func (c *Checker) syncCpaMetadata() {
 
 	accounts, err := c.store.ListCpaAccountsWithKey()
 	if err != nil {
-		c.logger.Printf("sync cpa metadata: list accounts: %v", err)
+		slog.Error("sync cpa metadata: list accounts", "err", err)
 		return
 	}
 
@@ -184,14 +276,7 @@ func (c *Checker) syncCpaMetadata() {
 			}
 			continue
 		}
-		var expiredAt, lastRefreshAt *string
-		if f.Expired != "" {
-			expiredAt = &f.Expired
-		}
-		if f.LastRefresh != "" {
-			lastRefreshAt = &f.LastRefresh
-		}
-		c.store.UpdateAccountCpaMetadata(acc.ID, expiredAt, lastRefreshAt, f.Disabled)
+		c.store.UpdateAccountCpaMetadata(acc.ID, f.Expired, f.LastRefresh, f.Disabled)
 	}
 }
 

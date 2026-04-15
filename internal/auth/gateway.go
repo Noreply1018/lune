@@ -29,10 +29,8 @@ func GatewayAuth(next http.Handler, cache *store.RoutingCache) http.Handler {
 			webutil.WriteGatewayError(w, 403, "token_disabled", "access token is disabled")
 			return
 		}
-		if accessToken.QuotaTokens > 0 && accessToken.UsedTokens >= accessToken.QuotaTokens {
-			webutil.WriteGatewayError(w, 429, "quota_exhausted", "token quota exhausted")
-			return
-		}
+
+		// v3: no quota check — removed QuotaTokens/UsedTokens
 
 		ctx := context.WithValue(r.Context(), accessTokenKey, accessToken)
 		next.ServeHTTP(w, r.WithContext(ctx))

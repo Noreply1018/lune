@@ -5,8 +5,10 @@ import (
 	"fmt"
 )
 
+const cpaServiceColumns = `id, label, base_url, api_key, management_key, enabled, status, last_checked_at, last_error, created_at, updated_at`
+
 func (s *Store) ListCpaServices() ([]CpaService, error) {
-	rows, err := s.db.Query(`SELECT id, label, base_url, api_key, enabled, status, last_checked_at, last_error, created_at, updated_at FROM cpa_services ORDER BY id`)
+	rows, err := s.db.Query(`SELECT ` + cpaServiceColumns + ` FROM cpa_services ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -24,7 +26,7 @@ func (s *Store) ListCpaServices() ([]CpaService, error) {
 }
 
 func (s *Store) GetCpaService() (*CpaService, error) {
-	row := s.db.QueryRow(`SELECT id, label, base_url, api_key, enabled, status, last_checked_at, last_error, created_at, updated_at FROM cpa_services LIMIT 1`)
+	row := s.db.QueryRow(`SELECT ` + cpaServiceColumns + ` FROM cpa_services LIMIT 1`)
 	svc, err := scanCpaServiceRow(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -33,7 +35,7 @@ func (s *Store) GetCpaService() (*CpaService, error) {
 }
 
 func (s *Store) GetCpaServiceByID(id int64) (*CpaService, error) {
-	row := s.db.QueryRow(`SELECT id, label, base_url, api_key, enabled, status, last_checked_at, last_error, created_at, updated_at FROM cpa_services WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT `+cpaServiceColumns+` FROM cpa_services WHERE id = ?`, id)
 	svc, err := scanCpaServiceRow(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -50,8 +52,8 @@ func (s *Store) CreateCpaService(svc *CpaService) (int64, error) {
 		return 0, fmt.Errorf("only one CPA service is allowed")
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO cpa_services (label, base_url, api_key, enabled) VALUES (?, ?, ?, ?)`,
-		svc.Label, svc.BaseURL, svc.APIKey, svc.Enabled,
+		`INSERT INTO cpa_services (label, base_url, api_key, management_key, enabled) VALUES (?, ?, ?, ?, ?)`,
+		svc.Label, svc.BaseURL, svc.APIKey, svc.ManagementKey, svc.Enabled,
 	)
 	if err != nil {
 		return 0, err
@@ -61,8 +63,8 @@ func (s *Store) CreateCpaService(svc *CpaService) (int64, error) {
 
 func (s *Store) UpdateCpaService(id int64, svc *CpaService) error {
 	_, err := s.db.Exec(
-		`UPDATE cpa_services SET label=?, base_url=?, api_key=?, enabled=?, updated_at=datetime('now') WHERE id=?`,
-		svc.Label, svc.BaseURL, svc.APIKey, svc.Enabled, id,
+		`UPDATE cpa_services SET label=?, base_url=?, api_key=?, management_key=?, enabled=?, updated_at=datetime('now') WHERE id=?`,
+		svc.Label, svc.BaseURL, svc.APIKey, svc.ManagementKey, svc.Enabled, id,
 	)
 	return err
 }
@@ -93,10 +95,23 @@ func (s *Store) UpdateCpaServiceHealth(id int64, status, lastError string) error
 func scanCpaServiceRow(row rowScanner) (*CpaService, error) {
 	var svc CpaService
 	var enabled int
-	err := row.Scan(&svc.ID, &svc.Label, &svc.BaseURL, &svc.APIKey, &enabled, &svc.Status, &svc.LastCheckedAt, &svc.LastError, &svc.CreatedAt, &svc.UpdatedAt)
+	var lastCheckedAt sql.NullString
+	err := row.Scan(&svc.ID, &svc.Label, &svc.BaseURL, &svc.APIKey, &svc.ManagementKey, &enabled, &svc.Status, &lastCheckedAt, &svc.LastError, &svc.CreatedAt, &svc.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	svc.Enabled = enabled != 0
+	if lastCheckedAt.Valid {
+		svc.LastCheckedAt = &lastCheckedAt.String
+	}
+
+	// computed fields
+	svc.APIKeySet = svc.APIKey != ""
+	if len(svc.APIKey) > 8 {
+		svc.APIKeyMasked = svc.APIKey[:4] + "..." + svc.APIKey[len(svc.APIKey)-4:]
+	} else if svc.APIKey != "" {
+		svc.APIKeyMasked = "***"
+	}
+
 	return &svc, nil
 }

@@ -5,13 +5,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,13 +23,33 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type LoggingConfig struct {
+	Format string `yaml:"format"` // json | text
+	Level  string `yaml:"level"`  // debug | info | warn | error
+}
+
 type Config struct {
-	Port             int    `yaml:"port"`
-	DataDir          string `yaml:"data_dir"`
-	CpaAuthDir       string `yaml:"cpa_auth_dir"`
-	CpaBaseURL       string `yaml:"cpa_base_url"`
-	CpaAPIKey        string `yaml:"cpa_api_key"`
-	CpaManagementKey string `yaml:"cpa_management_key"`
+	Port             int           `yaml:"port"`
+	DataDir          string        `yaml:"data_dir"`
+	CpaAuthDir       string        `yaml:"cpa_auth_dir"`
+	CpaBaseURL       string        `yaml:"cpa_base_url"`
+	CpaAPIKey        string        `yaml:"cpa_api_key"`
+	CpaManagementKey string        `yaml:"cpa_management_key"`
+	Logging          LoggingConfig `yaml:"logging"`
+}
+
+func (cfg Config) Validate() error {
+	var errs []string
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		errs = append(errs, fmt.Sprintf("invalid port: %d", cfg.Port))
+	}
+	if cfg.DataDir == "" {
+		errs = append(errs, "data_dir is required")
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("config validation failed:\n  %s", strings.Join(errs, "\n  "))
+	}
+	return nil
 }
 
 func LoadConfig() Config {
@@ -67,15 +88,40 @@ func LoadConfig() Config {
 	return cfg
 }
 
+func initSlog(cfg LoggingConfig) {
+	var level slog.Level
+	switch strings.ToLower(cfg.Level) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	if strings.ToLower(cfg.Format) == "json" {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	}
+	slog.SetDefault(slog.New(handler))
+}
+
 type App struct {
-	cfg    Config
-	logger *log.Logger
-	store  *store.Store
-	cache  *store.RoutingCache
+	cfg   Config
+	store *store.Store
+	cache *store.RoutingCache
 }
 
 func New(cfg Config) (*App, error) {
-	logger := log.New(os.Stdout, "", log.LstdFlags)
+	initSlog(cfg.Logging)
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -94,11 +140,17 @@ func New(cfg Config) (*App, error) {
 
 	cache := store.NewRoutingCache(st)
 
+	// ensure a default global token exists
+	if tok, err := st.EnsureDefaultGlobalToken(); err != nil {
+		slog.Error("ensure default global token", "err", err)
+	} else if tok != nil {
+		slog.Info("default global token created", "token", tok.TokenMasked)
+	}
+
 	return &App{
-		cfg:    cfg,
-		logger: logger,
-		store:  st,
-		cache:  cache,
+		cfg:   cfg,
+		store: st,
+		cache: cache,
 	}, nil
 }
 
@@ -109,7 +161,7 @@ func (a *App) Run() error {
 	// auto-configure default CPA service if env vars are set
 	a.ensureDefaultCpa()
 
-	srv := httpserver.New(a.logger, a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey)
+	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey)
 
 	// Prefer an explicit IPv4 listener so WSL localhost forwarding can
 	// consistently expose the service to Windows browsers.
@@ -122,10 +174,11 @@ func (a *App) Run() error {
 	httpServer := &http.Server{Handler: srv.Handler()}
 
 	// print startup banner
+	maskedAdmin := maskToken(adminToken)
 	fmt.Printf("\nLune is running\n\n")
 	fmt.Printf("  Admin UI:    http://127.0.0.1:%d/admin\n", a.cfg.Port)
 	fmt.Printf("  Gateway API: http://127.0.0.1:%d/v1\n", a.cfg.Port)
-	fmt.Printf("  Admin Token: %s (%s)\n", adminToken, tokenSource)
+	fmt.Printf("  Admin Token: %s (%s)\n", maskedAdmin, tokenSource)
 	fmt.Printf("\nPress Ctrl+C to stop\n\n")
 
 	// graceful shutdown
@@ -133,7 +186,7 @@ func (a *App) Run() error {
 	defer stop()
 
 	// start health checker
-	hc := health.NewChecker(a.store, a.cache, a.logger, a.cfg.CpaAuthDir)
+	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir)
 	go hc.Run(ctx)
 
 	errCh := make(chan error, 1)
@@ -147,7 +200,7 @@ func (a *App) Run() error {
 			return err
 		}
 	case <-ctx.Done():
-		a.logger.Println("shutting down...")
+		slog.Info("shutting down...")
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		httpServer.Shutdown(shutCtx)
@@ -194,11 +247,18 @@ func (a *App) ensureDefaultCpa() {
 		Enabled: true,
 	}
 	if _, err := a.store.CreateCpaService(svc); err != nil {
-		a.logger.Printf("auto-configure CPA: %v", err)
+		slog.Error("auto-configure CPA", "err", err)
 		return
 	}
 	a.cache.Invalidate()
-	a.logger.Printf("CPA service auto-configured: %s", a.cfg.CpaBaseURL)
+	slog.Info("CPA service auto-configured", "base_url", a.cfg.CpaBaseURL)
+}
+
+func maskToken(token string) string {
+	if len(token) > 12 {
+		return token[:8] + "..." + token[len(token)-4:]
+	}
+	return token
 }
 
 func Check(cfg Config) error {
@@ -216,7 +276,6 @@ func Check(cfg Config) error {
 	schemaVer := st.SchemaVersion()
 	totalAccounts, byStatus, _ := st.CountAccounts()
 	totalPools, _ := st.CountPools()
-	totalRoutes, _ := st.CountRoutes()
 	totalTokens, _ := st.CountTokens()
 
 	fmt.Printf("Lune check passed\n\n")
@@ -236,7 +295,6 @@ func Check(cfg Config) error {
 	}
 	fmt.Println()
 	fmt.Printf("  Pools:    %d\n", totalPools)
-	fmt.Printf("  Routes:   %d\n", totalRoutes)
 	fmt.Printf("  Tokens:   %d\n", totalTokens)
 
 	return nil

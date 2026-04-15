@@ -13,6 +13,7 @@ import (
 type LoginSession struct {
 	ID              string         `json:"id"`
 	ServiceID       int64          `json:"service_id"`
+	PoolID          int64          `json:"pool_id"`
 	Status          string         `json:"status"` // pending, authorized, succeeded, expired, failed, cancelled
 	VerificationURI string         `json:"verification_uri,omitempty"`
 	UserCode        string         `json:"user_code,omitempty"`

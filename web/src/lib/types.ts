@@ -6,11 +6,9 @@ export interface Account {
   api_key_masked: string;
   enabled: boolean;
   status: "healthy" | "degraded" | "error" | "disabled";
-  quota_total: number;
-  quota_used: number;
-  quota_unit: string;
   notes: string;
-  model_allowlist: string[];
+  quota_display: string;
+  models: string[];
   last_checked_at: string | null;
   last_error: string | null;
   created_at: string;
@@ -35,40 +33,32 @@ export interface Account {
 export interface Pool {
   id: number;
   label: string;
-  strategy: string;
+  priority: number;
   enabled: boolean;
-  members: PoolMember[];
+  account_count: number;
+  healthy_account_count: number;
+  models: string[];
   created_at: string;
   updated_at: string;
 }
 
 export interface PoolMember {
   id: number;
-  account_id: number;
-  account_label: string;
-  account_status: string;
-  priority: number;
-  weight: number;
-}
-
-export interface ModelRoute {
-  id: number;
-  alias: string;
   pool_id: number;
-  pool_label: string;
-  target_model: string;
+  account_id: number;
+  position: number;
   enabled: boolean;
-  created_at: string;
-  updated_at: string;
+  account?: Account;
 }
 
 export interface AccessToken {
   id: number;
   name: string;
   token_masked: string;
+  pool_id: number | null;
+  pool_label?: string;
+  is_global: boolean;
   enabled: boolean;
-  quota_tokens: number;
-  used_tokens: number;
   created_at: string;
   updated_at: string;
   last_used_at: string | null;
@@ -78,15 +68,15 @@ export interface AccessTokenCreated {
   id: number;
   name: string;
   token: string;
-  quota_tokens: number;
+  pool_id: number | null;
 }
 
 export interface RequestLog {
   id: number;
   request_id: string;
   access_token_name: string;
-  model_alias: string;
-  target_model: string;
+  model_requested: string;
+  model_actual: string;
   pool_id: number;
   account_id: number;
   account_label: string;
@@ -103,42 +93,26 @@ export interface RequestLog {
 }
 
 export interface Overview {
-  total_accounts: number;
-  healthy_accounts: number;
-  total_pools: number;
-  total_tokens: number;
-  requests_24h: number;
-  success_rate_24h: number;
-  token_usage_24h: {
-    input: number;
-    output: number;
-  };
-  account_health: Array<{
-    id: number;
-    label: string;
-    status: string;
-    last_checked_at: string | null;
-    last_error: string | null;
-  }>;
-  recent_requests: RequestLog[];
-  cpa_status: {
-    connected: boolean;
-    label: string;
-    status: string;
-    accounts_total: number;
-    accounts_healthy: number;
-    accounts_error: number;
-    accounts_expiring: number;
-    last_checked_at: string | null;
-  } | null;
-  accounts_by_source: {
-    openai_compat: number;
-    cpa: number;
-  };
+  pools_total: number;
+  pools_healthy: number;
+  accounts_total: number;
+  accounts_healthy: number;
+  models_total: number;
+  requests_today: number;
+  success_rate_today: number;
+  global_token: string;
+  alerts: Alert[];
+}
+
+export interface Alert {
+  type: "expiring" | "error";
+  message: string;
+  pool_id?: number;
 }
 
 export interface UsageStats {
   total_requests: number;
+  success_rate: number;
   total_input_tokens: number;
   total_output_tokens: number;
   by_account: Array<{
@@ -154,12 +128,13 @@ export interface UsageStats {
     input_tokens: number;
     output_tokens: number;
   }>;
-  logs: {
-    items: RequestLog[];
-    total: number;
-    page: number;
-    page_size: number;
-  };
+}
+
+export interface UsageLogPage {
+  items: RequestLog[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 export interface SystemSettings {
@@ -176,6 +151,7 @@ export interface CpaService {
   base_url: string;
   api_key_set: boolean;
   api_key_masked: string;
+  management_key?: string;
   enabled: boolean;
   status: "unknown" | "healthy" | "error";
   last_checked_at: string | null;

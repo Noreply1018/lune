@@ -4,15 +4,15 @@ import CopyButton from "@/components/CopyButton";
 import DataTable, { type Column } from "@/components/DataTable";
 import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
-import UsageBar from "@/components/UsageBar";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Feedback";
 import { relativeTime } from "@/lib/fmt";
-import type { AccessToken, AccessTokenCreated } from "@/lib/types";
+import type { AccessToken, AccessTokenCreated, Pool } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -21,23 +21,36 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, KeyRound, MoreHorizontal, Plus } from "lucide-react";
+import { Check, Globe, KeyRound, Layers, MoreHorizontal, Plus } from "lucide-react";
+
+/* ── v3 token form ── */
 
 interface TokenForm {
   name: string;
-  token: string;
-  quota_tokens: number;
+  pool_id: string; // "" = global, numeric string = pool-scoped
+  enabled: boolean;
 }
 
-const emptyForm: TokenForm = { name: "", token: "", quota_tokens: 0 };
+const emptyForm: TokenForm = { name: "", pool_id: "", enabled: true };
+
+/* ── magic value for "global" in Select ── */
+const GLOBAL_VALUE = "__global__";
 
 export default function TokensPage() {
   const [tokens, setTokens] = useState<AccessToken[]>([]);
+  const [pools, setPools] = useState<Pool[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
@@ -46,14 +59,21 @@ export default function TokensPage() {
   const [created, setCreated] = useState<AccessTokenCreated | null>(null);
   const [snippetTab, setSnippetTab] = useState(".env");
 
+  /* ── data loading ── */
+
   function load() {
     setLoading(true);
     let cancelled = false;
 
-    api
-      .get<AccessToken[]>("/tokens")
-      .then((data) => {
-        if (!cancelled) setTokens(data ?? []);
+    Promise.all([
+      api.get<AccessToken[]>("/tokens"),
+      api.get<Pool[]>("/pools"),
+    ])
+      .then(([tokensData, poolsData]) => {
+        if (!cancelled) {
+          setTokens(tokensData ?? []);
+          setPools(poolsData ?? []);
+        }
       })
       .catch(() => {
         if (!cancelled) toast("加载令牌失败", "error");
@@ -72,6 +92,8 @@ export default function TokensPage() {
     return cancel;
   }, []);
 
+  /* ── form helpers ── */
+
   function openCreate() {
     setEditId(null);
     setForm(emptyForm);
@@ -82,8 +104,8 @@ export default function TokensPage() {
     setEditId(token.id);
     setForm({
       name: token.name,
-      token: "",
-      quota_tokens: token.quota_tokens,
+      pool_id: token.pool_id != null ? String(token.pool_id) : "",
+      enabled: token.enabled,
     });
     setShowForm(true);
   }
@@ -91,21 +113,22 @@ export default function TokensPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     try {
+      const poolId = form.pool_id ? Number(form.pool_id) : null;
       if (editId) {
         await api.put(`/tokens/${editId}`, {
           name: form.name,
-          quota_tokens: form.quota_tokens,
+          pool_id: poolId,
+          enabled: form.enabled,
         });
         toast("令牌已更新");
         setShowForm(false);
         load();
       } else {
-        const body: Record<string, unknown> = {
+        const result = await api.post<AccessTokenCreated>("/tokens", {
           name: form.name,
-          quota_tokens: form.quota_tokens,
-        };
-        if (form.token) body.token = form.token;
-        const result = await api.post<AccessTokenCreated>("/tokens", body);
+          pool_id: poolId,
+          enabled: form.enabled,
+        });
         setShowForm(false);
         setCreated(result);
         load();
@@ -143,6 +166,8 @@ export default function TokensPage() {
     }
   }
 
+  /* ── env snippets ── */
+
   const snippetTabs = [".env", "Shell", "Python", "Node.js", "curl"] as const;
 
   function getSnippet(token: string, tab: string): string {
@@ -164,12 +189,39 @@ export default function TokensPage() {
     }
   }
 
+  /* ── type badge ── */
+
+  function TypeBadge({ token }: { token: AccessToken }) {
+    if (token.is_global) {
+      return (
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-lunar-200/40 bg-lunar-50/60 px-2.5 py-0.5 text-xs font-medium text-lunar-700">
+          <Globe className="size-3" />
+          全局令牌
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-moon-200/60 bg-moon-100/50 px-2.5 py-0.5 text-xs font-medium text-moon-600">
+        <Layers className="size-3" />
+        {token.pool_label ?? `池 #${token.pool_id}`}
+      </span>
+    );
+  }
+
+  /* ── table columns ── */
+
   const columns: Column<AccessToken>[] = [
     {
       key: "name",
       header: "名称",
       render: (row) => <span className="font-medium text-moon-800">{row.name}</span>,
       tone: "primary",
+    },
+    {
+      key: "type",
+      header: "类型",
+      render: (row) => <TypeBadge token={row} />,
+      tone: "secondary",
     },
     {
       key: "token",
@@ -183,11 +235,23 @@ export default function TokensPage() {
       tone: "secondary",
     },
     {
-      key: "usage",
-      header: "配额压力",
-      className: "min-w-[180px]",
-      render: (row) => <UsageBar used={row.used_tokens} total={row.quota_tokens} />,
-      tone: "numeric",
+      key: "enabled",
+      header: "状态",
+      render: (row) => (
+        <span
+          className={
+            row.enabled
+              ? "inline-flex items-center gap-1.5 text-xs font-medium text-status-green"
+              : "inline-flex items-center gap-1.5 text-xs font-medium text-moon-400"
+          }
+        >
+          <span
+            className={`size-1.5 rounded-full ${row.enabled ? "bg-status-green" : "bg-moon-400"}`}
+          />
+          {row.enabled ? "已启用" : "已停用"}
+        </span>
+      ),
+      tone: "status",
     },
     {
       key: "last_used",
@@ -224,21 +288,31 @@ export default function TokensPage() {
     },
   ];
 
-  const enabledTokens = tokens.filter((token) => token.enabled).length;
-  const unlimitedTokens = tokens.filter((token) => token.quota_tokens === 0).length;
-  const recentUsed = tokens.filter((token) => token.last_used_at).length;
+  /* ── derived stats ── */
+
+  const enabledTokens = tokens.filter((t) => t.enabled).length;
+  const globalTokens = tokens.filter((t) => t.is_global).length;
+  const poolTokens = tokens.filter((t) => !t.is_global).length;
+  const recentUsed = tokens.filter((t) => t.last_used_at).length;
+
+  /* ── pool selector helper ── */
+
+  function handlePoolChange(value: string) {
+    setForm({ ...form, pool_id: value === GLOBAL_VALUE ? "" : value });
+  }
 
   return (
     <div className="space-y-10">
       <PageHeader
         eyebrow="Tokens / Access"
         title="令牌"
-        description="管理访问分发、配额边界与客户端接入。"
+        description="管理访问令牌的签发、作用域与客户端接入。"
         meta={
           <>
             <span>总数 {tokens.length}</span>
             <span>已启用 {enabledTokens}</span>
-            <span>不限额 {unlimitedTokens}</span>
+            <span>全局 {globalTokens}</span>
+            <span>池令牌 {poolTokens}</span>
           </>
         }
         actions={
@@ -255,10 +329,10 @@ export default function TokensPage() {
             <div className="space-y-2">
               <p className="eyebrow-label">访问分发</p>
               <h2 className="text-[1.15rem] font-semibold tracking-[-0.03em] text-moon-800 sm:text-[1.25rem]">
-                令牌负责入口鉴权，也负责配额边界
+                令牌负责入口鉴权与作用域控制
               </h2>
               <p className="max-w-2xl text-sm leading-7 text-moon-500">
-                这页不是单纯的凭据列表。创建后要能立即分发给客户端，平时则关注配额压力、最近使用和失效管理。
+                全局令牌可访问所有池和路由的模型，池令牌仅限指定池内模型。创建后会自动生成令牌值，请立即复制保存。
               </p>
             </div>
             <span className="flex size-12 items-center justify-center rounded-[1.2rem] border border-white/75 bg-white/70 text-lunar-700">
@@ -274,9 +348,9 @@ export default function TokensPage() {
               </p>
             </div>
             <div className="rounded-[1.25rem] border border-white/72 bg-white/68 px-4 py-4">
-              <p className="kicker">不限额</p>
+              <p className="kicker">全局令牌</p>
               <p className="mt-3 text-[1.55rem] font-semibold tracking-[-0.05em] text-moon-800">
-                {unlimitedTokens}
+                {globalTokens}
               </p>
             </div>
             <div className="rounded-[1.25rem] border border-white/72 bg-white/68 px-4 py-4">
@@ -304,11 +378,11 @@ export default function TokensPage() {
               </p>
             </div>
             <div className="rounded-[1.15rem] border border-white/72 bg-white/72 px-4 py-4">
-              <p className="kicker">管理建议</p>
+              <p className="kicker">令牌类型说明</p>
               <ul className="mt-3 space-y-2 text-sm leading-6 text-moon-500">
-                <li>给不同调用方分配独立令牌。</li>
-                <li>按项目或团队设置可读名称。</li>
-                <li>有配额边界时优先使用限额模式。</li>
+                <li><strong className="text-moon-700">全局令牌</strong> - 可访问所有池和路由暴露的模型。</li>
+                <li><strong className="text-moon-700">池令牌</strong> - 仅可访问绑定池内的模型。</li>
+                <li>给不同调用方分配独立令牌并设置可读名称。</li>
               </ul>
             </div>
           </div>
@@ -318,7 +392,7 @@ export default function TokensPage() {
       <section className="space-y-4">
         <SectionHeading
           title="令牌列表"
-          description="查看已签发令牌、配额压力与最近使用情况。"
+          description="查看已签发令牌的类型、状态与最近使用情况。"
         />
 
         {loading ? (
@@ -329,7 +403,7 @@ export default function TokensPage() {
               <div>
                 <p className="eyebrow-label">访问清单</p>
                 <p className="mt-1 text-sm text-moon-500">
-                  先确认名称和状态，再观察掩码、配额与最后一次使用时间。
+                  查看名称、类型、状态与最后一次使用时间。
                 </p>
               </div>
               <p className="text-sm text-moon-500">
@@ -346,6 +420,7 @@ export default function TokensPage() {
         )}
       </section>
 
+      {/* ── create / edit dialog ── */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
         <DialogContent>
           <form onSubmit={handleSubmit}>
@@ -365,34 +440,38 @@ export default function TokensPage() {
                 />
               </div>
 
-              {!editId && (
-                <div className="space-y-2">
-                  <Label htmlFor="token-value">
-                    令牌值 <span className="font-normal text-moon-400">（留空自动生成）</span>
-                  </Label>
-                  <Input
-                    id="token-value"
-                    value={form.token}
-                    onChange={(e) => setForm({ ...form, token: e.target.value })}
-                    placeholder="sk-lune-..."
-                  />
-                </div>
-              )}
-
               <div className="space-y-2">
-                <Label htmlFor="token-quota">Token 配额</Label>
-                <Input
-                  id="token-quota"
-                  type="number"
-                  value={form.quota_tokens}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      quota_tokens: Number(e.target.value),
-                    })
-                  }
+                <Label>作用域</Label>
+                <Select
+                  value={form.pool_id || GLOBAL_VALUE}
+                  onValueChange={handlePoolChange}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="选择作用域..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={GLOBAL_VALUE}>
+                      全局令牌 - 可访问所有池
+                    </SelectItem>
+                    {pools.map((pool) => (
+                      <SelectItem key={pool.id} value={String(pool.id)}>
+                        {pool.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-moon-400">
+                  全局令牌可访问所有池和路由，池令牌仅限指定池内模型
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <Label htmlFor="token-enabled">启用</Label>
+                <Switch
+                  id="token-enabled"
+                  checked={form.enabled}
+                  onCheckedChange={(checked) => setForm({ ...form, enabled: !!checked })}
                 />
-                <p className="text-xs text-moon-400">0 表示不限额</p>
               </div>
             </div>
 
@@ -406,6 +485,7 @@ export default function TokensPage() {
         </DialogContent>
       </Dialog>
 
+      {/* ── creation success + snippets dialog ── */}
       <Dialog open={created !== null} onOpenChange={(open) => !open && setCreated(null)}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
@@ -465,11 +545,12 @@ export default function TokensPage() {
         </DialogContent>
       </Dialog>
 
+      {/* ── delete confirm ── */}
       <ConfirmDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         title="删除令牌"
-        description={`确认删除“${deleteTarget?.name ?? ""}”吗？该令牌会立即失效。`}
+        description={`确认删除"${deleteTarget?.name ?? ""}"吗？该令牌会立即失效。`}
         onConfirm={confirmDelete}
       />
     </div>

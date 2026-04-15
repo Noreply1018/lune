@@ -1,14 +1,16 @@
 package store
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 )
 
 type CacheSnapshot struct {
-	Accounts    []Account
-	Pools       []Pool
-	Routes      []ModelRoute
+	Pools       map[int64]*Pool
+	Accounts    map[int64]*Account
+	Members     map[int64][]*PoolMember // pool_id → members (sorted by position)
+	ModelIndex  map[string][]int64      // model_id → account_ids
 	Tokens      []AccessToken
 	Settings    map[string]string
 	CpaServices map[int64]*CpaService
@@ -60,25 +62,47 @@ func (c *RoutingCache) Get() *CacheSnapshot {
 
 func (c *RoutingCache) loadFromDB() *CacheSnapshot {
 	snap := &CacheSnapshot{
+		Pools:       make(map[int64]*Pool),
+		Accounts:    make(map[int64]*Account),
+		Members:     make(map[int64][]*PoolMember),
+		ModelIndex:  make(map[string][]int64),
 		Settings:    make(map[string]string),
 		CpaServices: make(map[int64]*CpaService),
 	}
 
+	// Load accounts
 	if accs, err := c.store.ListAccounts(); err == nil {
-		snap.Accounts = accs
+		for i := range accs {
+			acc := accs[i]
+			snap.Accounts[acc.ID] = &acc
+		}
 	}
+
+	// Load pools
 	if pools, err := c.store.ListPools(); err == nil {
-		snap.Pools = pools
+		for i := range pools {
+			p := pools[i]
+			snap.Pools[p.ID] = &p
+		}
 	}
-	if routes, err := c.store.ListRoutes(); err == nil {
-		snap.Routes = routes
-	}
+
+	// Load pool_members with JOINed account data
+	c.loadMembers(snap)
+
+	// Load account_models → build ModelIndex
+	c.loadModelIndex(snap)
+
+	// Load tokens
 	if tokens, err := c.store.ListTokens(); err == nil {
 		snap.Tokens = tokens
 	}
+
+	// Load settings
 	if settings, err := c.store.GetSettings(); err == nil {
 		snap.Settings = settings
 	}
+
+	// Load cpa_services
 	if svcs, err := c.store.ListCpaServices(); err == nil {
 		for i := range svcs {
 			svc := svcs[i]
@@ -87,6 +111,62 @@ func (c *RoutingCache) loadFromDB() *CacheSnapshot {
 	}
 
 	return snap
+}
+
+func (c *RoutingCache) loadMembers(snap *CacheSnapshot) {
+	rows, err := c.store.db.Query(
+		`SELECT pm.id, pm.pool_id, pm.account_id, pm.position, pm.enabled
+		 FROM pool_members pm
+		 ORDER BY pm.pool_id, pm.position, pm.id`,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var m PoolMember
+		var enabled int
+		if err := rows.Scan(&m.ID, &m.PoolID, &m.AccountID, &m.Position, &enabled); err != nil {
+			continue
+		}
+		m.Enabled = enabled != 0
+
+		// Attach the account reference from snap.Accounts
+		if acc, ok := snap.Accounts[m.AccountID]; ok {
+			m.Account = acc
+		}
+
+		member := m // copy for pointer stability
+		snap.Members[m.PoolID] = append(snap.Members[m.PoolID], &member)
+	}
+
+	// Ensure sorted by position within each pool
+	for _, members := range snap.Members {
+		sort.Slice(members, func(i, j int) bool {
+			if members[i].Position != members[j].Position {
+				return members[i].Position < members[j].Position
+			}
+			return members[i].ID < members[j].ID
+		})
+	}
+}
+
+func (c *RoutingCache) loadModelIndex(snap *CacheSnapshot) {
+	rows, err := c.store.db.Query(`SELECT account_id, model_id FROM account_models`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var accountID int64
+		var modelID string
+		if err := rows.Scan(&accountID, &modelID); err != nil {
+			continue
+		}
+		snap.ModelIndex[modelID] = append(snap.ModelIndex[modelID], accountID)
+	}
 }
 
 func (c *RoutingCache) FindAccessToken(tokenValue string) *AccessToken {
@@ -100,46 +180,22 @@ func (c *RoutingCache) FindAccessToken(tokenValue string) *AccessToken {
 	return nil
 }
 
-func (c *RoutingCache) FindRoute(modelAlias string) *ModelRoute {
-	snap := c.Get()
-	for i := range snap.Routes {
-		if snap.Routes[i].Alias == modelAlias && snap.Routes[i].Enabled {
-			r := snap.Routes[i]
-			return &r
-		}
-	}
-	return nil
-}
-
-func (c *RoutingCache) GetDefaultPoolID() int64 {
-	snap := c.Get()
-	v, ok := snap.Settings["default_pool_id"]
-	if !ok || v == "" {
-		return 0
-	}
-	var id int64
-	for _, ch := range v {
-		if ch < '0' || ch > '9' {
-			return 0
-		}
-		id = id*10 + int64(ch-'0')
-	}
-	return id
-}
-
 func (c *RoutingCache) GetPool(id int64) *Pool {
 	snap := c.Get()
-	for i := range snap.Pools {
-		if snap.Pools[i].ID == id {
-			p := snap.Pools[i]
-			return &p
-		}
+	if p, ok := snap.Pools[id]; ok {
+		cp := *p
+		return &cp
 	}
 	return nil
 }
 
 func (c *RoutingCache) GetAccounts() []Account {
-	return c.Get().Accounts
+	snap := c.Get()
+	accs := make([]Account, 0, len(snap.Accounts))
+	for _, acc := range snap.Accounts {
+		accs = append(accs, *acc)
+	}
+	return accs
 }
 
 func (c *RoutingCache) GetSetting(key string) string {
@@ -147,15 +203,14 @@ func (c *RoutingCache) GetSetting(key string) string {
 	return snap.Settings[key]
 }
 
-func (c *RoutingCache) GetEnabledModelAliases() []string {
+func (c *RoutingCache) GetAllModels() []string {
 	snap := c.Get()
-	var aliases []string
-	for _, r := range snap.Routes {
-		if r.Enabled {
-			aliases = append(aliases, r.Alias)
-		}
+	models := make([]string, 0, len(snap.ModelIndex))
+	for model := range snap.ModelIndex {
+		models = append(models, model)
 	}
-	return aliases
+	sort.Strings(models)
+	return models
 }
 
 func (c *RoutingCache) GetCpaService(id int64) *CpaService {

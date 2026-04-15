@@ -1,7 +1,7 @@
 package httpserver
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -14,7 +14,6 @@ import (
 )
 
 type Server struct {
-	logger           *log.Logger
 	mux              *http.ServeMux
 	store            *store.Store
 	cache            *store.RoutingCache
@@ -22,9 +21,8 @@ type Server struct {
 	cpaManagementKey string
 }
 
-func New(logger *log.Logger, st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKey string) *Server {
+func New(st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKey string) *Server {
 	s := &Server{
-		logger:           logger,
 		mux:              http.NewServeMux(),
 		store:            st,
 		cache:            cache,
@@ -97,6 +95,10 @@ func (s *Server) logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		s.logger.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
+		slog.Info("request completed",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
 	})
 }

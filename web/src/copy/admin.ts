@@ -5,7 +5,6 @@ import {
   Layers,
   LayoutDashboard,
   MessageSquare,
-  Route,
   Server,
   Users,
 } from "lucide-react";
@@ -44,7 +43,6 @@ export const ADMIN_NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "账号", href: "/admin/accounts", icon: Users },
       { label: "池", href: "/admin/pools", icon: Layers },
-      { label: "路由", href: "/admin/routes", icon: Route },
       { label: "令牌", href: "/admin/tokens", icon: Key },
       { label: "CPA 服务", href: "/admin/cpa-service", icon: Server },
     ],

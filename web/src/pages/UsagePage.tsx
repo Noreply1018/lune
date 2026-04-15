@@ -12,6 +12,7 @@ import type {
   AccessToken,
   LatencyBucket,
   RequestLog,
+  UsageLogPage,
   UsageStats,
 } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -28,6 +29,7 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   BarChart3,
+  CheckCircle2,
   DollarSign,
   Filter,
   Waves,
@@ -42,6 +44,9 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+
+/** Backend returns UsageStats fields at top level + logs as a nested field. */
+type UsageResponse = UsageStats & { logs: UsageLogPage };
 
 const TIME_RANGES = [
   { value: "1h", label: "最近 1 小时" },
@@ -61,7 +66,7 @@ const logColumns: Column<RequestLog>[] = [
   {
     key: "model",
     header: "模型",
-    render: (r) => <span className="font-medium">{r.model_alias}</span>,
+    render: (r) => <span className="font-medium">{r.model_requested}</span>,
     tone: "primary",
   },
   {
@@ -113,7 +118,7 @@ const logColumns: Column<RequestLog>[] = [
     header: "预估成本",
     render: (r) => {
       const cost = r.input_tokens != null
-        ? estimateCost(r.target_model || r.model_alias, r.input_tokens, r.output_tokens ?? 0)
+        ? estimateCost(r.model_actual || r.model_requested, r.input_tokens, r.output_tokens ?? 0)
         : null;
       return cost !== null
         ? <span className="text-moon-500">{formatCost(cost)}</span>
@@ -125,7 +130,7 @@ const logColumns: Column<RequestLog>[] = [
 ];
 
 export default function UsagePage() {
-  const [stats, setStats] = useState<UsageStats | null>(null);
+  const [resp, setResp] = useState<UsageResponse | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [tokensList, setTokensList] = useState<AccessToken[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,9 +161,9 @@ export default function UsagePage() {
   function loadStats() {
     let cancelled = false;
     api
-      .get<UsageStats>(`/usage?${buildQuery()}`)
+      .get<UsageResponse>(`/usage?${buildQuery()}`)
       .then((d) => {
-        if (!cancelled) setStats(d);
+        if (!cancelled) setResp(d);
       })
       .catch(() => {
         if (!cancelled) toast("加载用量数据失败", "error");
@@ -214,13 +219,14 @@ export default function UsagePage() {
     };
   }, [viewTab, range, filterModel, latencyBucket]);
 
+  const logs = resp?.logs;
   const models = Array.from(
-    new Set(stats?.logs?.items?.map((l) => l.model_alias).filter(Boolean) ?? []),
+    new Set(logs?.items?.map((l) => l.model_requested).filter(Boolean) ?? []),
   );
-  const totalPages = stats?.logs ? Math.ceil(stats.logs.total / stats.logs.page_size) : 1;
-  const totalCost = (stats?.logs?.items ?? []).reduce((sum, r) => {
+  const totalPages = logs ? Math.ceil(logs.total / logs.page_size) : 1;
+  const totalCost = (logs?.items ?? []).reduce((sum, r) => {
     if (r.input_tokens == null) return sum;
-    const cost = estimateCost(r.target_model || r.model_alias, r.input_tokens, r.output_tokens ?? 0);
+    const cost = estimateCost(r.model_actual || r.model_requested, r.input_tokens, r.output_tokens ?? 0);
     return sum + (cost ?? 0);
   }, 0);
   const activeFilters = [
@@ -303,6 +309,10 @@ export default function UsagePage() {
     },
   ];
 
+  const successRatePercent = resp?.success_rate != null
+    ? `${(resp.success_rate * 100).toFixed(1)}%`
+    : "-";
+
   return (
     <div className="space-y-10">
       <PageHeader
@@ -311,7 +321,7 @@ export default function UsagePage() {
         description="查看请求量、Token 与成本走势。"
         meta={
           <>
-            <span>日志 {stats?.logs?.total ?? 0}</span>
+            <span>日志 {logs?.total ?? 0}</span>
             <span>筛选 {activeFilters}</span>
             <span>{TIME_RANGES.find((item) => item.value === range)?.label ?? range}</span>
           </>
@@ -405,11 +415,11 @@ export default function UsagePage() {
         </div>
       </section>
 
-      {loading && !stats ? (
+      {loading && !resp ? (
         <div className="space-y-6">
           <Skeleton className="h-[22rem] rounded-[2rem]" />
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, index) => (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            {Array.from({ length: 5 }).map((_, index) => (
               <Skeleton key={index} className="h-32 rounded-[1.4rem]" />
             ))}
           </div>
@@ -495,19 +505,25 @@ export default function UsagePage() {
               {[
                 {
                   label: "请求",
-                  value: compact(stats?.total_requests ?? 0),
+                  value: compact(resp?.total_requests ?? 0),
                   sub: "当前筛选范围内的请求数",
                   icon: Activity,
                 },
                 {
+                  label: "成功率",
+                  value: successRatePercent,
+                  sub: "成功请求占比",
+                  icon: CheckCircle2,
+                },
+                {
                   label: "输入 Token",
-                  value: compact(stats?.total_input_tokens ?? 0),
+                  value: compact(resp?.total_input_tokens ?? 0),
                   sub: "请求侧输入量",
                   icon: ArrowDownToLine,
                 },
                 {
                   label: "输出 Token",
-                  value: compact(stats?.total_output_tokens ?? 0),
+                  value: compact(resp?.total_output_tokens ?? 0),
                   sub: "模型返回量",
                   icon: ArrowUpFromLine,
                 },
@@ -541,7 +557,7 @@ export default function UsagePage() {
               <div className="surface-card overflow-hidden">
                 <DataTable
                   columns={byAccountCols}
-                  rows={stats?.by_account ?? []}
+                  rows={resp?.by_account ?? []}
                   rowKey={(r) => r.account_id}
                   empty="当前没有账号维度数据"
                 />
@@ -556,7 +572,7 @@ export default function UsagePage() {
               <div className="surface-card overflow-hidden">
                 <DataTable
                   columns={byTokenCols}
-                  rows={stats?.by_token ?? []}
+                  rows={resp?.by_token ?? []}
                   rowKey={(r) => r.token_name}
                   empty="当前没有令牌维度数据"
                 />
@@ -603,7 +619,7 @@ export default function UsagePage() {
                 </div>
                 <DataTable
                   columns={logColumns}
-                  rows={stats?.logs?.items ?? []}
+                  rows={logs?.items ?? []}
                   rowKey={(r) => r.id}
                   empty="当前没有请求日志"
                 />

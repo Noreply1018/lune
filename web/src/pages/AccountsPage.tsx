@@ -66,17 +66,12 @@ interface OpenAIForm {
   provider: string;
   base_url: string;
   api_key: string;
-  model_allowlist: string;
-  quota_total: number;
-  quota_used: number;
-  quota_unit: string;
   notes: string;
 }
 
 interface CpaForm {
   label: string;
   cpa_provider: string;
-  model_allowlist: string;
   notes: string;
 }
 
@@ -85,17 +80,12 @@ const emptyOpenAIForm: OpenAIForm = {
   provider: "",
   base_url: "",
   api_key: "",
-  model_allowlist: "",
-  quota_total: 0,
-  quota_used: 0,
-  quota_unit: "USD",
   notes: "",
 };
 
 const emptyCpaForm: CpaForm = {
   label: "",
   cpa_provider: "",
-  model_allowlist: "",
   notes: "",
 };
 
@@ -258,7 +248,6 @@ export default function AccountsPage() {
       setCpaForm({
         label: a.label,
         cpa_provider: a.cpa_provider,
-        model_allowlist: a.model_allowlist?.join(", ") ?? "",
         notes: a.notes,
       });
     } else {
@@ -267,10 +256,6 @@ export default function AccountsPage() {
         provider: a.provider ?? "",
         base_url: a.base_url,
         api_key: "",
-        model_allowlist: a.model_allowlist?.join(", ") ?? "",
-        quota_total: a.quota_total,
-        quota_used: a.quota_used,
-        quota_unit: a.quota_unit || "USD",
         notes: a.notes,
       });
     }
@@ -287,9 +272,6 @@ export default function AccountsPage() {
           label: cpaForm.label,
           cpa_service_id: cpaService?.id,
           cpa_provider: cpaForm.cpa_provider,
-          model_allowlist: cpaForm.model_allowlist
-            ? cpaForm.model_allowlist.split(",").map((s) => s.trim()).filter(Boolean)
-            : [],
           notes: cpaForm.notes,
         };
         if (editId) {
@@ -305,12 +287,6 @@ export default function AccountsPage() {
           label: openaiForm.label,
           provider: openaiForm.provider,
           base_url: openaiForm.base_url,
-          model_allowlist: openaiForm.model_allowlist
-            ? openaiForm.model_allowlist.split(",").map((s) => s.trim()).filter(Boolean)
-            : [],
-          quota_total: openaiForm.quota_total,
-          quota_used: openaiForm.quota_used,
-          quota_unit: openaiForm.quota_unit,
           notes: openaiForm.notes,
         };
         if (openaiForm.api_key) {
@@ -444,18 +420,31 @@ export default function AccountsPage() {
       key: "budget",
       header: "额度",
       render: (r) =>
-        r.source_kind === "cpa" ? (
-          <span className="text-sm text-moon-400">由 CPA 管理</span>
-        ) : r.quota_total > 0 ? (
-          <span className="text-sm text-moon-500">
-            {r.quota_unit === "USD" ? "$" : r.quota_unit === "CNY" ? "\u00a5" : ""}
-            {r.quota_used} / {r.quota_total}
+        r.quota_display ? (
+          <span className="rounded-md bg-moon-100/60 px-2 py-0.5 text-xs font-medium text-moon-600">
+            {r.quota_display}
           </span>
         ) : (
           <span className="text-sm text-moon-400">-</span>
         ),
       align: "right",
       tone: "numeric",
+    },
+    {
+      key: "models",
+      header: "模型",
+      render: (r) =>
+        r.models && r.models.length > 0 ? (
+          <span
+            className="rounded-md bg-lunar-100/50 px-2 py-0.5 text-xs font-medium text-lunar-700 cursor-default"
+            title={r.models.join(", ")}
+          >
+            {r.models.length} 个模型
+          </span>
+        ) : (
+          <span className="text-sm text-moon-400">-</span>
+        ),
+      tone: "secondary",
     },
     {
       key: "latency",
@@ -894,20 +883,6 @@ export default function AccountsPage() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="cpa-models">模型白名单</Label>
-                    <Input
-                      id="cpa-models"
-                      value={cpaForm.model_allowlist}
-                      onChange={(e) =>
-                        setCpaForm({
-                          ...cpaForm,
-                          model_allowlist: e.target.value,
-                        })
-                      }
-                      placeholder="gpt-4o, gpt-4.1（逗号分隔，留空表示全部）"
-                    />
-                  </div>
-                  <div className="space-y-2">
                     <Label htmlFor="cpa-notes">备注</Label>
                     <textarea
                       id="cpa-notes"
@@ -1020,70 +995,6 @@ export default function AccountsPage() {
                       若要测试连接，请输入新的 API Key。留空会保留当前密钥，但这里无法直接测试。
                     </p>
                   )}
-
-                  <div className="space-y-2">
-                    <Label htmlFor="acc-models">模型白名单</Label>
-                    <Input
-                      id="acc-models"
-                      value={openaiForm.model_allowlist}
-                      onChange={(e) =>
-                        setOpenaiForm({
-                          ...openaiForm,
-                          model_allowlist: e.target.value,
-                        })
-                      }
-                      placeholder="gpt-4o, gpt-4o-mini（逗号分隔，留空表示全部）"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="space-y-2">
-                      <Label htmlFor="acc-quota-total">总额度</Label>
-                      <Input
-                        id="acc-quota-total"
-                        type="number"
-                        value={openaiForm.quota_total}
-                        onChange={(e) =>
-                          setOpenaiForm({
-                            ...openaiForm,
-                            quota_total: Number(e.target.value),
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="acc-quota-used">已用</Label>
-                      <Input
-                        id="acc-quota-used"
-                        type="number"
-                        value={openaiForm.quota_used}
-                        onChange={(e) =>
-                          setOpenaiForm({
-                            ...openaiForm,
-                            quota_used: Number(e.target.value),
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>单位</Label>
-                      <Select
-                        value={openaiForm.quota_unit}
-                        onValueChange={(v) =>
-                          v && setOpenaiForm({ ...openaiForm, quota_unit: v })
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="USD">USD</SelectItem>
-                          <SelectItem value="CNY">CNY</SelectItem>
-                          <SelectItem value="tokens">tokens</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
 
                   <div className="space-y-2">
                     <Label htmlFor="acc-notes">备注</Label>

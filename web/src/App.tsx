@@ -8,7 +8,6 @@ import Shell from "./components/Shell";
 const OverviewPage = lazy(() => import("./pages/OverviewPage"));
 const AccountsPage = lazy(() => import("./pages/AccountsPage"));
 const PoolsPage = lazy(() => import("./pages/PoolsPage"));
-const RoutesPage = lazy(() => import("./pages/RoutesPage"));
 const TokensPage = lazy(() => import("./pages/TokensPage"));
 const UsagePage = lazy(() => import("./pages/UsagePage"));
 const CpaServicePage = lazy(() => import("./pages/CpaServicePage"));
@@ -33,8 +32,6 @@ function PageRouter() {
             return <AccountsPage />;
           case "/admin/pools":
             return <PoolsPage />;
-          case "/admin/routes":
-            return <RoutesPage />;
           case "/admin/tokens":
             return <TokensPage />;
           case "/admin/usage":

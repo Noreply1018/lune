@@ -1,12 +1,14 @@
 package gateway
 
 import (
-	"crypto/rand"
+	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -57,100 +59,126 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// parse model and stream fields
-	modelAlias, isStream := parseRequestBody(body)
-	if modelAlias == "" {
+	model, isStream := parseRequestBody(body)
+	if model == "" {
 		webutil.WriteGatewayError(w, 400, "bad_request", "missing model field in request body")
 		return
 	}
 
-	// resolve route
-	resolved, err := h.router.Resolve(modelAlias)
+	// v3: extract token's pool_id and optional force-account header
+	var tokenPoolID *int64
+	if accessToken != nil && accessToken.PoolID != nil {
+		tokenPoolID = accessToken.PoolID
+	}
+
+	var forceAccountID *int64
+	if v := r.Header.Get("X-Lune-Account-Id"); v != "" && tokenPoolID == nil {
+		// force-account only allowed for Global Tokens (no pool scope)
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			forceAccountID = &id
+		}
+	}
+
+	// initial route resolution
+	resolved, err := h.router.Resolve(model, tokenPoolID, forceAccountID)
 	if err != nil {
 		if errors.Is(err, router.ErrNoRoute) {
-			webutil.WriteGatewayError(w, 404, "no_route", fmt.Sprintf("no route for model: %s", modelAlias))
+			webutil.WriteGatewayError(w, 404, "no_route", fmt.Sprintf("no route for model: %s", model))
+			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "")
+			return
+		}
+		if errors.Is(err, router.ErrPoolDisabled) {
+			webutil.WriteGatewayError(w, 503, "pool_disabled", "pool is disabled")
+			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "")
+			return
+		}
+		if errors.Is(err, router.ErrNoHealthyAccount) {
+			webutil.WriteGatewayError(w, 503, "no_healthy_account", "no healthy account available")
+			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "")
 			return
 		}
 		webutil.WriteGatewayError(w, 500, "internal", err.Error())
 		return
 	}
 
-	// rewrite model in body if needed
-	requestBody := body
-	if resolved.TargetModel != modelAlias {
-		requestBody = rewriteModel(body, resolved.TargetModel)
-	}
-
-	// retry loop
+	// retry loop with exponential backoff
 	maxRetries := h.getMaxRetries()
 	var exclude []int64
 	var lastErr error
 	var lastStatusCode int
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		selected, err := h.router.SelectAccount(resolved.PoolID, resolved.TargetModel, exclude)
-		if err != nil {
-			if errors.Is(err, router.ErrPoolDisabled) {
-				webutil.WriteGatewayError(w, 503, "pool_disabled", "pool is disabled")
-				h.logRequest(requestID, accessToken, modelAlias, resolved, 0, 0, start, isStream, r, false, err.Error(), Usage{}, "")
-				return
+		// Exponential backoff for retries
+		if attempt > 0 {
+			base := time.Duration(1<<(attempt-1)) * 200 * time.Millisecond
+			jitter := time.Duration(rand.N(int64(base / 2)))
+			time.Sleep(base + jitter)
+
+			// Re-resolve with exclude list
+			resolved, err = h.router.SelectNextAccount(model, tokenPoolID, exclude)
+			if err != nil {
+				if errors.Is(err, router.ErrNoHealthyAccount) {
+					break // exhausted all accounts
+				}
+				break
 			}
-			if errors.Is(err, router.ErrNoHealthyAccount) {
-				webutil.WriteGatewayError(w, 503, "no_healthy_account", "no healthy account available")
-				h.logRequest(requestID, accessToken, modelAlias, resolved, 0, 0, start, isStream, r, false, err.Error(), Usage{}, "")
-				return
-			}
-			webutil.WriteGatewayError(w, 500, "internal", err.Error())
-			return
 		}
 
 		// resolve upstream target based on source_kind
-		target := h.resolveTarget(selected.Account)
+		target := h.resolveTarget(resolved.Account)
 
 		timeout := h.getRequestTimeout()
-		result := Forward(w, r, target, pathSuffix, requestBody, isStream, requestID, timeout)
+		result := Forward(w, r, target, pathSuffix, body, isStream, requestID, timeout)
 
 		if result.Err != nil {
 			// network/connection error
-			exclude = append(exclude, selected.Account.ID)
+			exclude = append(exclude, resolved.AccountID)
 			lastErr = result.Err
-			h.updateHealth(selected.Account.ID, "error", result.Err.Error())
+			h.updateHealth(resolved.AccountID, "error", result.Err.Error())
 
 			if !IsRetryable(result.Err) {
 				webutil.WriteGatewayError(w, 502, "upstream_failed", result.Err.Error())
-				h.logRequest(requestID, accessToken, modelAlias, resolved, selected.Account.ID, 0, start, isStream, r, false, result.Err.Error(), Usage{}, selected.Account.SourceKind)
+				h.logRequest(requestID, accessToken, model, resolved, 0, start, isStream, r, false, result.Err.Error(), Usage{}, resolved.Account.SourceKind)
 				return
 			}
 			continue
 		}
 
 		if IsRetryableStatus(result.StatusCode) && attempt < maxRetries-1 {
-			// response already written for streaming, can't retry
+			// streaming response already written, can't retry
 			if isStream {
-				h.logRequest(requestID, accessToken, modelAlias, resolved, selected.Account.ID, result.StatusCode, start, isStream, r, false, "upstream error", result.Usage, selected.Account.SourceKind)
+				h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, "upstream error", result.Usage, resolved.Account.SourceKind)
 				return
 			}
-			exclude = append(exclude, selected.Account.ID)
+			exclude = append(exclude, resolved.AccountID)
 			lastStatusCode = result.StatusCode
-			h.updateHealth(selected.Account.ID, "error", fmt.Sprintf("HTTP %d", result.StatusCode))
+			h.updateHealth(resolved.AccountID, "error", fmt.Sprintf("HTTP %d", result.StatusCode))
+
+			// Handle 429 with Retry-After
+			if result.StatusCode == 429 {
+				if retryAfter := result.Headers.Get("Retry-After"); retryAfter != "" {
+					if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 && secs <= 30 {
+						time.Sleep(time.Duration(secs) * time.Second)
+					}
+				}
+			}
 			continue
 		}
 
-		// success or non-retryable response — already written to client
+		// success or non-retryable response — flush to client
+		result.WriteResponse(w)
 		success := result.StatusCode >= 200 && result.StatusCode < 400
 		if success {
-			h.updateHealth(selected.Account.ID, "healthy", "")
+			h.updateHealth(resolved.AccountID, "healthy", "")
+			// v3: update token last_used_at (no quota tracking)
+			if accessToken != nil {
+				go func() {
+					_ = h.store.UpdateTokenLastUsed(accessToken.ID)
+				}()
+			}
 		}
 
-		// accumulate usage
-		totalTokens := result.Usage.InputTokens + result.Usage.OutputTokens
-		if totalTokens > 0 && accessToken != nil {
-			go func() {
-				_ = h.store.IncrementTokenUsage(accessToken.ID, totalTokens)
-				h.cache.Invalidate()
-			}()
-		}
-
-		h.logRequest(requestID, accessToken, modelAlias, resolved, selected.Account.ID, result.StatusCode, start, isStream, r, success, "", result.Usage, selected.Account.SourceKind)
+		h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, "", result.Usage, resolved.Account.SourceKind)
 		return
 	}
 
@@ -162,20 +190,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errMsg = fmt.Sprintf("upstream returned HTTP %d", lastStatusCode)
 	}
 	webutil.WriteGatewayError(w, 502, "upstream_failed", errMsg)
-	h.logRequest(requestID, accessToken, modelAlias, resolved, 0, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, "")
+	h.logRequest(requestID, accessToken, model, nil, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, "")
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter) {
-	aliases := h.cache.GetEnabledModelAliases()
+	// v3: aggregate models from account_models via cache
+	modelNames := h.cache.GetAllModels()
 	type model struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
 		OwnedBy string `json:"owned_by"`
 	}
-	models := make([]model, 0, len(aliases))
-	for _, alias := range aliases {
+	models := make([]model, 0, len(modelNames))
+	for _, name := range modelNames {
 		models = append(models, model{
-			ID:      alias,
+			ID:      name,
 			Object:  "model",
 			OwnedBy: "lune",
 		})
@@ -204,23 +233,24 @@ func (h *Handler) resolveTarget(account store.Account) UpstreamTarget {
 	}
 }
 
-func (h *Handler) logRequest(requestID string, token *store.AccessToken, alias string, resolved *router.ResolvedRoute, accountID int64, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string) {
+func (h *Handler) logRequest(requestID string, token *store.AccessToken, model string, resolved *router.ResolvedRoute, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string) {
 	tokenName := ""
 	if token != nil {
 		tokenName = token.Name
 	}
-	targetModel := ""
-	var poolID int64
+	modelActual := model
+	var poolID, accountID int64
 	if resolved != nil {
-		targetModel = resolved.TargetModel
+		modelActual = resolved.TargetModel
 		poolID = resolved.PoolID
+		accountID = resolved.AccountID
 	}
 
 	log := &store.RequestLog{
 		RequestID:       requestID,
 		AccessTokenName: tokenName,
-		ModelAlias:      alias,
-		TargetModel:     targetModel,
+		ModelRequested:  model,
+		ModelActual:     modelActual,
 		PoolID:          poolID,
 		AccountID:       accountID,
 		StatusCode:      statusCode,
@@ -233,7 +263,11 @@ func (h *Handler) logRequest(requestID string, token *store.AccessToken, alias s
 		ErrorMessage:    errMsg,
 		SourceKind:      sourceKind,
 	}
-	go func() { _ = h.store.InsertLog(log) }()
+	go func() {
+		if err := h.store.InsertLog(log); err != nil {
+			slog.Error("failed to insert request log", "request_id", log.RequestID, "err", err)
+		}
+	}()
 }
 
 func (h *Handler) updateHealth(accountID int64, status, lastError string) {
@@ -280,23 +314,9 @@ func parseRequestBody(body []byte) (model string, stream bool) {
 	return req.Model, req.Stream
 }
 
-func rewriteModel(body []byte, targetModel string) []byte {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(body, &m); err != nil {
-		return body
-	}
-	modelJSON, _ := json.Marshal(targetModel)
-	m["model"] = modelJSON
-	rewritten, err := json.Marshal(m)
-	if err != nil {
-		return body
-	}
-	return rewritten
-}
-
 func generateRequestID() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	_, _ = cryptorand.Read(b)
 	return hex.EncodeToString(b)
 }
 

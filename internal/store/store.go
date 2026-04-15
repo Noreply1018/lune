@@ -1,9 +1,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +19,116 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
+const v3SchemaVersion = 4
+
+const v3Schema = `
+CREATE TABLE IF NOT EXISTS system_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS cpa_services (
+    id              INTEGER PRIMARY KEY,
+    label           TEXT NOT NULL,
+    base_url        TEXT NOT NULL,
+    api_key         TEXT NOT NULL DEFAULT '',
+    management_key  TEXT NOT NULL DEFAULT '',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    status          TEXT NOT NULL DEFAULT 'unknown',
+    last_checked_at TEXT,
+    last_error      TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS pools (
+    id         INTEGER PRIMARY KEY,
+    label      TEXT NOT NULL UNIQUE,
+    priority   INTEGER NOT NULL DEFAULT 0,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS accounts (
+    id                  INTEGER PRIMARY KEY,
+    label               TEXT NOT NULL,
+    source_kind         TEXT NOT NULL DEFAULT 'openai_compat',
+    base_url            TEXT NOT NULL DEFAULT '',
+    api_key             TEXT NOT NULL DEFAULT '',
+    provider            TEXT NOT NULL DEFAULT '',
+    cpa_service_id      INTEGER REFERENCES cpa_services(id),
+    cpa_provider        TEXT NOT NULL DEFAULT '',
+    cpa_account_key     TEXT NOT NULL DEFAULT '',
+    cpa_email           TEXT NOT NULL DEFAULT '',
+    cpa_plan_type       TEXT NOT NULL DEFAULT '',
+    cpa_openai_id       TEXT NOT NULL DEFAULT '',
+    cpa_expired_at      TEXT NOT NULL DEFAULT '',
+    cpa_last_refresh_at TEXT NOT NULL DEFAULT '',
+    cpa_disabled        INTEGER NOT NULL DEFAULT 0,
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    status              TEXT NOT NULL DEFAULT 'unknown',
+    notes               TEXT NOT NULL DEFAULT '',
+    quota_display       TEXT NOT NULL DEFAULT '',
+    last_checked_at     TEXT,
+    last_error          TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS pool_members (
+    id         INTEGER PRIMARY KEY,
+    pool_id    INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    position   INTEGER NOT NULL DEFAULT 0,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(pool_id, account_id)
+);
+
+CREATE TABLE IF NOT EXISTS account_models (
+    id         INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    model_id   TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(account_id, model_id)
+);
+
+CREATE TABLE IF NOT EXISTS access_tokens (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL,
+    token        TEXT NOT NULL UNIQUE,
+    pool_id      INTEGER REFERENCES pools(id) ON DELETE CASCADE,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS request_logs (
+    id                INTEGER PRIMARY KEY,
+    request_id        TEXT NOT NULL,
+    access_token_name TEXT NOT NULL DEFAULT '',
+    model_requested   TEXT NOT NULL DEFAULT '',
+    model_actual      TEXT NOT NULL DEFAULT '',
+    pool_id           INTEGER,
+    account_id        INTEGER,
+    status_code       INTEGER NOT NULL DEFAULT 0,
+    latency_ms        INTEGER NOT NULL DEFAULT 0,
+    input_tokens      INTEGER NOT NULL DEFAULT 0,
+    output_tokens     INTEGER NOT NULL DEFAULT 0,
+    stream            INTEGER NOT NULL DEFAULT 0,
+    request_ip        TEXT NOT NULL DEFAULT '',
+    success           INTEGER NOT NULL DEFAULT 1,
+    error_message     TEXT NOT NULL DEFAULT '',
+    source_kind       TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_request_logs_pool_id ON request_logs(pool_id);
+`
+
 func New(dbPath string) (*Store, error) {
 	dsn := dbPath + "?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)"
 	db, err := sql.Open("sqlite", dsn)
@@ -29,13 +141,9 @@ func New(dbPath string) (*Store, error) {
 	}
 
 	s := &Store{db: db, schemaCache: make(map[string]map[string]bool)}
-	if err := s.migrate(); err != nil {
+	if err := s.migrateV3(dbPath); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	if err := s.repairSchema(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("repair schema: %w", err)
 	}
 	return s, nil
 }
@@ -44,422 +152,174 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// --- migrations ---
-
-var migrations = []string{
-	// v1: all tables
-	`
-CREATE TABLE IF NOT EXISTS system_config (
-	key   TEXT PRIMARY KEY,
-	value TEXT
-);
-
-CREATE TABLE IF NOT EXISTS accounts (
-	id              INTEGER PRIMARY KEY,
-	label           TEXT NOT NULL,
-	base_url        TEXT NOT NULL,
-	api_key         TEXT NOT NULL,
-	enabled         INTEGER NOT NULL DEFAULT 1,
-	status          TEXT NOT NULL DEFAULT 'healthy',
-	quota_total     REAL NOT NULL DEFAULT 0,
-	quota_used      REAL NOT NULL DEFAULT 0,
-	quota_unit      TEXT NOT NULL DEFAULT '',
-	notes           TEXT NOT NULL DEFAULT '',
-	model_allowlist TEXT NOT NULL DEFAULT '[]',
-	last_checked_at TEXT,
-	last_error      TEXT NOT NULL DEFAULT '',
-	created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-	updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS pools (
-	id         INTEGER PRIMARY KEY,
-	label      TEXT NOT NULL,
-	strategy   TEXT NOT NULL DEFAULT 'priority-first-healthy',
-	enabled    INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL DEFAULT (datetime('now')),
-	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS pool_members (
-	id         INTEGER PRIMARY KEY,
-	pool_id    INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
-	account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-	priority   INTEGER NOT NULL DEFAULT 1,
-	weight     INTEGER NOT NULL DEFAULT 1,
-	UNIQUE(pool_id, account_id)
-);
-
-CREATE TABLE IF NOT EXISTS model_routes (
-	id           INTEGER PRIMARY KEY,
-	alias        TEXT NOT NULL UNIQUE,
-	pool_id      INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
-	target_model TEXT NOT NULL,
-	enabled      INTEGER NOT NULL DEFAULT 1,
-	created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-	updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS access_tokens (
-	id           INTEGER PRIMARY KEY,
-	name         TEXT NOT NULL,
-	token        TEXT NOT NULL UNIQUE,
-	enabled      INTEGER NOT NULL DEFAULT 1,
-	quota_tokens INTEGER NOT NULL DEFAULT 0,
-	used_tokens  INTEGER NOT NULL DEFAULT 0,
-	created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-	updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
-	last_used_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS request_logs (
-	id                INTEGER PRIMARY KEY,
-	request_id        TEXT NOT NULL,
-	access_token_name TEXT,
-	model_alias       TEXT,
-	target_model      TEXT,
-	pool_id           INTEGER,
-	account_id        INTEGER,
-	status_code       INTEGER,
-	latency_ms        INTEGER,
-	input_tokens      INTEGER,
-	output_tokens     INTEGER,
-	stream            INTEGER,
-	request_ip        TEXT,
-	success           INTEGER,
-	error_message     TEXT,
-	created_at        TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
-`,
-	// v2: CPA as Provider
-	`
-CREATE TABLE IF NOT EXISTS cpa_services (
-	id              INTEGER PRIMARY KEY,
-	label           TEXT NOT NULL,
-	base_url        TEXT NOT NULL,
-	api_key         TEXT NOT NULL DEFAULT '',
-	enabled         INTEGER NOT NULL DEFAULT 1,
-	status          TEXT NOT NULL DEFAULT 'unknown',
-	last_checked_at TEXT,
-	last_error      TEXT NOT NULL DEFAULT '',
-	created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-	updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-ALTER TABLE accounts ADD COLUMN source_kind     TEXT NOT NULL DEFAULT 'openai_compat';
-ALTER TABLE accounts ADD COLUMN provider         TEXT NOT NULL DEFAULT '';
-ALTER TABLE accounts ADD COLUMN cpa_service_id   INTEGER REFERENCES cpa_services(id);
-ALTER TABLE accounts ADD COLUMN cpa_provider     TEXT NOT NULL DEFAULT '';
-ALTER TABLE accounts ADD COLUMN cpa_account_key  TEXT NOT NULL DEFAULT '';
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_cpa_unique
-	ON accounts(cpa_service_id, cpa_provider)
-	WHERE source_kind = 'cpa' AND cpa_provider != '';
-
-ALTER TABLE request_logs ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'openai_compat';
-`,
-	// v3: CPA Management Adapter
-	`
-ALTER TABLE accounts ADD COLUMN cpa_email           TEXT NOT NULL DEFAULT '';
-ALTER TABLE accounts ADD COLUMN cpa_plan_type       TEXT NOT NULL DEFAULT '';
-ALTER TABLE accounts ADD COLUMN cpa_openai_id       TEXT NOT NULL DEFAULT '';
-ALTER TABLE accounts ADD COLUMN cpa_expired_at      TEXT;
-ALTER TABLE accounts ADD COLUMN cpa_last_refresh_at TEXT;
-ALTER TABLE accounts ADD COLUMN cpa_disabled        INTEGER NOT NULL DEFAULT 0;
-
-DROP INDEX IF EXISTS idx_accounts_cpa_unique;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_cpa_key_unique
-    ON accounts(cpa_service_id, cpa_account_key)
-    WHERE source_kind = 'cpa' AND cpa_account_key != '';
-`,
+func (s *Store) DB() *sql.DB {
+	return s.db
 }
 
-func (s *Store) migrate() error {
-	// ensure system_config exists for version tracking
-	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT)`)
+// migrateV3 detects the current schema version and either creates fresh v3
+// schema or migrates from v2 (backup + rebuild, preserving cpa_services data).
+func (s *Store) migrateV3(dbPath string) error {
+	// Ensure system_config exists for version tracking
+	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')`)
 	if err != nil {
 		return err
 	}
 
-	current := s.schemaVersion()
-	for i := current; i < len(migrations); i++ {
-		if _, err := s.db.Exec(migrations[i]); err != nil {
-			return fmt.Errorf("migration v%d: %w", i+1, err)
-		}
-		if err := s.SetSetting("schema_version", strconv.Itoa(i+1)); err != nil {
-			return err
+	ver := s.schemaVersion()
+
+	if ver >= v3SchemaVersion {
+		return nil // already at v3
+	}
+
+	if ver == 0 {
+		// Fresh database — create v3 schema directly
+		slog.Info("creating v3 schema (fresh database)")
+		return s.createV3Schema()
+	}
+
+	// v1/v2/v3(old) → v3(new): backup and rebuild
+	slog.Info("detected pre-v3 schema, migrating", "current_version", ver)
+
+	// Preserve cpa_services data before rebuild
+	cpaData, err := s.backupCpaServices()
+	if err != nil {
+		slog.Warn("could not backup cpa_services, will skip", "err", err)
+	}
+
+	// Backup the database file
+	backupPath := dbPath + ".v2.bak"
+	if err := s.backupDBFile(dbPath, backupPath); err != nil {
+		slog.Warn("database backup failed, continuing anyway", "err", err)
+	} else {
+		slog.Info("database backed up", "path", backupPath)
+	}
+
+	// Drop all existing tables
+	if err := s.dropAllTables(); err != nil {
+		return fmt.Errorf("drop tables: %w", err)
+	}
+
+	// Create fresh v3 schema
+	if err := s.createV3Schema(); err != nil {
+		return fmt.Errorf("create v3 schema: %w", err)
+	}
+
+	// Restore cpa_services data
+	if len(cpaData) > 0 {
+		if err := s.restoreCpaServices(cpaData); err != nil {
+			slog.Warn("could not restore cpa_services", "err", err)
+		} else {
+			slog.Info("cpa_services data restored", "count", len(cpaData))
 		}
 	}
+
+	slog.Info("v3 migration complete")
 	return nil
 }
 
-func (s *Store) tableColumns(table string) (map[string]bool, error) {
-	s.schemaMu.Lock()
-	defer s.schemaMu.Unlock()
+func (s *Store) createV3Schema() error {
+	if _, err := s.db.Exec(v3Schema); err != nil {
+		return err
+	}
+	return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
+}
 
-	if cols, ok := s.schemaCache[table]; ok {
-		out := make(map[string]bool, len(cols))
-		for k, v := range cols {
-			out[k] = v
-		}
-		return out, nil
+type cpaServiceBackup struct {
+	Label         string
+	BaseURL       string
+	APIKey        string
+	Enabled       int
+	Status        string
+	LastCheckedAt *string
+	LastError     string
+	CreatedAt     string
+	UpdatedAt     string
+}
+
+func (s *Store) backupCpaServices() ([]cpaServiceBackup, error) {
+	// Check if cpa_services table exists
+	var tableName string
+	err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='cpa_services'`).Scan(&tableName)
+	if err != nil {
+		return nil, nil // table doesn't exist, nothing to backup
 	}
 
-	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	rows, err := s.db.Query(`SELECT label, base_url, api_key, enabled, status, last_checked_at, last_error, created_at, updated_at FROM cpa_services`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	cols := make(map[string]bool)
+	var data []cpaServiceBackup
 	for rows.Next() {
-		var (
-			cid      int
-			name     string
-			typ      string
-			notnull  int
-			defaultV any
-			primaryK int
-		)
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &defaultV, &primaryK); err != nil {
-			return nil, err
+		var d cpaServiceBackup
+		if err := rows.Scan(&d.Label, &d.BaseURL, &d.APIKey, &d.Enabled, &d.Status, &d.LastCheckedAt, &d.LastError, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			continue
 		}
-		cols[strings.ToLower(name)] = true
+		data = append(data, d)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	s.schemaCache[table] = cols
-
-	out := make(map[string]bool, len(cols))
-	for k, v := range cols {
-		out[k] = v
-	}
-	return out, nil
+	return data, rows.Err()
 }
 
-func (s *Store) invalidateSchemaCache(table string) {
-	s.schemaMu.Lock()
-	defer s.schemaMu.Unlock()
-	delete(s.schemaCache, table)
-}
-
-func (s *Store) ensureColumn(table, name, ddl string) error {
-	cols, err := s.tableColumns(table)
+func (s *Store) restoreCpaServices(data []cpaServiceBackup) error {
+	stmt, err := s.db.Prepare(`INSERT INTO cpa_services (label, base_url, api_key, enabled, status, last_checked_at, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
-	if cols[strings.ToLower(name)] {
-		return nil
+	defer stmt.Close()
+
+	for _, d := range data {
+		if _, err := stmt.Exec(d.Label, d.BaseURL, d.APIKey, d.Enabled, d.Status, d.LastCheckedAt, d.LastError, d.CreatedAt, d.UpdatedAt); err != nil {
+			return err
+		}
 	}
-	if _, err := s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + ddl); err != nil {
+	return nil
+}
+
+func (s *Store) backupDBFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
 		return err
 	}
-	s.invalidateSchemaCache(table)
-	return nil
+	return os.WriteFile(dst, data, 0644)
 }
 
-func (s *Store) repairSchema() error {
-	// If the accounts table has legacy columns from v0 schema, the table
-	// structure is fundamentally incompatible (wrong column types, NOT NULL
-	// without DEFAULT, etc). Rebuild the entire table instead of patching.
-	if err := s.rebuildLegacyAccountsTable(); err != nil {
-		return fmt.Errorf("rebuild legacy accounts: %w", err)
-	}
-
-	// Ensure all expected columns exist (handles partially-migrated databases)
-	accountColumns := []struct {
-		name string
-		ddl  string
-	}{
-		{"label", `label TEXT NOT NULL DEFAULT ''`},
-		{"base_url", `base_url TEXT NOT NULL DEFAULT ''`},
-		{"api_key", `api_key TEXT NOT NULL DEFAULT ''`},
-		{"enabled", `enabled INTEGER NOT NULL DEFAULT 1`},
-		{"status", `status TEXT NOT NULL DEFAULT 'healthy'`},
-		{"quota_total", `quota_total REAL NOT NULL DEFAULT 0`},
-		{"quota_used", `quota_used REAL NOT NULL DEFAULT 0`},
-		{"quota_unit", `quota_unit TEXT NOT NULL DEFAULT ''`},
-		{"notes", `notes TEXT NOT NULL DEFAULT ''`},
-		{"model_allowlist", `model_allowlist TEXT NOT NULL DEFAULT '[]'`},
-		{"last_checked_at", `last_checked_at TEXT`},
-		{"last_error", `last_error TEXT NOT NULL DEFAULT ''`},
-		{"created_at", `created_at TEXT`},
-		{"updated_at", `updated_at TEXT`},
-		{"source_kind", `source_kind TEXT NOT NULL DEFAULT 'openai_compat'`},
-		{"provider", `provider TEXT NOT NULL DEFAULT ''`},
-		{"cpa_service_id", `cpa_service_id INTEGER REFERENCES cpa_services(id)`},
-		{"cpa_provider", `cpa_provider TEXT NOT NULL DEFAULT ''`},
-		{"cpa_account_key", `cpa_account_key TEXT NOT NULL DEFAULT ''`},
-		{"cpa_email", `cpa_email TEXT NOT NULL DEFAULT ''`},
-		{"cpa_plan_type", `cpa_plan_type TEXT NOT NULL DEFAULT ''`},
-		{"cpa_openai_id", `cpa_openai_id TEXT NOT NULL DEFAULT ''`},
-		{"cpa_expired_at", `cpa_expired_at TEXT`},
-		{"cpa_last_refresh_at", `cpa_last_refresh_at TEXT`},
-		{"cpa_disabled", `cpa_disabled INTEGER NOT NULL DEFAULT 0`},
-	}
-	for _, col := range accountColumns {
-		if err := s.ensureColumn("accounts", col.name, col.ddl); err != nil {
-			return err
-		}
-	}
-
-	requestLogColumns := []struct {
-		name string
-		ddl  string
-	}{
-		{"request_id", `request_id TEXT NOT NULL DEFAULT ''`},
-		{"access_token_name", `access_token_name TEXT`},
-		{"model_alias", `model_alias TEXT`},
-		{"target_model", `target_model TEXT`},
-		{"pool_id", `pool_id INTEGER`},
-		{"account_id", `account_id INTEGER`},
-		{"status_code", `status_code INTEGER`},
-		{"latency_ms", `latency_ms INTEGER`},
-		{"input_tokens", `input_tokens INTEGER`},
-		{"output_tokens", `output_tokens INTEGER`},
-		{"stream", `stream INTEGER`},
-		{"request_ip", `request_ip TEXT`},
-		{"success", `success INTEGER`},
-		{"error_message", `error_message TEXT`},
-		{"created_at", `created_at TEXT`},
-		{"source_kind", `source_kind TEXT NOT NULL DEFAULT 'openai_compat'`},
-	}
-	for _, col := range requestLogColumns {
-		if err := s.ensureColumn("request_logs", col.name, col.ddl); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// rebuildLegacyAccountsTable detects incompatible schema and rebuilds the table with
-// correct column definitions. This is the SQLite-recommended way to change
-// column types/constraints: create new table → copy data → swap.
-func (s *Store) rebuildLegacyAccountsTable() error {
-	// Check actual column definitions via PRAGMA
-	rows, err := s.db.Query(`PRAGMA table_info(accounts)`)
+func (s *Store) dropAllTables() error {
+	rows, err := s.db.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence'`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
-	needsRebuild := false
-	var existingCols []string
+	var tables []string
 	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notnull int
-		var dflt *string
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
 		}
-		existingCols = append(existingCols, name)
-		// id should be INTEGER, not TEXT
-		if name == "id" && typ == "TEXT" {
-			needsRebuild = true
-		}
-		// NOT NULL columns without DEFAULT will break INSERT
-		if notnull == 1 && dflt == nil && pk == 0 {
-			needsRebuild = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
+		tables = append(tables, name)
 	}
 
-	if !needsRebuild {
-		return nil
-	}
-
-	log.Printf("store: detected legacy v0 accounts table, rebuilding...")
-
-	correctSchema := `CREATE TABLE accounts_new (
-		id              INTEGER PRIMARY KEY,
-		label           TEXT NOT NULL DEFAULT '',
-		base_url        TEXT NOT NULL DEFAULT '',
-		api_key         TEXT NOT NULL DEFAULT '',
-		enabled         INTEGER NOT NULL DEFAULT 1,
-		status          TEXT NOT NULL DEFAULT 'healthy',
-		quota_total     REAL NOT NULL DEFAULT 0,
-		quota_used      REAL NOT NULL DEFAULT 0,
-		quota_unit      TEXT NOT NULL DEFAULT '',
-		notes           TEXT NOT NULL DEFAULT '',
-		model_allowlist TEXT NOT NULL DEFAULT '[]',
-		last_checked_at TEXT,
-		last_error      TEXT NOT NULL DEFAULT '',
-		created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-		updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-		source_kind     TEXT NOT NULL DEFAULT 'openai_compat',
-		provider        TEXT NOT NULL DEFAULT '',
-		cpa_service_id  INTEGER REFERENCES cpa_services(id),
-		cpa_provider    TEXT NOT NULL DEFAULT '',
-		cpa_account_key TEXT NOT NULL DEFAULT '',
-		cpa_email       TEXT NOT NULL DEFAULT '',
-		cpa_plan_type   TEXT NOT NULL DEFAULT '',
-		cpa_openai_id   TEXT NOT NULL DEFAULT '',
-		cpa_expired_at  TEXT,
-		cpa_last_refresh_at TEXT,
-		cpa_disabled    INTEGER NOT NULL DEFAULT 0
-	)`
-
-	// Columns in the correct schema that we should copy from the old table
-	newColumns := []string{
-		"id", "label", "base_url", "api_key", "enabled", "status",
-		"quota_total", "quota_used", "quota_unit", "notes", "model_allowlist",
-		"last_checked_at", "last_error", "created_at", "updated_at",
-		"source_kind", "provider", "cpa_service_id", "cpa_provider",
-		"cpa_account_key", "cpa_email", "cpa_plan_type", "cpa_openai_id",
-		"cpa_expired_at", "cpa_last_refresh_at", "cpa_disabled",
-	}
-
-	// Find columns that exist in both old and new
-	existingSet := make(map[string]bool, len(existingCols))
-	for _, name := range existingCols {
-		existingSet[name] = true
-	}
-	var copyList []string
-	for _, name := range newColumns {
-		if existingSet[name] {
-			copyList = append(copyList, name)
-		}
-	}
-
-	tx, err := s.db.Begin()
+	// Disable FK temporarily for clean drop — pin to single connection
+	conn, err := s.db.Conn(context.Background())
 	if err != nil {
-		return err
+		return fmt.Errorf("acquire conn: %w", err)
 	}
-	defer tx.Rollback()
+	defer conn.Close()
 
-	if _, err := tx.Exec(correctSchema); err != nil {
-		return fmt.Errorf("create accounts_new: %w", err)
-	}
-
-	if len(copyList) > 0 {
-		colStr := strings.Join(copyList, ", ")
-		copySQL := fmt.Sprintf("INSERT INTO accounts_new (%s) SELECT %s FROM accounts", colStr, colStr)
-		if _, err := tx.Exec(copySQL); err != nil {
-			return fmt.Errorf("copy accounts data: %w", err)
+	conn.ExecContext(context.Background(), `PRAGMA foreign_keys = OFF`)
+	for _, t := range tables {
+		if _, err := conn.ExecContext(context.Background(), `DROP TABLE IF EXISTS "`+t+`"`); err != nil {
+			return fmt.Errorf("drop %s: %w", t, err)
 		}
 	}
+	conn.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
 
-	if _, err := tx.Exec(`DROP TABLE accounts`); err != nil {
-		return fmt.Errorf("drop old accounts: %w", err)
-	}
-	if _, err := tx.Exec(`ALTER TABLE accounts_new RENAME TO accounts`); err != nil {
-		return fmt.Errorf("rename accounts_new: %w", err)
-	}
+	// Clear schema cache
+	s.schemaMu.Lock()
+	s.schemaCache = make(map[string]map[string]bool)
+	s.schemaMu.Unlock()
 
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-
-	s.invalidateSchemaCache("accounts")
-	log.Printf("store: accounts table rebuilt successfully")
 	return nil
 }
 
@@ -533,4 +393,50 @@ func (s *Store) UpdateSettings(pairs map[string]string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// tableColumns returns the set of column names for a table (cached).
+func (s *Store) tableColumns(table string) (map[string]bool, error) {
+	s.schemaMu.Lock()
+	defer s.schemaMu.Unlock()
+
+	if cols, ok := s.schemaCache[table]; ok {
+		out := make(map[string]bool, len(cols))
+		for k, v := range cols {
+			out[k] = v
+		}
+		return out, nil
+	}
+
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid      int
+			name     string
+			typ      string
+			notnull  int
+			defaultV any
+			primaryK int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &defaultV, &primaryK); err != nil {
+			return nil, err
+		}
+		cols[strings.ToLower(name)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	s.schemaCache[table] = cols
+
+	out := make(map[string]bool, len(cols))
+	for k, v := range cols {
+		out[k] = v
+	}
+	return out, nil
 }
