@@ -19,7 +19,7 @@ const (
 	clientID           = "app_EMoamEEZ73f0CkXaXp7hrann"
 	scope              = "openid email profile offline_access"
 	defaultVerifyURI   = "https://auth.openai.com/codex/device"
-	defaultRedirectURI = "http://localhost:1455/auth/callback"
+	defaultRedirectURI = "https://auth.openai.com/deviceauth/callback"
 	defaultExpiresIn   = 900
 	defaultPollSeconds = 5
 )
