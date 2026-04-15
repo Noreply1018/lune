@@ -11,18 +11,19 @@ import (
 )
 
 type LoginSession struct {
-	ID           string         `json:"id"`
-	ServiceID    int64          `json:"service_id"`
-	Status       string         `json:"status"` // pending, scanning, succeeded, failed, expired, cancelled
-	AuthURL      string         `json:"auth_url,omitempty"`
-	AuthState    string         `json:"-"` // CPA management state, not exposed to client
-	ExpiresAt    time.Time      `json:"expires_at"`
-	ErrorCode    string         `json:"error_code,omitempty"`
-	ErrorMessage string         `json:"error_message,omitempty"`
-	AccountID    *int64         `json:"account_id,omitempty"`
-	Account      *store.Account `json:"account,omitempty"`
-	CancelFunc   func()         `json:"-"`
-	ExistingKeys map[string]bool `json:"-"` // snapshot of auth keys at session creation
+	ID              string         `json:"id"`
+	ServiceID       int64          `json:"service_id"`
+	Status          string         `json:"status"` // pending, authorized, succeeded, expired, failed, cancelled
+	VerificationURI string         `json:"verification_uri,omitempty"`
+	UserCode        string         `json:"user_code,omitempty"`
+	ExpiresAt       time.Time      `json:"expires_at"`
+	PollInterval    int            `json:"poll_interval_seconds"`
+	DeviceAuthID    string         `json:"-"` // stores device_code / device_auth_id, never exposed to client
+	ErrorCode       string         `json:"error_code,omitempty"`
+	ErrorMessage    string         `json:"error_message,omitempty"`
+	AccountID       *int64         `json:"account_id,omitempty"`
+	Account         *store.Account `json:"account,omitempty"`
+	CancelFunc      func()         `json:"-"`
 }
 
 type SessionStore struct {
@@ -36,25 +37,26 @@ func NewSessionStore() *SessionStore {
 	}
 }
 
-func (s *SessionStore) CreateSession(serviceID int64, authURL, authState string, existingKeys map[string]bool) (*LoginSession, error) {
+func (s *SessionStore) CreateSession(serviceID int64, dcr *DeviceCodeResponse) (*LoginSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, sess := range s.sessions {
-		if sess.ServiceID == serviceID && (sess.Status == "pending" || sess.Status == "scanning") {
+		if sess.ServiceID == serviceID && (sess.Status == "pending" || sess.Status == "authorized") {
 			return nil, fmt.Errorf("active session already exists for this service")
 		}
 	}
 
 	id := generateSessionID()
 	session := &LoginSession{
-		ID:           id,
-		ServiceID:    serviceID,
-		Status:       "pending",
-		AuthURL:      authURL,
-		AuthState:    authState,
-		ExpiresAt:    time.Now().Add(15 * time.Minute),
-		ExistingKeys: existingKeys,
+		ID:              id,
+		ServiceID:       serviceID,
+		Status:          "pending",
+		VerificationURI: dcr.VerificationURI,
+		UserCode:        dcr.UserCode,
+		ExpiresAt:       time.Now().Add(time.Duration(dcr.ExpiresIn) * time.Second),
+		PollInterval:    dcr.Interval,
+		DeviceAuthID:    dcr.DeviceCode,
 	}
 
 	s.sessions[id] = session
@@ -74,7 +76,7 @@ func (s *SessionStore) CancelSession(id string) error {
 	if !ok {
 		return fmt.Errorf("session not found")
 	}
-	if sess.Status != "pending" && sess.Status != "scanning" {
+	if sess.Status != "pending" && sess.Status != "authorized" {
 		return fmt.Errorf("session is not active")
 	}
 	sess.Status = "cancelled"

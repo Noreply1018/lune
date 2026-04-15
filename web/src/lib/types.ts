@@ -195,13 +195,15 @@ export interface LoginSession {
   id: string;
   status:
     | "pending"
-    | "scanning"
+    | "authorized"
     | "succeeded"
     | "expired"
     | "failed"
     | "cancelled";
-  auth_url?: string;
+  verification_uri?: string;
+  user_code?: string;
   expires_at?: string;
+  poll_interval_seconds?: number;
   account_id?: number;
   account?: Account;
   error_code?: string;

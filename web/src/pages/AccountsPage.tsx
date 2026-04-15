@@ -32,7 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, MoreHorizontal, Globe, Server, KeyRound, Download, ExternalLink, Loader2, AlertTriangle, Clock, Zap, ArrowRight, ShieldCheck } from "lucide-react";
+import { Plus, MoreHorizontal, Globe, Server, KeyRound, Download, Copy, ExternalLink, Loader2, AlertTriangle, Clock, Zap, ArrowRight, ShieldCheck } from "lucide-react";
 import type { TestConnectionResult } from "@/lib/types";
 
 
@@ -791,9 +791,9 @@ export default function AccountsPage() {
                     <KeyRound className="size-5" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="font-medium text-moon-800">Codex 登录</span>
+                    <span className="font-medium text-moon-800">Device Code 登录</span>
                     <span className="mt-1 block text-sm text-moon-500">
-                      通过 Codex OAuth 登录，创建凭据型 CPA 账号。
+                      通过 Device Code 登录，创建凭据型 CPA 账号。
                     </span>
                   </span>
                 </button>
@@ -1123,10 +1123,10 @@ export default function AccountsPage() {
         onConfirm={confirmDelete}
       />
 
-      {/* CPA Codex Login Dialog */}
+      {/* CPA Device Code Login Dialog */}
       <Dialog open={showCpaLogin} onOpenChange={(open) => {
         if (!open) {
-          if (loginSession && (loginSession.status === "pending" || loginSession.status === "scanning")) {
+          if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
             api.post(`/accounts/cpa/login-sessions/${loginSession.id}/cancel`).catch(() => {});
           }
           if (pollRef.current) clearInterval(pollRef.current);
@@ -1136,7 +1136,7 @@ export default function AccountsPage() {
       }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>CPA Codex 登录</DialogTitle>
+            <DialogTitle>CPA Device Code 登录</DialogTitle>
           </DialogHeader>
           {(() => {
             const status = getDeviceCodeDialogStatus(loginSession, loginLoading);
@@ -1151,7 +1151,7 @@ export default function AccountsPage() {
                     </div>
                     <div>
                       <p className="eyebrow-label">授权方式</p>
-                      <p className="mt-2 text-sm font-medium text-moon-800">Codex OAuth</p>
+                      <p className="mt-2 text-sm font-medium text-moon-800">Device Code</p>
                     </div>
                     <div>
                       <p className="eyebrow-label">结果</p>
@@ -1182,32 +1182,47 @@ export default function AccountsPage() {
                     </div>
                   ) : null}
 
-                  {loginSession && loginSession.status === "pending" && loginSession.auth_url ? (
+                  {loginSession && loginSession.status === "pending" && loginSession.user_code ? (
                     <div className="rounded-[1.15rem] border border-white/72 bg-white/72 px-4 py-5">
-                      <p className="text-sm font-medium text-moon-800">请在浏览器中完成 OpenAI 授权</p>
-                      <p className="mt-2 text-sm text-moon-500">点击下方按钮打开授权页面，在浏览器中完成登录后此处将自动更新。</p>
-                      <div className="mt-4 flex items-center justify-center">
+                      <p className="text-sm font-medium text-moon-800">在浏览器中打开验证页，并输入以下验证码</p>
+                      <div className="mt-4 flex items-center justify-center gap-3">
+                        <code className="rounded-xl bg-moon-50/90 px-6 py-4 text-center text-2xl font-mono font-bold tracking-[0.32em] text-moon-800">
+                          {loginSession.user_code}
+                        </code>
+                      </div>
+                      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
                         <Button
-                          onClick={() => loginSession.auth_url && window.open(loginSession.auth_url, "_blank")}
+                          variant="outline"
+                          onClick={() => {
+                            navigator.clipboard.writeText(loginSession.user_code ?? "");
+                            toast("验证码已复制");
+                          }}
+                        >
+                          <Copy className="size-4" />
+                          复制验证码
+                        </Button>
+                        <Button
+                          onClick={() => loginSession.verification_uri && window.open(loginSession.verification_uri, "_blank")}
+                          disabled={!loginSession.verification_uri}
                         >
                           <ExternalLink className="size-4" />
-                          打开授权页
+                          打开验证页
                         </Button>
                       </div>
                     </div>
                   ) : null}
 
-                  {loginSession?.status === "pending" ? (
+                  {loginSession?.status === "pending" && loginSession.user_code ? (
                     <div className="flex items-center gap-2 rounded-[1rem] border border-white/72 bg-white/68 px-4 py-3 text-sm text-moon-500">
                       <Loader2 className="size-4 animate-spin" />
                       正在等待授权完成...
                     </div>
                   ) : null}
 
-                  {loginSession?.status === "scanning" ? (
+                  {loginSession?.status === "authorized" ? (
                     <div className="flex items-center gap-2 rounded-[1rem] border border-white/72 bg-white/68 px-4 py-3 text-sm text-moon-600">
                       <Loader2 className="size-4 animate-spin" />
-                      授权已完成，正在扫描并导入账号...
+                      授权已确认，正在完成账号导入...
                     </div>
                   ) : null}
 
@@ -1241,7 +1256,7 @@ export default function AccountsPage() {
               <Button onClick={() => { setShowCpaLogin(false); load(); }}>完成</Button>
             ) : (
               <Button variant="outline" onClick={() => {
-                if (loginSession && (loginSession.status === "pending" || loginSession.status === "scanning")) {
+                if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
                   api.post(`/accounts/cpa/login-sessions/${loginSession.id}/cancel`).catch(() => {});
                 }
                 if (pollRef.current) clearInterval(pollRef.current);
@@ -1337,7 +1352,7 @@ export default function AccountsPage() {
   function startCpaOAuthLogin() {
     if (!cpaService) return;
     // cancel existing session if still active
-    if (loginSession && (loginSession.status === "pending" || loginSession.status === "scanning")) {
+    if (loginSession && (loginSession.status === "pending" || loginSession.status === "authorized")) {
       api.post(`/accounts/cpa/login-sessions/${loginSession.id}/cancel`).catch(() => {});
     }
     if (pollRef.current) clearInterval(pollRef.current);
@@ -1350,17 +1365,13 @@ export default function AccountsPage() {
       .then((session) => {
         setLoginSession(session);
         setLoginLoading(false);
-        if (session.auth_url) {
-          window.open(session.auth_url, "_blank");
-        }
-        // start polling
         if (pollRef.current) clearInterval(pollRef.current);
-        const interval = 5000;
+        const interval = (session.poll_interval_seconds || 5) * 1000;
         pollRef.current = setInterval(() => {
           api.get<LoginSession>(`/accounts/cpa/login-sessions/${session.id}`)
             .then((updated) => {
               setLoginSession(updated);
-              if (updated.status !== "pending" && updated.status !== "scanning") {
+              if (updated.status !== "pending" && updated.status !== "authorized") {
                 if (pollRef.current) clearInterval(pollRef.current);
                 pollRef.current = null;
               }
@@ -1468,15 +1479,15 @@ function getDeviceCodeDialogStatus(session: LoginSession | null, loginLoading: b
     return {
       tone: "pending",
       title: "等待授权",
-      description: "请在浏览器中完成授权",
+      description: "请打开验证页并输入验证码",
     };
   }
 
-  if (session.status === "scanning") {
+  if (session.status === "authorized") {
     return {
       tone: "pending",
       title: "正在导入",
-      description: "授权已完成，正在扫描并导入账号...",
+      description: "授权已确认，正在完成账号导入...",
     };
   }
 

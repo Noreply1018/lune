@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -24,46 +23,6 @@ func NewManagementClient(baseURL, apiKey string) *ManagementClient {
 		apiKey:  apiKey,
 		client:  &http.Client{Timeout: 20 * time.Second},
 	}
-}
-
-type OAuthStartResponse struct {
-	Status string `json:"status"`
-	State  string `json:"state"`
-	URL    string `json:"url"`
-}
-
-type OAuthStatusResponse struct {
-	Status string `json:"status"`
-	Error  string `json:"error"`
-}
-
-func (c *ManagementClient) StartCodexAuth(ctx context.Context) (*OAuthStartResponse, error) {
-	var out OAuthStartResponse
-	if err := c.doJSON(ctx, http.MethodGet, "/codex-auth-url?is_webui=true", nil, &out); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(out.State) == "" || strings.TrimSpace(out.URL) == "" {
-		return nil, fmt.Errorf("CPA management returned an incomplete auth response")
-	}
-	return &out, nil
-}
-
-func (c *ManagementClient) GetAuthStatus(ctx context.Context, state string) (*OAuthStatusResponse, error) {
-	q := url.Values{}
-	q.Set("state", state)
-	var out OAuthStatusResponse
-	if err := c.doJSON(ctx, http.MethodGet, "/get-auth-status?"+q.Encode(), nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (c *ManagementClient) SubmitOAuthCallback(ctx context.Context, provider, redirectURL string) error {
-	body := map[string]string{
-		"provider":     provider,
-		"redirect_url": redirectURL,
-	}
-	return c.doJSON(ctx, http.MethodPost, "/oauth-callback", body, nil)
 }
 
 func (c *ManagementClient) doJSON(ctx context.Context, method, path string, body any, out any) error {

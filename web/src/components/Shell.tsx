@@ -35,19 +35,44 @@ function CrescentIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className}>
       <defs>
-        <linearGradient id="lune-moon" x1="5" x2="19" y1="4" y2="20">
-          <stop offset="0%" stopColor="rgba(255,255,255,0.95)" />
-          <stop offset="100%" stopColor="rgba(134,125,193,0.95)" />
+        <linearGradient id="lune-moon-fill" x1="6.2" x2="18.9" y1="4.1" y2="19.8">
+          <stop offset="0%" stopColor="#ffffff" stopOpacity="1" />
+          <stop offset="26%" stopColor="#f5f2fe" stopOpacity="1" />
+          <stop offset="100%" stopColor="#7369b0" stopOpacity="0.99" />
         </linearGradient>
+        <linearGradient id="lune-moon-edge" x1="7.7" x2="18.6" y1="4.5" y2="19.2">
+          <stop offset="0%" stopColor="#ffffff" stopOpacity="0.98" />
+          <stop offset="56%" stopColor="#ddd6f6" stopOpacity="0.96" />
+          <stop offset="100%" stopColor="#8d82c8" stopOpacity="0.86" />
+        </linearGradient>
+        <radialGradient id="lune-moon-glow" cx="0" cy="0" r="1" gradientTransform="translate(9.9 8) rotate(34) scale(9.8 11.2)">
+          <stop offset="0%" stopColor="#ffffff" stopOpacity="0.94" />
+          <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+        </radialGradient>
+        <filter id="lune-moon-shadow" x="0" y="0" width="24" height="24" colorInterpolationFilters="sRGB">
+          <feDropShadow dx="0" dy="1.85" stdDeviation="1.18" floodColor="#746bb0" floodOpacity="0.3" />
+        </filter>
       </defs>
       <path
-        d="M14.71 2.72a9.67 9.67 0 1 0 6.57 13.86A8.22 8.22 0 0 1 14.71 2.72Z"
-        fill="url(#lune-moon)"
+        d="M14.78 2.82a9.92 9.92 0 1 0 6.18 14.7 8.06 8.06 0 0 1-6.18-14.7Z"
+        fill="url(#lune-moon-fill)"
+        filter="url(#lune-moon-shadow)"
       />
       <path
-        d="M15.1 4.05a8.47 8.47 0 0 1-4.65 14.44"
-        stroke="rgba(255,255,255,0.5)"
-        strokeWidth="1.1"
+        d="M14.78 2.82a9.92 9.92 0 1 0 6.18 14.7 8.06 8.06 0 0 1-6.18-14.7Z"
+        fill="url(#lune-moon-glow)"
+      />
+      <path
+        d="M15.1 3.98a9 9 0 0 1-5.38 15.05"
+        stroke="url(#lune-moon-edge)"
+        strokeWidth="1.72"
+        strokeLinecap="round"
+      />
+      <path
+        d="M13.24 4.98c1.34-.62 2.66-.94 4-.95"
+        stroke="#ffffff"
+        strokeOpacity="0.9"
+        strokeWidth="1.12"
         strokeLinecap="round"
       />
     </svg>
@@ -77,15 +102,15 @@ export default function Shell({ children }: { children: ReactNode }) {
           <a
             href="/admin"
             onClick={(event) => handleNavClick(event, "/admin")}
-            className="group/brand relative flex items-center gap-3 overflow-hidden rounded-[1.55rem] border border-white/75 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(243,240,250,0.62))] px-3 py-3.5 text-sidebar-foreground shadow-[0_24px_55px_-42px_rgba(33,40,63,0.24)] transition-all duration-300 hover:border-lunar-300/80 hover:shadow-[0_26px_60px_-38px_rgba(33,40,63,0.28)] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-[1.15rem] group-data-[collapsible=icon]:px-0"
+            className="group/brand relative flex items-center gap-3 overflow-hidden rounded-[1.55rem] border border-white/78 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(244,241,250,0.7))] px-3 py-3.5 text-sidebar-foreground shadow-[0_24px_55px_-42px_rgba(33,40,63,0.24)] transition-all duration-300 hover:border-lunar-300/80 hover:shadow-[0_26px_60px_-38px_rgba(33,40,63,0.28)] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:rounded-[1.15rem] group-data-[collapsible=icon]:px-0"
           >
             <span className="absolute inset-x-4 top-0 h-px moon-divider" />
-            <span className="relative flex size-10 shrink-0 items-center justify-center rounded-full border border-white/80 bg-[radial-gradient(circle_at_32%_30%,rgba(255,255,255,0.96),rgba(229,226,245,0.88)_55%,rgba(211,208,232,0.8))] shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_12px_28px_-18px_rgba(61,68,105,0.38)]">
-              <CrescentIcon className="size-[18px]" />
+            <span className="relative flex size-10 shrink-0 items-center justify-center rounded-full border border-white/92 bg-[radial-gradient(circle_at_34%_28%,rgba(255,255,255,1),rgba(248,244,253,0.99)_36%,rgba(225,219,241,0.96)_68%,rgba(191,183,221,0.92))] shadow-[inset_0_1px_0_rgba(255,255,255,1),inset_0_-12px_20px_rgba(114,102,174,0.14),0_18px_34px_-18px_rgba(61,68,105,0.42)] before:absolute before:inset-[2px] before:rounded-full before:border before:border-white/58 before:content-[''] after:absolute after:inset-[6px] after:rounded-full after:bg-[radial-gradient(circle_at_30%_26%,rgba(255,255,255,0.42),rgba(255,255,255,0)_72%)] after:content-['']">
+              <CrescentIcon className="relative z-[1] size-[19px] drop-shadow-[0_1px_1px_rgba(255,255,255,0.24)]" />
             </span>
-            <span className="min-w-0 space-y-1 transition-all duration-200 group-data-[collapsible=icon]:hidden">
+            <span className="min-w-0 space-y-0 transition-all duration-200 group-data-[collapsible=icon]:hidden">
               <span
-                className="block font-editorial text-[1.42rem] font-semibold tracking-[0.02em] text-moon-800"
+                className="block font-editorial text-[1.42rem] font-semibold tracking-[0.015em] text-moon-800"
                 style={{
                   fontFamily:
                     '"Iowan Old Style","Palatino Linotype","Noto Serif SC",Georgia,serif',
@@ -93,11 +118,8 @@ export default function Shell({ children }: { children: ReactNode }) {
               >
                 Lune
               </span>
-              <span className="block text-[12px] text-moon-500">
-                你的 LLM 网关控制台
-              </span>
-              <span className="block text-[10px] tracking-[0.14em] text-moon-400">
-                moonlight console
+              <span className="block pt-0.5 text-[9px] tracking-[0.2em] text-moon-400/76">
+                moonlit gateway
               </span>
             </span>
           </a>
