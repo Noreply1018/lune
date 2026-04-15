@@ -2,16 +2,14 @@ import { lazy, Suspense } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import { RouterProvider, usePathname } from "@/lib/router";
+import { RouterProvider, matchPath, usePathname } from "@/lib/router";
 import Shell from "./components/Shell";
+import AppErrorBoundary from "./components/AppErrorBoundary";
+import { AdminUIProvider } from "./components/AdminUI";
 
 const OverviewPage = lazy(() => import("./pages/OverviewPage"));
-const AccountsPage = lazy(() => import("./pages/AccountsPage"));
-const PoolsPage = lazy(() => import("./pages/PoolsPage"));
-const TokensPage = lazy(() => import("./pages/TokensPage"));
-const UsagePage = lazy(() => import("./pages/UsagePage"));
-const CpaServicePage = lazy(() => import("./pages/CpaServicePage"));
-const PlaygroundPage = lazy(() => import("./pages/PlaygroundPage"));
+const PoolDetailPage = lazy(() => import("./pages/PoolDetailPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
 function PageSkeleton() {
   return (
@@ -24,26 +22,20 @@ function PageSkeleton() {
 
 function PageRouter() {
   const path = usePathname();
+
+  const poolMatch = matchPath("/admin/pools/:id", path);
+
   return (
     <Suspense fallback={<PageSkeleton />}>
-      {(() => {
-        switch (path) {
-          case "/admin/accounts":
-            return <AccountsPage />;
-          case "/admin/pools":
-            return <PoolsPage />;
-          case "/admin/tokens":
-            return <TokensPage />;
-          case "/admin/usage":
-            return <UsagePage />;
-          case "/admin/cpa-service":
-            return <CpaServicePage />;
-          case "/admin/playground":
-            return <PlaygroundPage />;
-          default:
-            return <OverviewPage />;
-        }
-      })()}
+      <AppErrorBoundary>
+        {poolMatch ? (
+          <PoolDetailPage />
+        ) : path === "/admin/settings" ? (
+          <SettingsPage />
+        ) : (
+          <OverviewPage />
+        )}
+      </AppErrorBoundary>
     </Suspense>
   );
 }
@@ -53,11 +45,15 @@ export default function App() {
     <TooltipProvider>
       <Toaster richColors position="top-right" />
       <RouterProvider>
-        <SidebarProvider>
-          <Shell>
-            <PageRouter />
-          </Shell>
-        </SidebarProvider>
+        <AdminUIProvider>
+          <SidebarProvider>
+            <AppErrorBoundary>
+              <Shell>
+                <PageRouter />
+              </Shell>
+            </AppErrorBoundary>
+          </SidebarProvider>
+        </AdminUIProvider>
       </RouterProvider>
     </TooltipProvider>
   );

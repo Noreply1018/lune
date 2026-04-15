@@ -1,9 +1,10 @@
 import { cn } from "@/lib/utils";
 import { STATUS_LABELS_ZH } from "@/copy/admin";
 
-type Status = "healthy" | "degraded" | "error" | "disabled";
+type Status = "unknown" | "healthy" | "degraded" | "error" | "disabled";
 
 const dotColor: Record<Status, string> = {
+  unknown: "bg-moon-300",
   healthy: "bg-status-green",
   degraded: "bg-status-yellow animate-pulse",
   error: "bg-status-red",
@@ -11,6 +12,7 @@ const dotColor: Record<Status, string> = {
 };
 
 const badgeStyle: Record<Status, string> = {
+  unknown: "bg-moon-100/70 text-moon-500 border-moon-200/70",
   healthy: "bg-status-green/10 text-status-green border-status-green/20",
   degraded: "bg-status-yellow/10 text-status-yellow border-status-yellow/20",
   error: "bg-status-red/10 text-status-red border-status-red/20",

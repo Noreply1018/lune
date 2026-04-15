@@ -47,15 +47,11 @@ func (s *Store) GetOverview() (*Overview, error) {
 		todayStart,
 	).Scan(&o.SuccessRateToday)
 
-	// global token (first token where pool_id IS NULL), masked
+	// global token (first token where pool_id IS NULL), returned in full for admin UI usage
 	var tokenVal string
 	err = s.db.QueryRow(`SELECT token FROM access_tokens WHERE pool_id IS NULL AND enabled = 1 ORDER BY id LIMIT 1`).Scan(&tokenVal)
 	if err == nil && tokenVal != "" {
-		if len(tokenVal) > 12 {
-			o.GlobalToken = tokenVal[:12] + "..." + tokenVal[len(tokenVal)-4:]
-		} else {
-			o.GlobalToken = tokenVal
-		}
+		o.GlobalToken = tokenVal
 	}
 
 	// alerts: accounts expiring within 7 days

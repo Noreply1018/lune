@@ -1,17 +1,10 @@
 import type { LucideIcon } from "lucide-react";
-import {
-  BarChart3,
-  Key,
-  Layers,
-  LayoutDashboard,
-  MessageSquare,
-  Server,
-  Users,
-} from "lucide-react";
+import { Cog, LayoutDashboard, Plus, Waves } from "lucide-react";
 
-export type AdminStatus = "healthy" | "degraded" | "error" | "disabled";
+export type AdminStatus = "unknown" | "healthy" | "degraded" | "error" | "disabled";
 
 export const STATUS_LABELS_ZH: Record<AdminStatus, string> = {
+  unknown: "待检查",
   healthy: "正常",
   degraded: "降级",
   error: "异常",
@@ -24,29 +17,43 @@ export type NavItem = {
   icon: LucideIcon;
 };
 
-export type NavGroup = {
-  label: string;
-  items: NavItem[];
+export const ADMIN_NAV_ITEMS: NavItem[] = [
+  { label: "Overview", href: "/admin", icon: LayoutDashboard },
+  { label: "Pools", href: "/admin/pools", icon: Waves },
+  { label: "Settings", href: "/admin/settings", icon: Cog },
+];
+
+export const ADD_ACCOUNT_ACTION = {
+  label: "Add Account",
+  icon: Plus,
 };
 
-export const ADMIN_NAV_GROUPS: NavGroup[] = [
-  {
-    label: "观测",
-    items: [
-      { label: "总览", href: "/admin", icon: LayoutDashboard },
-      { label: "用量", href: "/admin/usage", icon: BarChart3 },
-      { label: "调试台", href: "/admin/playground", icon: MessageSquare },
-    ],
-  },
-  {
-    label: "配置",
-    items: [
-      { label: "账号", href: "/admin/accounts", icon: Users },
-      { label: "池", href: "/admin/pools", icon: Layers },
-      { label: "令牌", href: "/admin/tokens", icon: Key },
-      { label: "CPA 服务", href: "/admin/cpa-service", icon: Server },
-    ],
-  },
+export const PROVIDER_POOL_RECOMMENDATION: Record<string, string> = {
+  codex: "OpenAI",
+  openai: "OpenAI",
+  claude: "Claude",
+  gemini: "Gemini",
+  "gemini-cli": "Gemini",
+  vertex: "Gemini",
+  aistudio: "Gemini",
+};
+
+export const DIRECT_PROVIDER_TEMPLATES = [
+  { value: "openai", label: "OpenAI", base_url: "https://api.openai.com/v1" },
+  { value: "anthropic", label: "Anthropic", base_url: "https://api.anthropic.com/v1" },
+  { value: "google", label: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai/" },
+  { value: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com/v1" },
+  { value: "openrouter", label: "OpenRouter", base_url: "https://openrouter.ai/api/v1" },
+  { value: "custom", label: "自定义", base_url: "" },
+];
+
+export const CPA_PROVIDERS = [
+  { value: "codex", label: "Codex" },
+  { value: "claude", label: "Claude" },
+  { value: "gemini", label: "Gemini" },
+  { value: "gemini-cli", label: "Gemini CLI" },
+  { value: "vertex", label: "Vertex AI" },
+  { value: "aistudio", label: "AI Studio" },
 ];
 
 export function sourceKindLabelZh(kind: "openai_compat" | "cpa"): string {

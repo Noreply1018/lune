@@ -21,17 +21,18 @@ async function request<T>(
     body: body ? JSON.stringify(body) : undefined,
   });
 
+  if (res.status === 401) {
+    window.dispatchEvent(new CustomEvent("lune:auth-error"));
+  }
+
   if (!res.ok) {
     const err = await res
       .json()
       .catch(() => ({ error: { message: res.statusText } }));
-    throw new ApiError(
-      res.status,
-      err.error?.message ?? err.error?.code ?? "Unknown error",
-    );
+    throw new ApiError(res.status, err.error?.message ?? err.error?.code ?? "Unknown error");
   }
 
-  const json = await res.json();
+  const json = await res.json().catch(() => ({ data: null }));
   return json.data as T;
 }
 

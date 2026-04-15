@@ -5,7 +5,7 @@ export interface Account {
   api_key_set: boolean;
   api_key_masked: string;
   enabled: boolean;
-  status: "healthy" | "degraded" | "error" | "disabled";
+  status: "unknown" | "healthy" | "degraded" | "error" | "disabled";
   notes: string;
   quota_display: string;
   models: string[];
@@ -54,6 +54,7 @@ export interface PoolMember {
 export interface AccessToken {
   id: number;
   name: string;
+  token?: string;
   token_masked: string;
   pool_id: number | null;
   pool_label?: string;
@@ -101,13 +102,21 @@ export interface Overview {
   requests_today: number;
   success_rate_today: number;
   global_token: string;
-  alerts: Alert[];
+  alerts: OverviewAlert[];
 }
 
-export interface Alert {
+export interface OverviewAlert {
   type: "expiring" | "error";
   message: string;
   pool_id?: number;
+}
+
+export interface PoolDetailResponse {
+  pool: Pool;
+  members: PoolMember[];
+  tokens: AccessToken[];
+  models: string[];
+  stats: UsageStats;
 }
 
 export interface UsageStats {
@@ -139,10 +148,10 @@ export interface UsageLogPage {
 
 export interface SystemSettings {
   admin_token_masked: string;
-  default_pool_id: number | null;
   health_check_interval: number;
   request_timeout: number;
   max_retry_attempts: number;
+  external_url: string;
 }
 
 export interface CpaService {
