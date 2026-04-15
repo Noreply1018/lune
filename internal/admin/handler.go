@@ -8,13 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"lune/internal/cpa"
+	"lune/internal/health"
 	"lune/internal/store"
 	"lune/internal/webutil"
 )
@@ -25,22 +26,22 @@ type Handler struct {
 	cpaAuthDir       string
 	cpaManagementKey string
 	sessions         *cpa.SessionStore
-	logger           *log.Logger
+	healthChecker    *health.Checker
 }
 
-func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string) *Handler {
+func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker) *Handler {
 	return &Handler{
 		store:            s,
 		cache:            c,
 		cpaAuthDir:       cpaAuthDir,
 		cpaManagementKey: cpaManagementKey,
 		sessions:         cpa.NewSessionStore(),
-		logger:           log.Default(),
+		healthChecker:    hc,
 	}
 }
 
 func (h *Handler) internalError(w http.ResponseWriter, err error) {
-	h.logger.Printf("admin: %v", err)
+	slog.Error("admin", "err", err)
 	webutil.WriteAdminError(w, 500, "internal", "internal server error")
 }
 
@@ -58,19 +59,31 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("DELETE /admin/api/accounts/{id}", h.deleteAccount)
 	handle("POST /admin/api/accounts/test-connection", h.testConnection)
 
+	// Account model discovery
+	handle("POST /admin/api/accounts/{id}/discover-models", h.discoverModels)
+	handle("GET /admin/api/accounts/{id}/models", h.getAccountModels)
+
 	// Pools
 	handle("GET /admin/api/pools", h.listPools)
 	handle("POST /admin/api/pools", h.createPool)
+	handle("GET /admin/api/pools/{id}", h.getPoolDetail)
 	handle("PUT /admin/api/pools/{id}", h.updatePool)
 	handle("POST /admin/api/pools/{id}/enable", h.enablePool)
 	handle("POST /admin/api/pools/{id}/disable", h.disablePool)
 	handle("DELETE /admin/api/pools/{id}", h.deletePool)
 
-	// Pool Members
-	handle("GET /admin/api/pools/{id}/members", h.listPoolMembers)
+	// Pool members
 	handle("POST /admin/api/pools/{id}/members", h.addPoolMember)
-	handle("DELETE /admin/api/pools/{pool_id}/members/{member_id}", h.removePoolMember)
-	handle("PUT /admin/api/pools/{pool_id}/members/{member_id}", h.updatePoolMember)
+	handle("DELETE /admin/api/pools/{id}/members/{member_id}", h.removePoolMember)
+	handle("PUT /admin/api/pools/{id}/members/reorder", h.reorderPoolMembers)
+	handle("PUT /admin/api/pools/{id}/members/{member_id}", h.updatePoolMember)
+
+	// Pool tokens
+	handle("GET /admin/api/pools/{id}/tokens", h.listPoolTokens)
+
+	// Pool usage & stats
+	handle("GET /admin/api/pools/{id}/usage", h.getPoolUsage)
+	handle("GET /admin/api/pools/{id}/stats", h.getPoolStats)
 
 	// Tokens
 	handle("GET /admin/api/tokens", h.listTokens)
@@ -117,15 +130,19 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
-	// mask api keys and fill runtime
 	for i := range accounts {
 		h.fillAccountResponse(&accounts[i])
 	}
 	webutil.WriteList(w, accounts, len(accounts))
 }
 
+type createAccountRequest struct {
+	store.Account
+	PoolID int64 `json:"pool_id"`
+}
+
 func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
-	var req store.Account
+	var req createAccountRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
@@ -135,6 +152,10 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Label == "" {
 		webutil.WriteAdminError(w, 400, "bad_request", "label is required")
+		return
+	}
+	if req.PoolID == 0 {
+		webutil.WriteAdminError(w, 400, "bad_request", "pool_id is required")
 		return
 	}
 	switch req.SourceKind {
@@ -148,7 +169,6 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 			webutil.WriteAdminError(w, 400, "bad_request", "cpa_service_id and cpa_provider are required for cpa accounts")
 			return
 		}
-		// clear fields that don't apply
 		req.BaseURL = ""
 		req.APIKey = ""
 	default:
@@ -156,7 +176,7 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := h.store.CreateAccount(&req)
+	id, err := h.store.CreateAccount(&req.Account)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			webutil.WriteAdminError(w, 409, "duplicate", "a CPA account with this service and provider already exists")
@@ -165,10 +185,22 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
+	req.Account.ID = id
+
+	// add to pool
+	if _, err := h.store.AddPoolMember(req.PoolID, id); err != nil {
+		h.internalError(w, err)
+		return
+	}
+
 	h.cache.Invalidate()
-	req.ID = id
-	h.fillAccountResponse(&req)
-	webutil.WriteData(w, 201, req)
+	h.fillAccountResponse(&req.Account)
+
+	// trigger async model discovery
+	acc := req.Account
+	go h.healthChecker.DiscoverModels(context.Background(), acc)
+
+	webutil.WriteData(w, 201, req.Account)
 }
 
 func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +229,7 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 		req.BaseURL = existing.BaseURL
 		req.APIKey = existing.APIKey
 		req.Provider = existing.Provider
+		req.QuotaDisplay = existing.QuotaDisplay
 	}
 
 	if err := h.store.UpdateAccount(id, &req); err != nil {
@@ -252,6 +285,45 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
 }
 
+// --- Account Model Discovery ---
+
+func (h *Handler) discoverModels(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	acc, err := h.store.GetAccount(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if acc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "account not found")
+		return
+	}
+
+	models, err := h.healthChecker.DiscoverModels(r.Context(), *acc)
+	if err != nil {
+		webutil.WriteAdminError(w, 502, "discovery_failed", fmt.Sprintf("model discovery failed: %v", err))
+		return
+	}
+	h.cache.Invalidate()
+	webutil.WriteData(w, 200, map[string]any{"models": models})
+}
+
+func (h *Handler) getAccountModels(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	models, err := h.store.ListAccountModels(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteData(w, 200, map[string]any{"models": models})
+}
+
 // --- Pools ---
 
 func (h *Handler) listPools(w http.ResponseWriter, r *http.Request) {
@@ -264,7 +336,10 @@ func (h *Handler) listPools(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createPool(w http.ResponseWriter, r *http.Request) {
-	var req store.Pool
+	var req struct {
+		Label    string `json:"label"`
+		Priority int    `json:"priority"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
@@ -273,14 +348,77 @@ func (h *Handler) createPool(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "label is required")
 		return
 	}
-	id, err := h.store.CreatePool(req.Label, req.Priority, req.Enabled)
+	id, err := h.store.CreatePool(req.Label, req.Priority, true)
 	if err != nil {
 		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
-	req.ID = id
-	webutil.WriteData(w, 201, req)
+
+	pool, err := h.store.GetPool(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteData(w, 201, pool)
+}
+
+func (h *Handler) getPoolDetail(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+
+	pool, err := h.store.GetPool(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if pool == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "pool not found")
+		return
+	}
+
+	members, err := h.store.ListPoolMembers(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	for i := range members {
+		if members[i].Account != nil {
+			h.fillAccountResponse(members[i].Account)
+		}
+	}
+
+	tokens, err := h.store.ListTokensByPool(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	for i := range tokens {
+		tokens[i].TokenMasked = maskKey(tokens[i].Token)
+		tokens[i].Token = ""
+	}
+
+	models, err := h.store.GetPoolModels(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+
+	stats, err := h.store.GetPoolStats(id, "24h")
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+
+	webutil.WriteData(w, 200, map[string]any{
+		"pool":    pool,
+		"members": members,
+		"tokens":  tokens,
+		"models":  models,
+		"stats":   stats,
+	})
 }
 
 func (h *Handler) updatePool(w http.ResponseWriter, r *http.Request) {
@@ -288,7 +426,11 @@ func (h *Handler) updatePool(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req store.Pool
+	var req struct {
+		Label    string `json:"label"`
+		Priority int    `json:"priority"`
+		Enabled  bool   `json:"enabled"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
@@ -298,8 +440,13 @@ func (h *Handler) updatePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.cache.Invalidate()
-	req.ID = id
-	webutil.WriteData(w, 200, req)
+
+	pool, err := h.store.GetPool(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteData(w, 200, pool)
 }
 
 func (h *Handler) enablePool(w http.ResponseWriter, r *http.Request) {
@@ -333,7 +480,7 @@ func (h *Handler) deletePool(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.store.DeletePool(id); err != nil {
+	if err := h.store.DeletePoolWithOrphans(id); err != nil {
 		h.internalError(w, err)
 		return
 	}
@@ -342,19 +489,6 @@ func (h *Handler) deletePool(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Pool Members ---
-
-func (h *Handler) listPoolMembers(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(w, r)
-	if !ok {
-		return
-	}
-	members, err := h.store.ListPoolMembers(id)
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	webutil.WriteList(w, members, len(members))
-}
 
 func (h *Handler) addPoolMember(w http.ResponseWriter, r *http.Request) {
 	poolID, ok := parseID(w, r)
@@ -368,21 +502,24 @@ func (h *Handler) addPoolMember(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
-	if req.AccountID <= 0 {
+	if req.AccountID == 0 {
 		webutil.WriteAdminError(w, 400, "bad_request", "account_id is required")
 		return
 	}
-	id, err := h.store.AddPoolMember(poolID, req.AccountID)
+
+	memberID, err := h.store.AddPoolMember(poolID, req.AccountID)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
-			webutil.WriteAdminError(w, 409, "duplicate", "account already in pool")
-			return
-		}
 		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
-	webutil.WriteData(w, 201, map[string]any{"id": id})
+
+	acc, _ := h.store.GetAccount(req.AccountID)
+	if acc != nil {
+		go h.healthChecker.DiscoverModels(context.Background(), *acc)
+	}
+
+	webutil.WriteData(w, 201, map[string]any{"id": memberID})
 }
 
 func (h *Handler) removePoolMember(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +536,26 @@ func (h *Handler) removePoolMember(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
 }
 
+func (h *Handler) reorderPoolMembers(w http.ResponseWriter, r *http.Request) {
+	poolID, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		MemberIDs []int64 `json:"member_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	if err := h.store.ReorderPoolMembers(poolID, req.MemberIDs); err != nil {
+		h.internalError(w, err)
+		return
+	}
+	h.cache.Invalidate()
+	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
 func (h *Handler) updatePoolMember(w http.ResponseWriter, r *http.Request) {
 	memberID, err := strconv.ParseInt(r.PathValue("member_id"), 10, 64)
 	if err != nil {
@@ -406,20 +563,80 @@ func (h *Handler) updatePoolMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Enabled *bool `json:"enabled"`
+		Enabled bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
-	if req.Enabled != nil {
-		if err := h.store.UpdatePoolMember(memberID, *req.Enabled); err != nil {
-			h.internalError(w, err)
-			return
-		}
+	if err := h.store.UpdatePoolMember(memberID, req.Enabled); err != nil {
+		h.internalError(w, err)
+		return
 	}
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+// --- Pool Tokens ---
+
+func (h *Handler) listPoolTokens(w http.ResponseWriter, r *http.Request) {
+	poolID, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	tokens, err := h.store.ListTokensByPool(poolID)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	for i := range tokens {
+		tokens[i].TokenMasked = maskKey(tokens[i].Token)
+		tokens[i].Token = ""
+	}
+	if tokens == nil {
+		tokens = []store.AccessToken{}
+	}
+	webutil.WriteList(w, tokens, len(tokens))
+}
+
+// --- Pool Usage & Stats ---
+
+func (h *Handler) getPoolUsage(w http.ResponseWriter, r *http.Request) {
+	poolID, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+
+	window := r.URL.Query().Get("range")
+	if window == "" {
+		window = "24h"
+	}
+
+	stats, err := h.store.GetPoolStats(poolID, window)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteData(w, 200, stats)
+}
+
+func (h *Handler) getPoolStats(w http.ResponseWriter, r *http.Request) {
+	poolID, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+
+	window := r.URL.Query().Get("window")
+	if window == "" {
+		window = "24h"
+	}
+
+	stats, err := h.store.GetPoolStats(poolID, window)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteData(w, 200, stats)
 }
 
 // --- Tokens ---
@@ -457,6 +674,7 @@ func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
 	}
 	h.cache.Invalidate()
 	req.ID = id
+	req.IsGlobal = req.PoolID == nil
 	// return full token on creation
 	webutil.WriteData(w, 201, req)
 }
@@ -477,6 +695,7 @@ func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	h.cache.Invalidate()
 	req.ID = id
+	req.IsGlobal = req.PoolID == nil
 	req.TokenMasked = maskKey(req.Token)
 	req.Token = ""
 	webutil.WriteData(w, 200, req)
@@ -525,10 +744,10 @@ func (h *Handler) deleteToken(w http.ResponseWriter, r *http.Request) {
 
 type systemSettingsResponse struct {
 	AdminTokenMasked    string `json:"admin_token_masked"`
-	DefaultPoolID       *int64 `json:"default_pool_id"`
 	HealthCheckInterval int    `json:"health_check_interval"`
 	RequestTimeout      int    `json:"request_timeout"`
 	MaxRetryAttempts    int    `json:"max_retry_attempts"`
+	ExternalURL         string `json:"external_url"`
 }
 
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -543,9 +762,7 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		HealthCheckInterval: 60,
 		RequestTimeout:      30,
 		MaxRetryAttempts:    1,
-	}
-	if v, err := strconv.ParseInt(settings["default_pool_id"], 10, 64); err == nil && v > 0 {
-		resp.DefaultPoolID = &v
+		ExternalURL:         settings["external_url"],
 	}
 	if v, err := strconv.Atoi(settings["health_check_interval"]); err == nil && v > 0 {
 		resp.HealthCheckInterval = v
@@ -560,13 +777,6 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
-	allowedKeys := map[string]bool{
-		"default_pool_id":       true,
-		"health_check_interval": true,
-		"request_timeout":       true,
-		"max_retry_attempts":    true,
-	}
-
 	var raw map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
@@ -574,10 +784,6 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	pairs := make(map[string]string)
 	for k, v := range raw {
-		if !allowedKeys[k] {
-			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("unknown setting: %s", k))
-			return
-		}
 		s := strings.TrimSpace(string(v))
 		if s == "null" || s == "" {
 			pairs[k] = ""
@@ -669,9 +875,6 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 			webutil.WriteAdminError(w, 400, "bad_request", "invalid page_size parameter")
 			return
 		}
-		if n > 500 {
-			n = 500
-		}
 		pageSize = n
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -723,41 +926,21 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
-	accounts, err := h.store.ListAccounts()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
+	accounts, _ := h.store.ListAccounts()
 	for i := range accounts {
 		h.fillAccountResponse(&accounts[i])
 	}
-	pools, err := h.store.ListPools()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	tokens, err := h.store.ListTokens()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
+	pools, _ := h.store.ListPools()
+	tokens, _ := h.store.ListTokens()
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		tokens[i].Token = ""
 	}
-	settings, err := h.store.GetSettings()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
+	settings, _ := h.store.GetSettings()
 	if _, ok := settings["admin_token"]; ok {
 		settings["admin_token"] = maskKey(settings["admin_token"])
 	}
-	cpaServices, err := h.store.ListCpaServices()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
+	cpaServices, _ := h.store.ListCpaServices()
 	for i := range cpaServices {
 		cpaServices[i].APIKeyMasked = maskKey(cpaServices[i].APIKey)
 		cpaServices[i].APIKeySet = cpaServices[i].APIKey != ""
@@ -846,7 +1029,6 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if existing != nil {
-		// update
 		svc := &store.CpaService{
 			Label:   req.Label,
 			BaseURL: strings.TrimRight(req.BaseURL, "/"),
@@ -867,7 +1049,6 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 		svc.APIKey = ""
 		webutil.WriteData(w, 200, svc)
 	} else {
-		// create
 		svc := &store.CpaService{
 			Label:   req.Label,
 			BaseURL: strings.TrimRight(req.BaseURL, "/"),
@@ -987,7 +1168,6 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 		APIKey  string `json:"api_key"`
 	}
 
-	// allow testing with body params or from stored service
 	body, _ := io.ReadAll(r.Body)
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -1015,7 +1195,6 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 		Error     string   `json:"error"`
 	}{}
 
-	// test healthz
 	start := time.Now()
 	healthReq, _ := http.NewRequest("GET", baseURL+"/healthz", nil)
 	if req.APIKey != "" {
@@ -1039,7 +1218,6 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 
 	result.Reachable = true
 
-	// get models to extract providers
 	modelsReq, _ := http.NewRequest("GET", baseURL+"/v1/models", nil)
 	if req.APIKey != "" {
 		modelsReq.Header.Set("Authorization", "Bearer "+req.APIKey)
@@ -1055,7 +1233,6 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(modelsResp.Body).Decode(&modelsBody); err == nil {
 			providerSet := make(map[string]bool)
 			for _, m := range modelsBody.Data {
-				// extract provider from model IDs like "codex/gpt-4o" or use first segment
 				parts := strings.SplitN(m.ID, "/", 2)
 				if len(parts) == 2 {
 					providerSet[parts[0]] = true
@@ -1129,18 +1306,23 @@ func (h *Handler) fillAccountResponse(a *store.Account) {
 	a.APIKeySet = a.APIKey != ""
 	a.APIKey = ""
 
-	switch a.SourceKind {
-	case "cpa":
-		if a.CpaServiceID != nil {
-			svc := h.cache.GetCpaService(*a.CpaServiceID)
-			if svc != nil {
-				a.Runtime = &store.AccountRuntime{
-					BaseURL:  strings.TrimRight(svc.BaseURL, "/") + "/api/provider/" + a.CpaProvider + "/v1",
-					AuthMode: "bearer",
-				}
+	// Fill models from account_models
+	models, _ := h.store.ListAccountModels(a.ID)
+	a.Models = models
+	if a.Models == nil {
+		a.Models = []string{}
+	}
+
+	// Fill runtime for CPA accounts
+	if a.SourceKind == "cpa" && a.CpaServiceID != nil {
+		svc := h.cache.GetCpaService(*a.CpaServiceID)
+		if svc != nil {
+			a.Runtime = &store.AccountRuntime{
+				BaseURL:  strings.TrimRight(svc.BaseURL, "/") + "/api/provider/" + a.CpaProvider + "/v1",
+				AuthMode: "cpa",
 			}
 		}
-	default:
+	} else {
 		a.Runtime = &store.AccountRuntime{
 			BaseURL:  a.BaseURL,
 			AuthMode: "bearer",
@@ -1159,9 +1341,14 @@ func generateToken() string {
 func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ServiceID int64 `json:"service_id"`
+		PoolID    int64 `json:"pool_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	if req.PoolID == 0 {
+		webutil.WriteAdminError(w, 400, "bad_request", "pool_id is required")
 		return
 	}
 
@@ -1187,6 +1374,7 @@ func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 409, "active_session", err.Error())
 		return
 	}
+	session.PoolID = req.PoolID
 
 	ctx, cancel := context.WithDeadline(context.Background(), session.ExpiresAt)
 	session.CancelFunc = cancel
@@ -1286,6 +1474,18 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 	if err != nil {
 		h.sessions.UpdateStatus(session.ID, "failed", "import_error", fmt.Sprintf("Failed to create account: %v", err))
 		return
+	}
+
+	// auto-add to the pool specified in session
+	if session.PoolID > 0 {
+		if _, err := h.store.AddPoolMember(session.PoolID, account.ID); err != nil {
+			slog.Error("finalizeLogin: failed to add pool member", "pool_id", session.PoolID, "account_id", account.ID, "err", err)
+		}
+	}
+
+	// trigger async model discovery
+	if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
+		go h.healthChecker.DiscoverModels(context.Background(), *acc)
 	}
 
 	h.sessions.CompleteSession(session.ID, account.ID, account)
@@ -1434,7 +1634,6 @@ func (h *Handler) listRemoteAccounts(w http.ResponseWriter, r *http.Request) {
 			alreadyImported = true
 		}
 
-		// derive plan_type from JWT or filename
 		planType := ""
 		if info, err := cpa.ParseAccountInfoFromTokens(s.File.IDToken, s.File.AccessToken); err == nil {
 			planType = info.PlanType
@@ -1467,6 +1666,7 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 		Label      string `json:"label"`
 		Enabled    bool   `json:"enabled"`
 		Notes      string `json:"notes"`
+		PoolID     int64  `json:"pool_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
@@ -1474,6 +1674,10 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AccountKey == "" {
 		webutil.WriteAdminError(w, 400, "bad_request", "account_key is required")
+		return
+	}
+	if req.PoolID == 0 {
+		webutil.WriteAdminError(w, 400, "bad_request", "pool_id is required")
 		return
 	}
 
@@ -1498,6 +1702,17 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
+
+	// add to pool
+	if _, err := h.store.AddPoolMember(req.PoolID, account.ID); err != nil {
+		slog.Error("importCpaAccount: failed to add pool member", "pool_id", req.PoolID, "account_id", account.ID, "err", err)
+	}
+
+	// trigger async model discovery
+	if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
+		go h.healthChecker.DiscoverModels(context.Background(), *acc)
+	}
+
 	h.cache.Invalidate()
 	webutil.WriteData(w, 201, account)
 }
@@ -1511,9 +1726,14 @@ func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request)
 	var req struct {
 		ServiceID   int64    `json:"service_id"`
 		AccountKeys []string `json:"account_keys"`
+		PoolID      int64    `json:"pool_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	if req.PoolID == 0 {
+		webutil.WriteAdminError(w, 400, "bad_request", "pool_id is required")
 		return
 	}
 
@@ -1565,7 +1785,7 @@ func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request)
 			Enabled:          true,
 		}
 
-		_, err = h.store.CreateAccount(account)
+		accountID, err := h.store.CreateAccount(account)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint") {
 				skipped++
@@ -1574,6 +1794,12 @@ func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request)
 			}
 			continue
 		}
+
+		// add to pool
+		if _, err := h.store.AddPoolMember(req.PoolID, accountID); err != nil {
+			slog.Error("batchImportCpaAccounts: failed to add pool member", "pool_id", req.PoolID, "account_id", accountID, "err", err)
+		}
+
 		imported++
 	}
 

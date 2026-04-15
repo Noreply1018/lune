@@ -161,7 +161,10 @@ func (a *App) Run() error {
 	// auto-configure default CPA service if env vars are set
 	a.ensureDefaultCpa()
 
-	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey)
+	// create health checker (needed by admin handler for model discovery)
+	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir)
+
+	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, hc)
 
 	// Prefer an explicit IPv4 listener so WSL localhost forwarding can
 	// consistently expose the service to Windows browsers.
@@ -186,7 +189,6 @@ func (a *App) Run() error {
 	defer stop()
 
 	// start health checker
-	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir)
 	go hc.Run(ctx)
 
 	errCh := make(chan error, 1)

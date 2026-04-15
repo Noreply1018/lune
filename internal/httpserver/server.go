@@ -8,6 +8,7 @@ import (
 	"lune/internal/admin"
 	"lune/internal/auth"
 	"lune/internal/gateway"
+	"lune/internal/health"
 	"lune/internal/router"
 	"lune/internal/site"
 	"lune/internal/store"
@@ -19,15 +20,17 @@ type Server struct {
 	cache            *store.RoutingCache
 	cpaAuthDir       string
 	cpaManagementKey string
+	healthChecker    *health.Checker
 }
 
-func New(st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKey string) *Server {
+func New(st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker) *Server {
 	s := &Server{
 		mux:              http.NewServeMux(),
 		store:            st,
 		cache:            cache,
 		cpaAuthDir:       cpaAuthDir,
 		cpaManagementKey: cpaManagementKey,
+		healthChecker:    hc,
 	}
 	s.routes()
 	return s
@@ -46,7 +49,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 
 	// admin API
-	adminHandler := admin.NewHandler(s.store, s.cache, s.cpaAuthDir, s.cpaManagementKey)
+	adminHandler := admin.NewHandler(s.store, s.cache, s.cpaAuthDir, s.cpaManagementKey, s.healthChecker)
 	adminWrap := func(next http.Handler) http.Handler {
 		return auth.AdminAuth(next, s.cache)
 	}
