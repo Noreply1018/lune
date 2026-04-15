@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -261,6 +262,14 @@ func (s *Store) ensureColumn(table, name, ddl string) error {
 }
 
 func (s *Store) repairSchema() error {
+	// If the accounts table has legacy columns from v0 schema, the table
+	// structure is fundamentally incompatible (wrong column types, NOT NULL
+	// without DEFAULT, etc). Rebuild the entire table instead of patching.
+	if err := s.rebuildLegacyAccountsTable(); err != nil {
+		return fmt.Errorf("rebuild legacy accounts: %w", err)
+	}
+
+	// Ensure all expected columns exist (handles partially-migrated databases)
 	accountColumns := []struct {
 		name string
 		ddl  string
@@ -324,6 +333,133 @@ func (s *Store) repairSchema() error {
 		}
 	}
 
+	return nil
+}
+
+// rebuildLegacyAccountsTable detects incompatible schema and rebuilds the table with
+// correct column definitions. This is the SQLite-recommended way to change
+// column types/constraints: create new table → copy data → swap.
+func (s *Store) rebuildLegacyAccountsTable() error {
+	// Check actual column definitions via PRAGMA
+	rows, err := s.db.Query(`PRAGMA table_info(accounts)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	needsRebuild := false
+	var existingCols []string
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt *string
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		existingCols = append(existingCols, name)
+		// id should be INTEGER, not TEXT
+		if name == "id" && typ == "TEXT" {
+			needsRebuild = true
+		}
+		// NOT NULL columns without DEFAULT will break INSERT
+		if notnull == 1 && dflt == nil && pk == 0 {
+			needsRebuild = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if !needsRebuild {
+		return nil
+	}
+
+	log.Printf("store: detected legacy v0 accounts table, rebuilding...")
+
+	correctSchema := `CREATE TABLE accounts_new (
+		id              INTEGER PRIMARY KEY,
+		label           TEXT NOT NULL DEFAULT '',
+		base_url        TEXT NOT NULL DEFAULT '',
+		api_key         TEXT NOT NULL DEFAULT '',
+		enabled         INTEGER NOT NULL DEFAULT 1,
+		status          TEXT NOT NULL DEFAULT 'healthy',
+		quota_total     REAL NOT NULL DEFAULT 0,
+		quota_used      REAL NOT NULL DEFAULT 0,
+		quota_unit      TEXT NOT NULL DEFAULT '',
+		notes           TEXT NOT NULL DEFAULT '',
+		model_allowlist TEXT NOT NULL DEFAULT '[]',
+		last_checked_at TEXT,
+		last_error      TEXT NOT NULL DEFAULT '',
+		created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+		source_kind     TEXT NOT NULL DEFAULT 'openai_compat',
+		provider        TEXT NOT NULL DEFAULT '',
+		cpa_service_id  INTEGER REFERENCES cpa_services(id),
+		cpa_provider    TEXT NOT NULL DEFAULT '',
+		cpa_account_key TEXT NOT NULL DEFAULT '',
+		cpa_email       TEXT NOT NULL DEFAULT '',
+		cpa_plan_type   TEXT NOT NULL DEFAULT '',
+		cpa_openai_id   TEXT NOT NULL DEFAULT '',
+		cpa_expired_at  TEXT,
+		cpa_last_refresh_at TEXT,
+		cpa_disabled    INTEGER NOT NULL DEFAULT 0
+	)`
+
+	// Columns in the correct schema that we should copy from the old table
+	newColumns := []string{
+		"id", "label", "base_url", "api_key", "enabled", "status",
+		"quota_total", "quota_used", "quota_unit", "notes", "model_allowlist",
+		"last_checked_at", "last_error", "created_at", "updated_at",
+		"source_kind", "provider", "cpa_service_id", "cpa_provider",
+		"cpa_account_key", "cpa_email", "cpa_plan_type", "cpa_openai_id",
+		"cpa_expired_at", "cpa_last_refresh_at", "cpa_disabled",
+	}
+
+	// Find columns that exist in both old and new
+	existingSet := make(map[string]bool, len(existingCols))
+	for _, name := range existingCols {
+		existingSet[name] = true
+	}
+	var copyList []string
+	for _, name := range newColumns {
+		if existingSet[name] {
+			copyList = append(copyList, name)
+		}
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(correctSchema); err != nil {
+		return fmt.Errorf("create accounts_new: %w", err)
+	}
+
+	if len(copyList) > 0 {
+		colStr := strings.Join(copyList, ", ")
+		copySQL := fmt.Sprintf("INSERT INTO accounts_new (%s) SELECT %s FROM accounts", colStr, colStr)
+		if _, err := tx.Exec(copySQL); err != nil {
+			return fmt.Errorf("copy accounts data: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(`DROP TABLE accounts`); err != nil {
+		return fmt.Errorf("drop old accounts: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE accounts_new RENAME TO accounts`); err != nil {
+		return fmt.Errorf("rename accounts_new: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	s.invalidateSchemaCache("accounts")
+	log.Printf("store: accounts table rebuilt successfully")
 	return nil
 }
 
