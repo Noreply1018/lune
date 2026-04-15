@@ -297,8 +297,8 @@ export default function TokensPage() {
 
   /* ── pool selector helper ── */
 
-  function handlePoolChange(value: string) {
-    setForm({ ...form, pool_id: value === GLOBAL_VALUE ? "" : value });
+  function handlePoolChange(value: string | null) {
+    setForm({ ...form, pool_id: !value || value === GLOBAL_VALUE ? "" : value });
   }
 
   return (
