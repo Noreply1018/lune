@@ -208,10 +208,13 @@ Lune 后端直接实现 OAuth 2.0 Device Authorization Grant (RFC 8628)，对接
 
 | 步骤 | 端点 | 方法 | 说明 |
 |---|---|---|---|
-| 1. 请求设备码 | https://auth.openai.com/api/accounts/deviceauth/usercode | POST | 获取 device_code + user_code |
+| 1. 请求设备码 | https://auth.openai.com/api/accounts/deviceauth/usercode | POST (JSON) | 获取 device_auth_id + user_code |
 | 2. 用户验证页 | https://auth.openai.com/codex/device | - | 用户在浏览器打开并输入 user_code |
-| 3. 轮询换 token | https://auth.openai.com/api/accounts/deviceauth/token | POST | 用 device_code 轮询直到授权完成 |
-| 4. Token 刷新 | https://auth.openai.com/oauth/token | POST | CPA 负责，Lune 不实现 |
+| 3. 轮询换 token | https://auth.openai.com/api/accounts/deviceauth/token | POST (JSON) | 用 device_auth_id 轮询直到授权完成 |
+| 4. 兑换 token | https://auth.openai.com/oauth/token | POST (JSON) | 用 authorization_code + code_verifier 兑换最终 token |
+| 5. Token 刷新 | https://auth.openai.com/oauth/token | POST | CPA 负责，Lune 不实现 |
+
+> **注意：** 所有请求使用 `Content-Type: application/json`（非 form-urlencoded）。OpenAI 于 2026 年 4 月前后切换了请求格式。
 
 #### 请求设备码参数
 
@@ -224,17 +227,53 @@ Lune 后端直接实现 OAuth 2.0 Device Authorization Grant (RFC 8628)，对接
 
 client_id 是 OpenAI 官方 Codex CLI 的 client_id。
 
+#### 请求设备码响应
+
+```json
+{
+  "device_auth_id": "deviceauth_69df4234...",
+  "user_code": "ABCD-EFGH",
+  "interval": "5",
+  "expires_at": "2026-04-15T08:00:56.216353+00:00"
+}
+```
+
+> 旧版本返回 `device_code` + `verification_uri` + `expires_in`；新版本改为 `device_auth_id` + `expires_at`。代码兼容两种格式。
+
 #### 轮询换 token 参数
 
 ```json
 {
-  "device_code": "...",
-  "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-  "client_id": "app_EMoamEEZ73f0CkXaXp7hrann"
+  "device_auth_id": "deviceauth_69df4234...",
+  "user_code": "ABCD-EFGH"
 }
 ```
 
-#### 成功响应
+#### 轮询成功响应（返回中间 authorization_code）
+
+```json
+{
+  "authorization_code": "...",
+  "code_challenge": "...",
+  "code_verifier": "..."
+}
+```
+
+#### 兑换最终 token 参数
+
+```json
+{
+  "grant_type": "authorization_code",
+  "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+  "redirect_uri": "https://auth.openai.com/deviceauth/callback",
+  "code": "<authorization_code>",
+  "code_verifier": "<code_verifier>"
+}
+```
+
+> `redirect_uri` 必须为 `https://auth.openai.com/deviceauth/callback`，与 Codex CLI 一致。
+
+#### 最终 token 响应
 
 ```json
 {
