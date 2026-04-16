@@ -67,6 +67,26 @@ type NotificationOutbox struct {
 	UpdatedAt     string
 }
 
+func (s *Store) GetNotificationOutbox(id int64) (*NotificationOutbox, error) {
+	row := s.db.QueryRow(
+		`SELECT id, channel_id, event, severity, payload, dedup_key, status, attempt, next_attempt_at, last_error, created_at, updated_at
+		 FROM notification_outbox
+		 WHERE id = ?`,
+		id,
+	)
+	var item NotificationOutbox
+	if err := row.Scan(
+		&item.ID, &item.ChannelID, &item.Event, &item.Severity, &item.Payload, &item.DedupKey,
+		&item.Status, &item.Attempt, &item.NextAttemptAt, &item.LastError, &item.CreatedAt, &item.UpdatedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
 type NotificationDeliveryFilter struct {
 	ChannelID   int64
 	Event       string
@@ -370,8 +390,18 @@ func (s *Store) MarkNotificationOutboxDropped(id int64, attempt int, lastError s
 }
 
 func (s *Store) DeleteNotificationOutbox(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM notification_outbox WHERE id = ?`, id)
-	return err
+	res, err := s.db.Exec(`DELETE FROM notification_outbox WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) CreateNotificationDelivery(item *NotificationDelivery) (int64, error) {
@@ -473,8 +503,16 @@ func (s *Store) RecordNotificationAttemptSuccess(outboxID int64, delivery *Notif
 	); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM notification_outbox WHERE id = ?`, outboxID); err != nil {
+	res, err := tx.Exec(`DELETE FROM notification_outbox WHERE id = ?`, outboxID)
+	if err != nil {
 		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
 	}
 	return tx.Commit()
 }

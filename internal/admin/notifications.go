@@ -289,7 +289,7 @@ func (h *Handler) listNotificationDeliveries(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		if limit, err := strconv.Atoi(raw); err == nil {
+		if limit, err := strconv.Atoi(raw); err == nil && limit > 0 {
 			filter.Limit = limit
 		}
 	}

@@ -49,9 +49,13 @@ func (d *GenericWebhookDriver) Send(ctx context.Context, n notify.Notification, 
 	if err := json.Unmarshal(runtime.Config, &cfg); err != nil {
 		return notify.Result{}, err
 	}
-	rendered, err := notify.RenderNotification(n, runtime.TitleTpl, runtime.BodyTpl)
-	if err != nil {
-		return notify.Result{}, err
+	rendered := runtime.Rendered
+	if rendered == nil {
+		item, err := notify.RenderNotification(n, runtime.TitleTpl, runtime.BodyTpl)
+		if err != nil {
+			return notify.Result{}, err
+		}
+		rendered = &item
 	}
 	body, err := json.Marshal(map[string]any{
 		"event":     n.Event,

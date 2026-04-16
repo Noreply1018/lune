@@ -763,15 +763,13 @@ export default function SettingsPage() {
     setChannelSaving(true);
     try {
       const config = buildChannelConfig(channelDraft);
+      const subscriptions = channelDraft.subscriptions.filter((item) => item.event.trim());
       const payload = {
         name: channelDraft.name.trim(),
         type: channelDraft.type,
         enabled: channelDraft.enabled,
         config,
-        subscriptions:
-          channelDraft.subscriptions.filter((item) => item.event.trim()).length > 0
-            ? channelDraft.subscriptions.filter((item) => item.event.trim())
-            : [DEFAULT_SUBSCRIPTION],
+        subscriptions: subscriptions.length > 0 ? subscriptions : [DEFAULT_SUBSCRIPTION],
         title_template: channelDraft.title_template.trim(),
         body_template: channelDraft.body_template.trim(),
       };

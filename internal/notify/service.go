@@ -162,6 +162,10 @@ func (s *Service) SendChannelTest(ctx context.Context, channelID int64, n Notifi
 	if !ok {
 		return Result{}, fmt.Errorf("unsupported channel type: %s", channel.Type)
 	}
+	rendered, renderErr := RenderNotification(n, channel.TitleTemplate, channel.BodyTemplate)
+	if renderErr != nil {
+		return Result{}, renderErr
+	}
 	result, err := driver.Send(ctx, n, ChannelRuntime{
 		ID:        channel.ID,
 		Name:      channel.Name,
@@ -170,30 +174,28 @@ func (s *Service) SendChannelTest(ctx context.Context, channelID int64, n Notifi
 		TitleTpl:  channel.TitleTemplate,
 		BodyTpl:   channel.BodyTemplate,
 		Triggered: "test",
+		Rendered:  &rendered,
 	})
 	deliveryStatus := "success"
 	if err != nil || !result.OK {
 		deliveryStatus = "failed"
 	}
-	rendered, renderErr := RenderNotification(n, channel.TitleTemplate, channel.BodyTemplate)
-	if renderErr == nil {
-		_, _ = s.store.CreateNotificationDelivery(&store.NotificationDelivery{
-			ChannelID:       channel.ID,
-			ChannelName:     channel.Name,
-			ChannelType:     channel.Type,
-			Event:           n.Event,
-			Severity:        n.Severity,
-			Title:           rendered.Title,
-			PayloadSummary:  truncateString(rendered.Body, 1024),
-			Status:          deliveryStatus,
-			UpstreamCode:    result.UpstreamCode,
-			UpstreamMessage: firstNonEmpty(result.UpstreamMessage, errorString(err)),
-			LatencyMS:       result.LatencyMS,
-			Attempt:         1,
-			DedupKey:        "",
-			TriggeredBy:     "test",
-		})
-	}
+	_, _ = s.store.CreateNotificationDelivery(&store.NotificationDelivery{
+		ChannelID:       channel.ID,
+		ChannelName:     channel.Name,
+		ChannelType:     channel.Type,
+		Event:           n.Event,
+		Severity:        n.Severity,
+		Title:           rendered.Title,
+		PayloadSummary:  truncateString(rendered.Body, 1024),
+		Status:          deliveryStatus,
+		UpstreamCode:    result.UpstreamCode,
+		UpstreamMessage: firstNonEmpty(result.UpstreamMessage, errorString(err)),
+		LatencyMS:       result.LatencyMS,
+		Attempt:         1,
+		DedupKey:        "",
+		TriggeredBy:     "test",
+	})
 	return result, err
 }
 

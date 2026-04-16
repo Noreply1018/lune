@@ -62,9 +62,13 @@ func (d *WeChatWorkBotDriver) Send(ctx context.Context, n notify.Notification, r
 	if cfg.Format == "" {
 		cfg.Format = "markdown"
 	}
-	rendered, err := notify.RenderNotification(n, runtime.TitleTpl, runtime.BodyTpl)
-	if err != nil {
-		return notify.Result{}, err
+	rendered := runtime.Rendered
+	if rendered == nil {
+		item, err := notify.RenderNotification(n, runtime.TitleTpl, runtime.BodyTpl)
+		if err != nil {
+			return notify.Result{}, err
+		}
+		rendered = &item
 	}
 	payload := map[string]any{}
 	if cfg.Format == "text" {
@@ -75,14 +79,8 @@ func (d *WeChatWorkBotDriver) Send(ctx context.Context, n notify.Notification, r
 			"mentioned_mobile_list": cfg.MentionMobileList,
 		}
 	} else {
-		mentions := make([]string, 0, len(cfg.MentionList)+len(cfg.MentionMobileList))
+		mentions := make([]string, 0, len(cfg.MentionList))
 		for _, item := range cfg.MentionList {
-			item = strings.TrimSpace(item)
-			if item != "" {
-				mentions = append(mentions, "<@"+item+">")
-			}
-		}
-		for _, item := range cfg.MentionMobileList {
 			item = strings.TrimSpace(item)
 			if item != "" {
 				mentions = append(mentions, "<@"+item+">")

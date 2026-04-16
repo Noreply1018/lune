@@ -1,9 +1,23 @@
 package drivers
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 )
+
+func TestSignFeishuMatchesOfficialAlgorithm(t *testing.T) {
+	timestamp := "1710000000"
+	secret := "test-secret"
+	stringToSign := timestamp + "\n" + secret
+	mac := hmac.New(sha256.New, []byte(stringToSign))
+	want := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	if got := signFeishu(timestamp, secret); got != want {
+		t.Fatalf("unexpected feishu signature: got %q want %q", got, want)
+	}
+}
 
 func TestFeishuValidateConfigRejectsMissingHost(t *testing.T) {
 	driver := NewFeishuBotDriver()
@@ -48,5 +62,14 @@ func TestEmailValidateConfigRejectsEmptyTLSMode(t *testing.T) {
 	}`))
 	if err == nil {
 		t.Fatalf("expected empty tls_mode to be rejected")
+	}
+}
+
+func TestNormalizeTLSModeDoesNotAcceptEmpty(t *testing.T) {
+	if got := normalizeTLSMode(""); got != "" {
+		t.Fatalf("expected empty tls mode to stay empty, got %q", got)
+	}
+	if got := normalizeTLSMode("STARTTLS"); got != "starttls" {
+		t.Fatalf("expected starttls normalization, got %q", got)
 	}
 }

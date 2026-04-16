@@ -58,12 +58,17 @@ func (d *EmailSMTPDriver) Send(ctx context.Context, n notify.Notification, runti
 	if err := json.Unmarshal(runtime.Config, &cfg); err != nil {
 		return notify.Result{}, err
 	}
-	rendered, err := notify.RenderNotification(n, runtime.TitleTpl, runtime.BodyTpl)
-	if err != nil {
-		return notify.Result{}, err
+	rendered := runtime.Rendered
+	if rendered == nil {
+		item, err := notify.RenderNotification(n, runtime.TitleTpl, runtime.BodyTpl)
+		if err != nil {
+			return notify.Result{}, err
+		}
+		rendered = &item
 	}
 	auth := smtpAuth(cfg.Username, cfg.Password, cfg.Host)
 	body := strings.Join([]string{
+		fmt.Sprintf("From: %s", cfg.From),
 		fmt.Sprintf("To: %s", strings.Join(cfg.To, ",")),
 		fmt.Sprintf("Subject: %s", rendered.Title),
 		"MIME-Version: 1.0",
@@ -72,7 +77,7 @@ func (d *EmailSMTPDriver) Send(ctx context.Context, n notify.Notification, runti
 		rendered.Body,
 	}, "\r\n")
 	start := time.Now()
-	err = sendSMTPMail(ctx, cfg.Host, cfg.Port, normalizeTLSMode(cfg.TLSMode), auth, cfg.From, cfg.To, []byte(body))
+	err := sendSMTPMail(ctx, cfg.Host, cfg.Port, normalizeTLSMode(cfg.TLSMode), auth, cfg.From, cfg.To, []byte(body))
 	result := notify.Result{LatencyMS: time.Since(start).Milliseconds()}
 	if err != nil {
 		result.UpstreamCode = "smtp error"
@@ -87,14 +92,14 @@ func (d *EmailSMTPDriver) Send(ctx context.Context, n notify.Notification, runti
 
 func normalizeTLSMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "starttls":
+	case "starttls":
 		return "starttls"
 	case "tls":
 		return "tls"
 	case "none":
 		return "none"
 	default:
-		return strings.ToLower(strings.TrimSpace(value))
+		return ""
 	}
 }
 

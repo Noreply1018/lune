@@ -166,7 +166,7 @@ func TestPruneNotificationHistoryRetentionZeroKeepsOutbox(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create outbox: %v", err)
 	}
-	if _, err := st.db.Exec(`UPDATE notification_outbox SET created_at = ?`, time.Now().UTC().Add(-10*24*time.Hour).Format("2006-01-02 15:04:05")); err != nil {
+	if _, err := st.db.Exec(`UPDATE notification_outbox SET created_at = ? WHERE channel_id = ?`, time.Now().UTC().Add(-10*24*time.Hour).Format("2006-01-02 15:04:05"), channelID); err != nil {
 		t.Fatalf("age outbox: %v", err)
 	}
 

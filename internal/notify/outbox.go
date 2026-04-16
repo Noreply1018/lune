@@ -18,9 +18,9 @@ var retrySchedule = []time.Duration{
 }
 
 type Outbox struct {
-	store     *store.Store
-	registry  *Registry
-	channelMu sync.Map
+	store    *store.Store
+	registry *Registry
+	itemMu   sync.Map
 }
 
 func NewOutbox(st *store.Store, registry *Registry) *Outbox {
@@ -77,10 +77,25 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 	if err != nil {
 		return o.fail(item, channel, Result{}, err.Error(), retrying)
 	}
-	mu := o.channelMutex(channel.ID)
+	title := n.Event
+	renderedBody := item.Payload
+	payloadSummary := truncateString(item.Payload, 1024)
+	if rendered, err := RenderNotification(n, channel.TitleTemplate, channel.BodyTemplate); err == nil {
+		title = rendered.Title
+		renderedBody = rendered.Body
+		payloadSummary = truncateString(rendered.Body, 1024)
+	}
+	mu := o.itemMutex(item.ID)
 	mu.Lock()
 	defer mu.Unlock()
-
+	current, err := o.store.GetNotificationOutbox(item.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil || (current.Status != "pending" && current.Status != "retrying") {
+		return nil
+	}
+	item = *current
 	result, sendErr := driver.Send(ctx, n, ChannelRuntime{
 		ID:        channel.ID,
 		Name:      channel.Name,
@@ -89,23 +104,20 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 		TitleTpl:  channel.TitleTemplate,
 		BodyTpl:   channel.BodyTemplate,
 		Triggered: "system",
+		Rendered:  &RenderedMessage{Title: title, Body: renderedBody},
 	})
 	if sendErr != nil || !result.OK {
 		return o.fail(item, channel, result, firstNonEmpty(result.UpstreamMessage, errorString(sendErr)), retrying)
 	}
 
-	rendered, err := RenderNotification(n, channel.TitleTemplate, channel.BodyTemplate)
-	if err != nil {
-		return o.fail(item, channel, result, err.Error(), retrying)
-	}
 	err = o.store.RecordNotificationAttemptSuccess(item.ID, &store.NotificationDelivery{
 		ChannelID:       channel.ID,
 		ChannelName:     channel.Name,
 		ChannelType:     channel.Type,
 		Event:           n.Event,
 		Severity:        n.Severity,
-		Title:           rendered.Title,
-		PayloadSummary:  truncateString(rendered.Body, 1024),
+		Title:           title,
+		PayloadSummary:  payloadSummary,
 		Status:          "success",
 		UpstreamCode:    result.UpstreamCode,
 		UpstreamMessage: result.UpstreamMessage,
@@ -158,7 +170,7 @@ func (o *Outbox) fail(item store.NotificationOutbox, channel store.NotificationC
 	return o.store.RecordNotificationAttemptRetry(item.ID, delivery, attempt, nextAttemptAt, firstNonEmpty(result.UpstreamMessage, message))
 }
 
-func (o *Outbox) channelMutex(channelID int64) *sync.Mutex {
-	actual, _ := o.channelMu.LoadOrStore(channelID, &sync.Mutex{})
+func (o *Outbox) itemMutex(outboxID int64) *sync.Mutex {
+	actual, _ := o.itemMu.LoadOrStore(outboxID, &sync.Mutex{})
 	return actual.(*sync.Mutex)
 }

@@ -25,6 +25,7 @@ type ChannelRuntime struct {
 	TitleTpl  string          `json:"title_template"`
 	BodyTpl   string          `json:"body_template"`
 	Triggered string          `json:"triggered_by"`
+	Rendered  *RenderedMessage `json:"rendered,omitempty"`
 }
 
 type ChannelDriver interface {

@@ -64,9 +64,13 @@ func (d *FeishuBotDriver) Send(ctx context.Context, n notify.Notification, runti
 	if cfg.Format == "" {
 		cfg.Format = "post"
 	}
-	rendered, err := notify.RenderNotification(n, runtime.TitleTpl, runtime.BodyTpl)
-	if err != nil {
-		return notify.Result{}, err
+	rendered := runtime.Rendered
+	if rendered == nil {
+		item, err := notify.RenderNotification(n, runtime.TitleTpl, runtime.BodyTpl)
+		if err != nil {
+			return notify.Result{}, err
+		}
+		rendered = &item
 	}
 	payload := map[string]any{}
 	if cfg.Format == "text" {
@@ -136,7 +140,7 @@ func (d *FeishuBotDriver) Send(ctx context.Context, n notify.Notification, runti
 }
 
 func signFeishu(timestamp, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(timestamp + "\n" + secret))
+	stringToSign := timestamp + "\n" + secret
+	mac := hmac.New(sha256.New, []byte(stringToSign))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
