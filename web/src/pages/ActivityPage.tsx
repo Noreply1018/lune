@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import ErrorState from "@/components/ErrorState";
 import PageHeader from "@/components/PageHeader";
@@ -332,8 +332,10 @@ export default function ActivityPage() {
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterModel, setFilterModel] = useState("all");
   const [expandedRowId, setExpandedRowId] = useState<number | null>(null);
+  const loadRequestIdRef = useRef(0);
 
   function load() {
+    const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     setError(null);
     Promise.all([
@@ -342,15 +344,25 @@ export default function ActivityPage() {
       loadUsageBundle(range),
     ])
       .then(([overviewData, poolData, usageData]) => {
+        if (requestId !== loadRequestIdRef.current) {
+          return;
+        }
         setOverview(overviewData);
         setPools(poolData ?? []);
         setUsage(usageData);
         setLastUpdated(new Date().toISOString());
       })
       .catch((err) => {
+        if (requestId !== loadRequestIdRef.current) {
+          return;
+        }
         setError(err instanceof Error ? err.message : "Activity 加载失败");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (requestId === loadRequestIdRef.current) {
+          setLoading(false);
+        }
+      });
   }
 
   useEffect(() => {

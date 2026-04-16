@@ -628,6 +628,11 @@ func (h *Handler) listPoolTokens(w http.ResponseWriter, r *http.Request) {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		tokens[i].Token = ""
 		tokens[i].IsGlobal = tokens[i].PoolID == nil
+		if tokens[i].PoolID != nil {
+			if pool, err := h.store.GetPool(*tokens[i].PoolID); err == nil && pool != nil {
+				tokens[i].PoolLabel = pool.Label
+			}
+		}
 	}
 	if tokens == nil {
 		tokens = []store.AccessToken{}
@@ -773,6 +778,15 @@ func (h *Handler) revealToken(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
+		return
+	}
+	existing, err := h.store.GetToken(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if existing == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "token not found")
 		return
 	}
 	var req store.AccessToken
@@ -1975,6 +1989,12 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	existingBefore, err := h.store.FindAccountByCpaKey(svc.ID, req.AccountKey)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+
 	account, err := h.upsertImportedCpaAccount(svc, req.AccountKey, f, req.Label, req.Enabled, req.Notes)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -1987,7 +2007,17 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 
 	// add to pool
 	if _, err := h.store.AddPoolMember(req.PoolID, account.ID); err != nil {
-		slog.Error("importCpaAccount: failed to add pool member", "pool_id", req.PoolID, "account_id", account.ID, "err", err)
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			slog.Info("importCpaAccount: pool member already exists", "pool_id", req.PoolID, "account_id", account.ID)
+		} else {
+			if existingBefore == nil {
+				if delErr := h.store.DeleteAccount(account.ID); delErr != nil {
+					slog.Error("importCpaAccount: rollback orphan account failed", "account_id", account.ID, "err", delErr)
+				}
+			}
+			webutil.WriteAdminError(w, 500, "internal", "failed to add imported account to pool")
+			return
+		}
 	}
 
 	// trigger async model discovery
