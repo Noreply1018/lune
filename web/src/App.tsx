@@ -10,6 +10,7 @@ import { AdminUIProvider } from "./components/AdminUI";
 const OverviewPage = lazy(() => import("./pages/OverviewPage"));
 const PoolDetailPage = lazy(() => import("./pages/PoolDetailPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const ActivityPage = lazy(() => import("./pages/ActivityPage"));
 
 function PageSkeleton() {
   return (
@@ -30,6 +31,8 @@ function PageRouter() {
       <AppErrorBoundary>
         {poolMatch ? (
           <PoolDetailPage />
+        ) : path === "/admin/activity" ? (
+          <ActivityPage />
         ) : path === "/admin/settings" ? (
           <SettingsPage />
         ) : (

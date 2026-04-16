@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Cog, LayoutDashboard, Plus, Waves } from "lucide-react";
+import { Activity, Cog, LayoutDashboard, Plus, Waves } from "lucide-react";
 
 export type AdminStatus = "unknown" | "healthy" | "degraded" | "error" | "disabled";
 
@@ -21,6 +21,7 @@ export const ADMIN_NAV_ITEMS: NavItem[] = [
   { label: "Overview", href: "/admin", icon: LayoutDashboard },
   { label: "Pools", href: "/admin/pools", icon: Waves },
   { label: "Settings", href: "/admin/settings", icon: Cog },
+  { label: "Activity", href: "/admin/activity", icon: Activity },
 ];
 
 export const ADD_ACCOUNT_ACTION = {

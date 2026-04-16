@@ -15,13 +15,19 @@ import StatusBadge from "@/components/StatusBadge";
 import MiniChat from "@/components/MiniChat";
 import { compact, relativeTime } from "@/lib/fmt";
 import type { PoolMember } from "@/lib/types";
-import { getAccessLabel, getAccountHealth, getExpiryMeta, parseQuotaDisplay } from "@/lib/lune";
+import {
+  ensureArray,
+  getAccessLabel,
+  getAccountHealth,
+  getExpiryMeta,
+  parseQuotaDisplay,
+} from "@/lib/lune";
 import { cn } from "@/lib/utils";
 
 export default function AccountCard({
   member,
   requests,
-  globalToken,
+  resolveToken,
   dragging = false,
   onToggleEnabled,
   onDelete,
@@ -30,7 +36,7 @@ export default function AccountCard({
 }: {
   member: PoolMember;
   requests: number;
-  globalToken: string;
+  resolveToken: () => Promise<string>;
   dragging?: boolean;
   onToggleEnabled: () => void;
   onDelete: () => void;
@@ -41,10 +47,18 @@ export default function AccountCard({
   const [chatOpen, setChatOpen] = useState(false);
   const account = member.account;
 
-  const health = getAccountHealth(account!);
-  const expiry = getExpiryMeta(account?.cpa_expired_at ?? null);
-  const quota = parseQuotaDisplay(account?.quota_display ?? "");
-  const models = account?.models ?? [];
+  if (!account) {
+    return (
+      <article className="rounded-[1.6rem] border border-status-red/15 bg-red-50/60 p-4 text-sm text-status-red">
+        账号数据缺失，当前卡片无法渲染。请刷新页面或检查后端返回。
+      </article>
+    );
+  }
+
+  const health = getAccountHealth(account);
+  const expiry = getExpiryMeta(account.cpa_expired_at ?? null);
+  const quota = parseQuotaDisplay(account.quota_display ?? "");
+  const models = ensureArray(account.models);
 
   const toneClass = useMemo(() => {
     if (!member.enabled) return "border-moon-200/60 bg-moon-100/55";
@@ -67,7 +81,7 @@ export default function AccountCard({
             <p className="eyebrow-label">{getAccessLabel(account!)}</p>
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-lg font-semibold tracking-[-0.03em] text-moon-800">
-                {account?.label}
+                {account.label}
               </h3>
               <StatusBadge status={health === "unknown" ? "degraded" : health} />
             </div>
@@ -170,9 +184,9 @@ export default function AccountCard({
       {chatOpen ? (
         <div className="mt-4">
           <MiniChat
-            accountId={account!.id}
+            accountId={account.id}
             model={models[0]}
-            globalToken={globalToken}
+            resolveToken={resolveToken}
             disabled={!member.enabled}
           />
         </div>

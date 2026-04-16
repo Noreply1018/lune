@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
+  Activity,
   ChevronDown,
   CirclePlus,
   Cog,
@@ -22,13 +23,13 @@ import {
 import { usePathname, useRouter } from "@/lib/router";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { Pool } from "@/lib/types";
-import { getPoolHealth } from "@/lib/lune";
+import type { Pool, PoolDetailResponse } from "@/lib/types";
+import { derivePoolSnapshot, type PoolSnapshot } from "@/lib/lune";
 import { useAdminUI } from "@/components/AdminUI";
 import AddAccountDrawer from "@/components/AddAccountDrawer";
 
-function PoolDot({ pool }: { pool: Pool }) {
-  const tone = getPoolHealth(pool);
+function PoolDot({ snapshot }: { snapshot: PoolSnapshot }) {
+  const tone = snapshot.health;
   const className =
     tone === "healthy"
       ? "bg-status-green"
@@ -44,7 +45,7 @@ function PoolDot({ pool }: { pool: Pool }) {
 export default function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
   const { onLinkClick, navigate } = useRouter();
-  const { openAddAccount, dataVersion } = useAdminUI();
+  const { openAddAccount, dataVersion, poolSnapshots, setPoolSnapshots } = useAdminUI();
   const mainRef = useRef<HTMLElement | null>(null);
   const [pools, setPools] = useState<Pool[]>([]);
   const [poolsExpanded, setPoolsExpanded] = useState(true);
@@ -57,14 +58,29 @@ export default function Shell({ children }: { children: ReactNode }) {
     let cancelled = false;
     api
       .get<Pool[]>("/pools")
-      .then((data) => {
+      .then(async (data) => {
         if (!cancelled) {
-          setPools(data ?? []);
+          const safePools = data ?? [];
+          setPools(safePools);
+          const detailEntries = await Promise.all(
+            safePools.map(async (pool) => {
+              try {
+                const detail = await api.get<PoolDetailResponse>(`/pools/${pool.id}`);
+                return [pool.id, derivePoolSnapshot(pool, detail)] as const;
+              } catch {
+                return [pool.id, derivePoolSnapshot(pool)] as const;
+              }
+            }),
+          );
+          if (!cancelled) {
+            setPoolSnapshots(Object.fromEntries(detailEntries));
+          }
         }
       })
       .catch(() => {
         if (!cancelled) {
           setPools([]);
+          setPoolSnapshots({});
         }
       });
 
@@ -160,6 +176,7 @@ export default function Shell({ children }: { children: ReactNode }) {
               <div className="space-y-1 pl-2">
                 {pools.map((pool) => {
                   const active = currentPoolId === pool.id;
+                  const snapshot = poolSnapshots[pool.id] ?? derivePoolSnapshot(pool);
                   return (
                     <SidebarMenuItem key={pool.id}>
                       <SidebarMenuButton
@@ -177,7 +194,7 @@ export default function Shell({ children }: { children: ReactNode }) {
                             : "text-moon-500 hover:bg-white/58 hover:text-moon-700",
                         )}
                       >
-                        <PoolDot pool={pool} />
+                        <PoolDot snapshot={snapshot} />
                         <span className="truncate">{pool.label}</span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
@@ -206,23 +223,49 @@ export default function Shell({ children }: { children: ReactNode }) {
                 <span>Settings</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
+
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                isActive={path === "/admin/activity"}
+                render={
+                  <a
+                    href="/admin/activity"
+                    onClick={(event) => handleNavClick(event, "/admin/activity")}
+                  />
+                }
+                className={cn(
+                  "h-11 rounded-[1rem] px-3 text-[13px] font-medium",
+                  path === "/admin/activity"
+                    ? "bg-[linear-gradient(180deg,rgba(134,125,193,0.16),rgba(134,125,193,0.07))] text-moon-800"
+                    : "text-moon-500 hover:bg-white/70 hover:text-moon-700",
+                )}
+              >
+                <Activity className="size-4" />
+                <span>Activity</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
           </SidebarMenu>
         </SidebarContent>
 
         <SidebarFooter className="px-3 pb-4">
-          <button
-            type="button"
-            onClick={() => openAddAccount(currentPoolId)}
-            className="group flex w-full items-center gap-3 rounded-[1.25rem] border border-white/78 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(244,241,250,0.76))] px-3 py-3 text-left shadow-[0_18px_40px_-34px_rgba(33,40,63,0.26)] transition-all hover:border-lunar-300/70 hover:shadow-[0_22px_48px_-32px_rgba(33,40,63,0.3)] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
-          >
-            <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-lunar-100/80 text-lunar-700">
-              <CirclePlus className="size-4.5" />
-            </span>
-            <span className="space-y-0.5 group-data-[collapsible=icon]:hidden">
-              <span className="block text-sm font-semibold text-moon-800">Add Account</span>
-              <span className="block text-xs text-moon-400">新账号会直接加入 Pool</span>
-            </span>
-          </button>
+          <div className="space-y-2.5">
+            <button
+              type="button"
+              onClick={() => openAddAccount(currentPoolId)}
+              className="group flex w-full items-center gap-3 rounded-[1.25rem] border border-white/42 bg-[linear-gradient(180deg,rgba(255,255,255,0.74),rgba(244,241,250,0.5))] px-3 py-3 text-left shadow-[0_12px_24px_-28px_rgba(33,40,63,0.16)] transition-all hover:border-lunar-300/28 hover:shadow-[0_16px_28px_-28px_rgba(33,40,63,0.18)] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+            >
+              <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-lunar-100/34 text-lunar-700/64">
+                <CirclePlus className="size-4.5" />
+              </span>
+              <span className="space-y-0.5 group-data-[collapsible=icon]:hidden">
+                <span className="block text-sm font-medium text-moon-700">Add Account</span>
+                <span className="block text-xs text-moon-400/64">新账号会直接加入 Pool</span>
+              </span>
+            </button>
+            <p className="px-1 text-[11px] tracking-[0.08em] text-moon-400/46 group-data-[collapsible=icon]:hidden">
+              月亮升起以后，工作会自己安静下来。
+            </p>
+          </div>
         </SidebarFooter>
       </Sidebar>
 

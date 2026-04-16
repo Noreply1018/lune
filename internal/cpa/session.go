@@ -3,7 +3,10 @@ package cpa
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -14,6 +17,7 @@ type LoginSession struct {
 	ID              string         `json:"id"`
 	ServiceID       int64          `json:"service_id"`
 	PoolID          int64          `json:"pool_id"`
+	Provider        string         `json:"provider"`
 	Status          string         `json:"status"` // pending, authorized, succeeded, expired, failed, cancelled
 	VerificationURI string         `json:"verification_uri,omitempty"`
 	UserCode        string         `json:"user_code,omitempty"`
@@ -30,28 +34,33 @@ type LoginSession struct {
 type SessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*LoginSession
+	path     string
 }
 
-func NewSessionStore() *SessionStore {
-	return &SessionStore{
+func NewSessionStore(path string) *SessionStore {
+	s := &SessionStore{
 		sessions: make(map[string]*LoginSession),
+		path:     path,
 	}
+	s.load()
+	return s
 }
 
-func (s *SessionStore) CreateSession(serviceID int64, dcr *DeviceCodeResponse) (*LoginSession, error) {
+func (s *SessionStore) CreateSession(serviceID int64, provider string, dcr *DeviceCodeResponse) (*LoginSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, sess := range s.sessions {
-		if sess.ServiceID == serviceID && (sess.Status == "pending" || sess.Status == "authorized") {
-			return nil, fmt.Errorf("active session already exists for this service")
-		}
+	s.normalizeLocked()
+
+	if sess := s.getActiveSessionLocked(serviceID); sess != nil {
+		return nil, fmt.Errorf("active session already exists for this service")
 	}
 
 	id := generateSessionID()
 	session := &LoginSession{
 		ID:              id,
 		ServiceID:       serviceID,
+		Provider:        provider,
 		Status:          "pending",
 		VerificationURI: dcr.VerificationURI,
 		UserCode:        dcr.UserCode,
@@ -61,29 +70,54 @@ func (s *SessionStore) CreateSession(serviceID int64, dcr *DeviceCodeResponse) (
 	}
 
 	s.sessions[id] = session
+	s.saveLocked()
 	return session, nil
 }
 
 func (s *SessionStore) GetSession(id string) *LoginSession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.normalizeLocked()
 	return s.sessions[id]
+}
+
+func (s *SessionStore) GetActiveSession(serviceID int64) *LoginSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.normalizeLocked()
+	return s.getActiveSessionLocked(serviceID)
+}
+
+func (s *SessionStore) ListActiveSessions() []*LoginSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.normalizeLocked()
+
+	var sessions []*LoginSession
+	for _, sess := range s.sessions {
+		if isActiveStatus(sess.Status) {
+			sessions = append(sessions, sess)
+		}
+	}
+	return sessions
 }
 
 func (s *SessionStore) CancelSession(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.normalizeLocked()
 	sess, ok := s.sessions[id]
 	if !ok {
 		return fmt.Errorf("session not found")
 	}
-	if sess.Status != "pending" && sess.Status != "authorized" {
+	if sess.Status != "pending" {
 		return fmt.Errorf("session is not active")
 	}
 	sess.Status = "cancelled"
 	if sess.CancelFunc != nil {
 		sess.CancelFunc()
 	}
+	s.saveLocked()
 	return nil
 }
 
@@ -94,6 +128,7 @@ func (s *SessionStore) UpdateStatus(id, status, errorCode, errorMessage string) 
 		sess.Status = status
 		sess.ErrorCode = errorCode
 		sess.ErrorMessage = errorMessage
+		s.saveLocked()
 	}
 }
 
@@ -104,7 +139,88 @@ func (s *SessionStore) CompleteSession(id string, accountID int64, account *stor
 		sess.Status = "succeeded"
 		sess.AccountID = &accountID
 		sess.Account = account
+		s.saveLocked()
 	}
+}
+
+func (s *SessionStore) UpdatePoolID(id string, poolID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[id]; ok {
+		sess.PoolID = poolID
+		s.saveLocked()
+	}
+}
+
+func (s *SessionStore) getActiveSessionLocked(serviceID int64) *LoginSession {
+	for _, sess := range s.sessions {
+		if sess.ServiceID == serviceID && isActiveStatus(sess.Status) {
+			return sess
+		}
+	}
+	return nil
+}
+
+func (s *SessionStore) normalizeLocked() {
+	now := time.Now()
+	changed := false
+	for _, sess := range s.sessions {
+		if isActiveStatus(sess.Status) && !sess.ExpiresAt.IsZero() && now.After(sess.ExpiresAt) {
+			sess.Status = "expired"
+			sess.ErrorCode = "expired_token"
+			sess.ErrorMessage = "Device code expired"
+			changed = true
+		}
+	}
+	if changed {
+		s.saveLocked()
+	}
+}
+
+func (s *SessionStore) load() {
+	if s.path == "" {
+		return
+	}
+
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return
+	}
+
+	var sessions map[string]*LoginSession
+	if err := json.Unmarshal(data, &sessions); err != nil {
+		return
+	}
+
+	s.sessions = sessions
+	s.mu.Lock()
+	s.normalizeLocked()
+	s.mu.Unlock()
+}
+
+func (s *SessionStore) saveLocked() {
+	if s.path == "" {
+		return
+	}
+
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return
+	}
+
+	data, err := json.MarshalIndent(s.sessions, "", "  ")
+	if err != nil {
+		return
+	}
+
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, s.path)
+}
+
+func isActiveStatus(status string) bool {
+	return status == "pending" || status == "authorized"
 }
 
 func generateSessionID() string {

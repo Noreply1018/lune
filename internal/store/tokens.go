@@ -85,6 +85,20 @@ func (s *Store) DeleteToken(id int64) error {
 	return err
 }
 
+func (s *Store) RegenerateToken(id int64) (*AccessToken, error) {
+	value, err := generateToken()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.db.Exec(
+		`UPDATE access_tokens SET token=?, updated_at=datetime('now') WHERE id=?`,
+		value, id,
+	); err != nil {
+		return nil, err
+	}
+	return s.GetToken(id)
+}
+
 func (s *Store) FindTokenByValue(tokenValue string) (*AccessToken, error) {
 	row := s.db.QueryRow(`SELECT `+tokenColumns+` FROM access_tokens WHERE token = ?`, tokenValue)
 	t, err := scanTokenRow(row)

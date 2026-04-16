@@ -11,17 +11,29 @@ func (s *Store) GetOverview() (*Overview, error) {
 	}
 
 	// pools total / healthy
-	poolRows, err := s.db.Query(`SELECT id, enabled FROM pools`)
+	poolRows, err := s.db.Query(`
+		SELECT p.enabled,
+			(SELECT COUNT(*)
+			 FROM pool_members pm
+			 JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
+			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count
+		FROM pools p`)
 	if err == nil {
 		defer poolRows.Close()
 		for poolRows.Next() {
-			var id int64
 			var enabled int
-			if err := poolRows.Scan(&id, &enabled); err != nil {
+			var accountCount int
+			var healthyAccountCount int
+			if err := poolRows.Scan(&enabled, &accountCount, &healthyAccountCount); err != nil {
+				continue
+			}
+			if enabled == 0 {
 				continue
 			}
 			o.PoolsTotal++
-			if enabled != 0 {
+			if accountCount > 0 && healthyAccountCount == accountCount {
 				o.PoolsHealthy++
 			}
 		}
@@ -31,7 +43,7 @@ func (s *Store) GetOverview() (*Overview, error) {
 	total, byStatus, err := s.CountAccounts()
 	if err == nil {
 		o.AccountsTotal = total
-		o.AccountsHealthy = byStatus["healthy"]
+		o.AccountsHealthy = byStatus["healthy"] + byStatus["degraded"]
 	}
 
 	// models total (distinct model_id from account_models)
@@ -47,11 +59,17 @@ func (s *Store) GetOverview() (*Overview, error) {
 		todayStart,
 	).Scan(&o.SuccessRateToday)
 
-	// global token (first token where pool_id IS NULL), returned in full for admin UI usage
+	// global token metadata (first token where pool_id IS NULL)
+	var tokenID int64
 	var tokenVal string
-	err = s.db.QueryRow(`SELECT token FROM access_tokens WHERE pool_id IS NULL AND enabled = 1 ORDER BY id LIMIT 1`).Scan(&tokenVal)
+	err = s.db.QueryRow(`SELECT id, token FROM access_tokens WHERE pool_id IS NULL AND enabled = 1 ORDER BY id LIMIT 1`).Scan(&tokenID, &tokenVal)
 	if err == nil && tokenVal != "" {
-		o.GlobalToken = tokenVal
+		o.GlobalTokenID = &tokenID
+		if len(tokenVal) > 12 {
+			o.GlobalTokenMasked = tokenVal[:12] + "..." + tokenVal[len(tokenVal)-4:]
+		} else {
+			o.GlobalTokenMasked = tokenVal
+		}
 	}
 
 	// alerts: accounts expiring within 7 days
@@ -267,6 +285,8 @@ func (s *Store) GetPoolStats(poolID int64, window string) (*UsageStats, error) {
 	now := time.Now().UTC()
 	var since string
 	switch window {
+	case "today":
+		since = now.Format("2006-01-02") + " 00:00:00"
 	case "24h":
 		since = now.Add(-24 * time.Hour).Format("2006-01-02 15:04:05")
 	case "7d":

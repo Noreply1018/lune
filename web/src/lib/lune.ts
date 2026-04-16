@@ -1,4 +1,19 @@
-import type { Account, Pool } from "@/lib/types";
+import type { Account, Pool, PoolDetailResponse } from "@/lib/types";
+
+export type PoolSnapshot = {
+  id: number;
+  label: string;
+  enabled: boolean;
+  activeAccountIds: number[];
+  activeAccountCount: number | null;
+  healthyAccountCount: number | null;
+  models: string[];
+  health: "healthy" | "degraded" | "error" | "disabled" | "unknown";
+};
+
+export function ensureArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
 
 export function getApiBaseUrl(externalUrl?: string | null): string {
   const fallback = `${window.location.origin}/v1`;
@@ -25,9 +40,60 @@ export function maskToken(token: string): string {
 export function getPoolHealth(pool: Pool): "healthy" | "degraded" | "error" | "disabled" {
   if (!pool.enabled) return "disabled";
   if (pool.account_count === 0) return "degraded";
-  if (pool.healthy_account_count === 0) return "error";
-  if (pool.healthy_account_count < pool.account_count) return "degraded";
-  return "healthy";
+  if (pool.routable_account_count === 0) return "error";
+  if (pool.healthy_account_count === pool.account_count) return "healthy";
+  return "degraded";
+}
+
+export function derivePoolSnapshot(pool: Pool, detail?: PoolDetailResponse): PoolSnapshot {
+  if (!detail) {
+    return {
+      id: pool.id,
+      label: pool.label,
+      enabled: pool.enabled,
+      activeAccountIds: [],
+      activeAccountCount: null,
+      healthyAccountCount: null,
+      models: [],
+      health: pool.enabled ? "unknown" : "disabled",
+    };
+  }
+
+  const activeMembers = ensureArray(detail.members).filter(
+    (member) => member.enabled && member.account?.enabled,
+  );
+  const healthyMembers = activeMembers.filter((member) => member.account?.status === "healthy");
+  const modelSet = new Set<string>();
+
+  healthyMembers.forEach((member) => {
+    ensureArray(member.account?.models).forEach((model) => {
+      modelSet.add(model);
+    });
+  });
+
+  let health: PoolSnapshot["health"] = "disabled";
+  if (!pool.enabled) {
+    health = "disabled";
+  } else if (activeMembers.length === 0) {
+    health = "degraded";
+  } else if (healthyMembers.length === 0) {
+    health = "error";
+  } else if (healthyMembers.length === activeMembers.length) {
+    health = "healthy";
+  } else {
+    health = "degraded";
+  }
+
+  return {
+    id: pool.id,
+    label: pool.label,
+    enabled: pool.enabled,
+    activeAccountIds: activeMembers.map((member) => member.account_id),
+    activeAccountCount: activeMembers.length,
+    healthyAccountCount: healthyMembers.length,
+    models: pool.enabled ? Array.from(modelSet).sort() : [],
+    health,
+  };
 }
 
 export function getAccountHealth(

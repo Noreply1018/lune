@@ -8,11 +8,16 @@ import (
 func (s *Store) ListPools() ([]Pool, error) {
 	rows, err := s.db.Query(`
 		SELECT p.id, p.label, p.priority, p.enabled, p.created_at, p.updated_at,
-			(SELECT COUNT(*) FROM pool_members WHERE pool_id = p.id) AS account_count,
+			(SELECT COUNT(*)
+			 FROM pool_members pm
+			 JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND a.status = 'healthy') AS healthy_account_count
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
+			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
 		FROM pools p
-		ORDER BY p.priority DESC, p.id`)
+		ORDER BY p.priority ASC, p.id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -45,9 +50,14 @@ func (s *Store) ListPools() ([]Pool, error) {
 func (s *Store) GetPool(id int64) (*Pool, error) {
 	row := s.db.QueryRow(`
 		SELECT p.id, p.label, p.priority, p.enabled, p.created_at, p.updated_at,
-			(SELECT COUNT(*) FROM pool_members WHERE pool_id = p.id) AS account_count,
+			(SELECT COUNT(*)
+			 FROM pool_members pm
+			 JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND a.status = 'healthy') AS healthy_account_count
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
+			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
 		FROM pools p
 		WHERE p.id = ?`, id)
 
@@ -177,7 +187,7 @@ func (s *Store) CountPools() (int, error) {
 func (s *Store) ListPoolMembers(poolID int64) ([]PoolMember, error) {
 	rows, err := s.db.Query(`
 		SELECT pm.id, pm.pool_id, pm.account_id, pm.position, pm.enabled,
-			`+accountColumns+`
+			`+accountColumnsWithAlias+`
 		FROM pool_members pm
 		JOIN accounts a ON a.id = pm.account_id
 		WHERE pm.pool_id = ?
@@ -273,7 +283,8 @@ func (s *Store) GetPoolModels(poolID int64) ([]string, error) {
 		SELECT DISTINCT am.model_id
 		FROM account_models am
 		JOIN pool_members pm ON pm.account_id = am.account_id
-		WHERE pm.pool_id = ?
+		JOIN accounts a ON a.id = am.account_id
+		WHERE pm.pool_id = ? AND pm.enabled = 1 AND a.enabled = 1
 		ORDER BY am.model_id`, poolID)
 	if err != nil {
 		return nil, err
@@ -302,7 +313,7 @@ func scanPoolRowWithCounts(row rowScanner) (*Pool, error) {
 	var createdAt, updatedAt sql.NullString
 
 	err := row.Scan(&p.ID, &p.Label, &p.Priority, &enabled, &createdAt, &updatedAt,
-		&p.AccountCount, &p.HealthyAccountCount)
+		&p.AccountCount, &p.HealthyAccountCount, &p.RoutableAccountCount)
 	if err != nil {
 		return nil, err
 	}

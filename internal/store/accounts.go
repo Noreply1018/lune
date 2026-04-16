@@ -9,6 +9,11 @@ var accountColumns = `id, label, source_kind, base_url, api_key, provider,
 	cpa_expired_at, cpa_last_refresh_at, cpa_disabled,
 	enabled, status, notes, quota_display, last_checked_at, last_error, created_at, updated_at`
 
+var accountColumnsWithAlias = `a.id, a.label, a.source_kind, a.base_url, a.api_key, a.provider,
+	a.cpa_service_id, a.cpa_provider, a.cpa_account_key, a.cpa_email, a.cpa_plan_type, a.cpa_openai_id,
+	a.cpa_expired_at, a.cpa_last_refresh_at, a.cpa_disabled,
+	a.enabled, a.status, a.notes, a.quota_display, a.last_checked_at, a.last_error, a.created_at, a.updated_at`
+
 func (s *Store) ListAccounts() ([]Account, error) {
 	rows, err := s.db.Query(`SELECT ` + accountColumns + ` FROM accounts ORDER BY id`)
 	if err != nil {

@@ -22,12 +22,12 @@ type ChatResponse = {
 export default function MiniChat({
   accountId,
   model,
-  globalToken,
+  resolveToken,
   disabled,
 }: {
   accountId: number;
   model?: string;
-  globalToken: string;
+  resolveToken: () => Promise<string>;
   disabled?: boolean;
 }) {
   const [message, setMessage] = useState("Hi, reply with one word.");
@@ -38,16 +38,21 @@ export default function MiniChat({
   const [error, setError] = useState<string | null>(null);
 
   async function runTest() {
-    if (!model || !globalToken || loading || disabled) return;
+    if (!model || loading || disabled) return;
 
     setLoading(true);
     setError(null);
     setReply("");
     setUsage(null);
-
-    const started = performance.now();
+    setDurationMs(null);
 
     try {
+      const globalToken = await resolveToken();
+      if (!globalToken) {
+        throw new Error("未找到可用的全局 Token");
+      }
+
+      const started = performance.now();
       const res = await fetch("/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -75,6 +80,7 @@ export default function MiniChat({
       setDurationMs(performance.now() - started);
     } catch (err) {
       const message = err instanceof Error ? err.message : "测试失败";
+      setDurationMs(null);
       setError(message);
       toast(message, "error");
     } finally {
@@ -91,7 +97,7 @@ export default function MiniChat({
             使用当前账号的首个模型发起一次直测。
           </p>
         </div>
-        <Button onClick={runTest} disabled={loading || !model || !globalToken || disabled}>
+        <Button onClick={runTest} disabled={loading || !model || disabled}>
           {loading ? <Loader2 className="size-4 animate-spin" /> : <SendHorizonal className="size-4" />}
           {loading ? "测试中" : "发送"}
         </Button>
