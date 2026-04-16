@@ -8,8 +8,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  ChevronDown,
-  ChevronRight,
   CircleDot,
   Copy,
   Eye,
@@ -157,7 +155,6 @@ export default function SettingsPage() {
   );
   const [visibleTokenIds, setVisibleTokenIds] = useState<number[]>([]);
   const [testingService, setTestingService] = useState(false);
-  const [systemOpen, setSystemOpen] = useState(false);
   const [pruning, setPruning] = useState(false);
   const [importDraft, setImportDraft] = useState<ParsedImportEnvelope | null>(
     null,
@@ -257,7 +254,7 @@ export default function SettingsPage() {
       if (field === "data_retention_days") {
         await loadRetentionSummary();
       }
-      toast(field === "health_check_interval" ? "维护项已更新" : "设置已更新");
+      toast("设置已更新");
     } catch (err) {
       toast(err instanceof Error ? err.message : "保存设置失败", "error");
       if (prevSettings) {
@@ -662,7 +659,7 @@ export default function SettingsPage() {
         description="管理网关行为、访问凭证与系统连接。"
       />
 
-      <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] lg:items-stretch">
+      <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-stretch">
         <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
           <SectionHeading
             title="Gateway Behavior"
@@ -706,121 +703,6 @@ export default function SettingsPage() {
               }
               onKeyDown={handleSettingKeyDown}
             />
-          </div>
-        </div>
-
-        <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
-          <SectionHeading
-            title="Notifications"
-            description="将关键告警推送到外部 Webhook。"
-          />
-          <div className="mt-4 flex flex-1 flex-col gap-5">
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <label
-                  htmlFor="webhook-url"
-                  className="text-sm font-medium text-moon-800"
-                >
-                  Webhook URL
-                </label>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full"
-                  onClick={() => void testWebhook()}
-                  disabled={!notificationForm.webhook_url.trim()}
-                >
-                  <CircleDot className="size-4" />
-                  Test
-                </Button>
-              </div>
-              <Input
-                id="webhook-url"
-                value={notificationForm.webhook_url}
-                placeholder="https://example.com/webhook"
-                onChange={(event) =>
-                  setNotificationForm((current) => ({
-                    ...current,
-                    webhook_url: event.target.value,
-                  }))
-                }
-                onBlur={() =>
-                  void saveSetting("webhook_url", notificationForm.webhook_url)
-                }
-                onKeyDown={handleSettingKeyDown}
-              />
-            </div>
-
-            <div className="rounded-[1.35rem] border border-moon-200/35 bg-white/50 px-4 py-4">
-              <div className="flex items-center justify-between gap-3 border-b border-moon-200/25 pb-4">
-                <div className="space-y-0.5">
-                  <p className="text-sm font-medium text-moon-800">
-                    Enable Webhook
-                  </p>
-                  <p className="text-xs text-moon-350">
-                    关闭后保留 URL，但不会发送任何推送。
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {savingToggles.webhook_enabled ? (
-                    <RefreshCw className="size-4 animate-spin text-moon-350" />
-                  ) : null}
-                  <Switch
-                    checked={settings?.webhook_enabled ?? false}
-                    disabled={savingToggles.webhook_enabled}
-                    onCheckedChange={(checked) =>
-                      void saveToggle("webhook_enabled", checked)
-                    }
-                  />
-                </div>
-              </div>
-
-              <div className="divide-y divide-moon-200/25">
-                <SettingsToggleRow
-                  label="Account Health Failure"
-                  helper="账号健康检查进入 error 状态时触发。"
-                  checked={settings?.notification_error_enabled ?? false}
-                  saving={savingToggles.notification_error_enabled ?? false}
-                  disabled={savingToggles.notification_error_enabled ?? false}
-                  onCheckedChange={(checked) =>
-                    void saveToggle("notification_error_enabled", checked)
-                  }
-                />
-                <SettingsToggleRow
-                  label="Account Expiring Soon"
-                  helper="CPA 账号即将过期或已过期时触发。"
-                  checked={settings?.notification_expiring_enabled ?? false}
-                  saving={savingToggles.notification_expiring_enabled ?? false}
-                  disabled={
-                    savingToggles.notification_expiring_enabled ?? false
-                  }
-                  onCheckedChange={(checked) =>
-                    void saveToggle("notification_expiring_enabled", checked)
-                  }
-                />
-                <SettingsNumericRow
-                  label="Expiring Threshold"
-                  helper="到期前多少天开始告警"
-                  value={notificationForm.notification_expiring_days}
-                  suffix="天"
-                  min={1}
-                  saving={savingField === "notification_expiring_days"}
-                  onChange={(value) =>
-                    setNotificationForm((current) => ({
-                      ...current,
-                      notification_expiring_days: value,
-                    }))
-                  }
-                  onBlur={() =>
-                    void saveSetting(
-                      "notification_expiring_days",
-                      notificationForm.notification_expiring_days,
-                    )
-                  }
-                  onKeyDown={handleSettingKeyDown}
-                />
-              </div>
-            </div>
           </div>
         </div>
 
@@ -880,6 +762,119 @@ export default function SettingsPage() {
 
       <section className="surface-section px-5 py-5 sm:px-6">
         <SectionHeading
+          title="Notifications"
+          description="将关键告警推送到外部 Webhook。"
+        />
+        <div className="mt-4 flex flex-col gap-5">
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <label
+                htmlFor="webhook-url"
+                className="text-sm font-medium text-moon-800"
+              >
+                Webhook URL
+              </label>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                onClick={() => void testWebhook()}
+                disabled={!notificationForm.webhook_url.trim()}
+              >
+                <CircleDot className="size-4" />
+                Test
+              </Button>
+            </div>
+            <Input
+              id="webhook-url"
+              value={notificationForm.webhook_url}
+              placeholder="https://example.com/webhook"
+              onChange={(event) =>
+                setNotificationForm((current) => ({
+                  ...current,
+                  webhook_url: event.target.value,
+                }))
+              }
+              onBlur={() =>
+                void saveSetting("webhook_url", notificationForm.webhook_url)
+              }
+              onKeyDown={handleSettingKeyDown}
+            />
+          </div>
+
+          <div className="rounded-[1.35rem] border border-moon-200/35 bg-white/50 px-4 py-4">
+            <div className="flex items-center justify-between gap-3 border-b border-moon-200/25 pb-4">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium text-moon-800">
+                  Enable Webhook
+                </p>
+                <p className="text-xs text-moon-350">
+                  关闭后保留 URL，但不会发送任何推送。
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {savingToggles.webhook_enabled ? (
+                  <RefreshCw className="size-4 animate-spin text-moon-350" />
+                ) : null}
+                <Switch
+                  checked={settings?.webhook_enabled ?? false}
+                  disabled={savingToggles.webhook_enabled}
+                  onCheckedChange={(checked) =>
+                    void saveToggle("webhook_enabled", checked)
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="divide-y divide-moon-200/25">
+              <SettingsToggleRow
+                label="Account Health Failure"
+                helper="账号健康检查进入 error 状态时触发。"
+                checked={settings?.notification_error_enabled ?? false}
+                saving={savingToggles.notification_error_enabled ?? false}
+                disabled={savingToggles.notification_error_enabled ?? false}
+                onCheckedChange={(checked) =>
+                  void saveToggle("notification_error_enabled", checked)
+                }
+              />
+              <SettingsToggleRow
+                label="Account Expiring Soon"
+                helper="CPA 账号即将过期或已过期时触发。"
+                checked={settings?.notification_expiring_enabled ?? false}
+                saving={savingToggles.notification_expiring_enabled ?? false}
+                disabled={savingToggles.notification_expiring_enabled ?? false}
+                onCheckedChange={(checked) =>
+                  void saveToggle("notification_expiring_enabled", checked)
+                }
+              />
+              <SettingsNumericRow
+                label="Expiring Threshold"
+                helper="到期前多少天开始告警"
+                value={notificationForm.notification_expiring_days}
+                suffix="天"
+                min={1}
+                saving={savingField === "notification_expiring_days"}
+                onChange={(value) =>
+                  setNotificationForm((current) => ({
+                    ...current,
+                    notification_expiring_days: value,
+                  }))
+                }
+                onBlur={() =>
+                  void saveSetting(
+                    "notification_expiring_days",
+                    notificationForm.notification_expiring_days,
+                  )
+                }
+                onKeyDown={handleSettingKeyDown}
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="surface-section px-5 py-5 sm:px-6">
+        <SectionHeading
           title="Token Management"
           description="集中管理全局与 Pool 访问凭证。"
           action={
@@ -928,30 +923,34 @@ export default function SettingsPage() {
       </section>
 
       <section className="surface-section px-5 py-5 sm:px-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-2">
-            <h2 className="text-[1.05rem] font-semibold tracking-[-0.02em] text-moon-800 sm:text-[1.12rem]">
-              System Administration
-            </h2>
-            <p className="text-sm leading-6 text-moon-500">
-              低频维护项默认折叠显示。
-            </p>
-          </div>
-          <button
-            type="button"
-            className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full text-moon-500 transition-colors hover:bg-white/70 hover:text-moon-700"
-            onClick={() => setSystemOpen((current) => !current)}
-            aria-label={systemOpen ? "收起系统维护项" : "展开系统维护项"}
-          >
-            {systemOpen ? (
-              <ChevronDown className="size-4" />
-            ) : (
-              <ChevronRight className="size-4" />
-            )}
-          </button>
-        </div>
-        {systemOpen ? (
-          <div className="mt-5 space-y-8 border-t border-moon-200/30 pt-5">
+        <SectionHeading
+          title="Data Retention"
+          description="控制日志清理规则，并查看当前库内日志的总体状态。"
+        />
+        <div className="mt-5 space-y-5">
+          <div className="divide-y divide-moon-200/25 border-y border-moon-200/25">
+            <SettingsNumericRow
+              label="Log Retention Days"
+              helper="实时生效"
+              value={settings?.data_retention_days ?? 0}
+              suffix="天"
+              min={0}
+              saving={savingField === "data_retention_days"}
+              onChange={(value) =>
+                setSettings((current) =>
+                  current
+                    ? { ...current, data_retention_days: value }
+                    : current,
+                )
+              }
+              onBlur={() =>
+                void saveSetting(
+                  "data_retention_days",
+                  settings?.data_retention_days ?? 0,
+                )
+              }
+              onKeyDown={handleSettingKeyDown}
+            />
             <SettingsNumericRow
               label="Health Check Interval"
               helper="修改后需重启生效"
@@ -970,124 +969,93 @@ export default function SettingsPage() {
               }
               onKeyDown={handleSettingKeyDown}
             />
+          </div>
 
-            <div className="space-y-5 border-t border-moon-200/30 pt-5">
-              <div className="space-y-1.5">
-                <p className="text-[11px] tracking-[0.18em] text-moon-350">
-                  Data Retention
-                </p>
-                <p className="max-w-2xl text-sm leading-6 text-moon-500">
-                  控制日志清理规则，并查看当前库内日志的总体状态。
-                </p>
-              </div>
-
-              <SettingsNumericRow
-                label="Log Retention Days"
-                helper="实时生效"
-                value={settings?.data_retention_days ?? 0}
-                suffix="天"
-                min={0}
-                saving={savingField === "data_retention_days"}
-                onChange={(value) =>
-                  setSettings((current) =>
-                    current
-                      ? { ...current, data_retention_days: value }
-                      : current,
-                  )
-                }
-                onBlur={() =>
-                  void saveSetting(
-                    "data_retention_days",
-                    settings?.data_retention_days ?? 0,
-                  )
-                }
-                onKeyDown={handleSettingKeyDown}
+          <div className="space-y-4">
+            <p className="text-[11px] font-medium tracking-[0.16em] text-moon-300">
+              当前状态
+            </p>
+            <div className="grid gap-4 border-y border-moon-200/25 py-4 sm:grid-cols-3">
+              <MetricMeta
+                label="总日志量"
+                value={`${Number(retentionSummary?.total_logs ?? 0).toLocaleString()} 条`}
               />
-
-              <div className="grid gap-4 border-y border-moon-200/25 py-4 sm:grid-cols-3">
-                <MetricMeta
-                  label="总日志量"
-                  value={`${Number(retentionSummary?.total_logs ?? 0).toLocaleString()} 条`}
-                />
-                <MetricMeta
-                  label="最早记录"
-                  value={
-                    retentionSummary?.oldest_log_at
-                      ? shortDate(retentionSummary.oldest_log_at)
-                      : "暂无"
-                  }
-                />
-                <MetricMeta
-                  label="最近记录"
-                  value={
-                    retentionSummary?.newest_log_at
-                      ? shortDate(retentionSummary.newest_log_at)
-                      : "暂无"
-                  }
-                />
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-sm text-moon-450">
-                  当前清理规则为 {retentionSummary?.retention_days ?? 0} 天。
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full"
-                  onClick={() => void pruneNow()}
-                  disabled={
-                    pruning || (retentionSummary?.total_logs ?? 0) === 0
-                  }
-                >
-                  {pruning ? (
-                    <RefreshCw className="size-4 animate-spin" />
-                  ) : null}
-                  Clean Up Now
-                </Button>
-              </div>
+              <MetricMeta
+                label="最早记录"
+                value={
+                  retentionSummary?.oldest_log_at
+                    ? shortDate(retentionSummary.oldest_log_at)
+                    : "暂无"
+                }
+              />
+              <MetricMeta
+                label="最近记录"
+                value={
+                  retentionSummary?.newest_log_at
+                    ? shortDate(retentionSummary.newest_log_at)
+                    : "暂无"
+                }
+              />
             </div>
-
-            <div className="space-y-5 border-t border-moon-200/30 pt-5">
-              <div className="space-y-1.5">
-                <p className="text-[11px] tracking-[0.18em] text-moon-350">
-                  Configuration Transfer
-                </p>
-                <p className="max-w-2xl text-sm leading-6 text-moon-500">
-                  导出当前 Pool、Token 与系统设置，或从导出文件恢复这些配置。
-                </p>
-              </div>
-
-              <div className="flex flex-wrap gap-3">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full"
-                  onClick={() => window.open("/admin/api/export", "_blank")}
-                >
-                  <Download className="size-4" />
-                  Export Configuration
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full"
-                  onClick={triggerImportPicker}
-                >
-                  <Upload className="size-4" />
-                  Import Configuration
-                </Button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".json,application/json"
-                  className="hidden"
-                  onChange={handleImportFileChange}
-                />
-              </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-moon-450">
+                当前清理规则为 {retentionSummary?.retention_days ?? 0} 天。
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                onClick={() => void pruneNow()}
+                disabled={pruning || (retentionSummary?.total_logs ?? 0) === 0}
+              >
+                {pruning ? (
+                  <RefreshCw className="size-4 animate-spin" />
+                ) : null}
+                Clean Up Now
+              </Button>
             </div>
           </div>
-        ) : null}
+        </div>
+      </section>
+
+      <section className="surface-section px-5 py-5 sm:px-6">
+        <SectionHeading
+          title="Configuration Transfer"
+          description="导出当前配置快照，并从导出文件恢复可导入的配置。"
+        />
+        <div className="mt-5 space-y-4">
+          <div className="flex flex-wrap gap-3">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full"
+              onClick={() => window.open("/admin/api/export", "_blank")}
+            >
+              <Download className="size-4" />
+              Export Configuration
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full"
+              onClick={triggerImportPicker}
+            >
+              <Upload className="size-4" />
+              Import Configuration
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={handleImportFileChange}
+            />
+          </div>
+          <div className="space-y-1.5 text-sm leading-6 text-moon-500">
+            <p>导出文件会包含 Pool、Token、系统设置，以及账号与 CPA Service 的快照信息。</p>
+            <p>导入只会恢复 Pool、Token 名称与可导入的设置项；Token 密钥会重新生成。</p>
+          </div>
+        </div>
       </section>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
