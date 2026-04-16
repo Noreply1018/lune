@@ -8,6 +8,8 @@ import {
   type ReactNode,
 } from "react";
 import {
+  ChevronDown,
+  ChevronUp,
   CircleDot,
   Copy,
   Eye,
@@ -53,13 +55,19 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import { shortDate } from "@/lib/fmt";
+import { latency, relativeTime, shortDate } from "@/lib/fmt";
 import { maskToken } from "@/lib/lune";
 import type {
   AccessToken,
   ConfigImportResult,
   CpaService,
   DataRetentionSummary,
+  NotificationChannel,
+  NotificationDeliveryMeta,
+  NotificationEventType,
+  NotificationPreviewItem,
+  NotificationSeverity,
+  NotificationSubscription,
   Pool,
   RevealedAccessToken,
   SystemSettings,
@@ -71,13 +79,11 @@ type EditableSettingField =
   | "max_retry_attempts"
   | "health_check_interval"
   | "data_retention_days"
-  | "notification_expiring_days"
-  | "webhook_url";
+  | "notification_expiring_days";
 
 type ToggleSettingField =
   | "notification_error_enabled"
-  | "notification_expiring_enabled"
-  | "webhook_enabled";
+  | "notification_expiring_enabled";
 
 type TokenDraft = {
   name: string;
@@ -95,6 +101,94 @@ type ParsedImportEnvelope = ParsedImportConfig & {
   data?: ParsedImportConfig;
 };
 
+type NotificationChannelDraft = {
+  id?: number;
+  name: string;
+  type: NotificationChannel["type"];
+  enabled: boolean;
+  config: Record<string, string>;
+  subscriptions: NotificationSubscription[];
+  title_template: string;
+  body_template: string;
+};
+
+type NotificationChannelField = {
+  key: string;
+  label: string;
+  placeholder?: string;
+  helper?: string;
+  secret?: boolean;
+};
+
+const DEFAULT_SUBSCRIPTION: NotificationSubscription = { event: "*" };
+
+const CHANNEL_TYPE_META: Record<
+  NotificationChannel["type"],
+  {
+    label: string;
+    tone: string;
+    description: string;
+    docsUrl: string;
+    fields: NotificationChannelField[];
+    defaults: Record<string, string>;
+  }
+> = {
+  generic_webhook: {
+    label: "Generic Webhook",
+    tone: "bg-moon-100/75 text-moon-600",
+    description: "发送 Lune 的通用 JSON 负载，适合自建接收器。",
+    docsUrl: "",
+    fields: [
+      { key: "url", label: "Webhook URL", placeholder: "https://example.com/webhook" },
+      { key: "headers_json", label: "Headers JSON", placeholder: "{\"Authorization\":\"Bearer ...\"}", helper: "可选，填 JSON 对象。" },
+    ],
+    defaults: { url: "", headers_json: "" },
+  },
+  wechat_work_bot: {
+    label: "企业微信机器人",
+    tone: "bg-emerald-100/80 text-emerald-700",
+    description: "向企业微信群机器人发送真实可见的 text 或 markdown 消息。",
+    docsUrl: "https://developer.work.weixin.qq.com/document/path/91770",
+    fields: [
+      { key: "webhook_url", label: "Webhook URL", placeholder: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." },
+      { key: "format", label: "Format", helper: "支持 text 或 markdown。" },
+      { key: "mention_list", label: "Mention List", placeholder: "user1,user2", helper: "可选，逗号分隔。" },
+      { key: "mention_mobile_list", label: "Mention Mobiles", placeholder: "13800000000", helper: "可选，逗号分隔。" },
+    ],
+    defaults: { webhook_url: "", format: "markdown", mention_list: "", mention_mobile_list: "" },
+  },
+  feishu_bot: {
+    label: "飞书机器人",
+    tone: "bg-sky-100/85 text-sky-700",
+    description: "支持 text 或 post，填写 secret 后会自动签名。",
+    docsUrl: "https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot",
+    fields: [
+      { key: "webhook_url", label: "Webhook URL", placeholder: "https://open.feishu.cn/open-apis/bot/v2/hook/..." },
+      { key: "secret", label: "Secret", helper: "可选，启用 HMAC 签名。", secret: true },
+      { key: "format", label: "Format", helper: "支持 text 或 post。" },
+    ],
+    defaults: { webhook_url: "", secret: "", format: "post" },
+  },
+  email_smtp: {
+    label: "Email SMTP",
+    tone: "bg-amber-100/85 text-amber-700",
+    description: "通过 SMTP 发送邮件告警，适合个人 inbox 或团队邮箱。",
+    docsUrl: "",
+    fields: [
+      { key: "host", label: "Host", placeholder: "smtp.example.com" },
+      { key: "port", label: "Port", placeholder: "587" },
+      { key: "username", label: "Username" },
+      { key: "password", label: "Password", secret: true },
+      { key: "from", label: "From", placeholder: "lune@example.com" },
+      { key: "to_csv", label: "Recipients", placeholder: "ops@example.com,me@example.com", helper: "逗号分隔。" },
+      { key: "tls_mode", label: "TLS Mode", helper: "starttls / tls / none" },
+    ],
+    defaults: { host: "", port: "587", username: "", password: "", from: "", to_csv: "", tls_mode: "starttls" },
+  },
+};
+
+const SEVERITY_OPTIONS: NotificationSeverity[] = ["info", "warning", "critical"];
+
 const IMPORTABLE_SETTING_KEYS = new Set([
   "health_check_interval",
   "request_timeout",
@@ -102,8 +196,6 @@ const IMPORTABLE_SETTING_KEYS = new Set([
   "notification_error_enabled",
   "notification_expiring_enabled",
   "notification_expiring_days",
-  "webhook_url",
-  "webhook_enabled",
   "data_retention_days",
 ]);
 
@@ -132,7 +224,6 @@ export default function SettingsPage() {
   });
   const [systemForm, setSystemForm] = useState({ health_check_interval: 60 });
   const [notificationForm, setNotificationForm] = useState({
-    webhook_url: "",
     notification_expiring_days: 7,
   });
   const [savingField, setSavingField] = useState<EditableSettingField | null>(
@@ -156,6 +247,29 @@ export default function SettingsPage() {
   );
   const [visibleTokenIds, setVisibleTokenIds] = useState<number[]>([]);
   const [testingService, setTestingService] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewForm, setPreviewForm] = useState<{
+    event: string;
+    severity: NotificationSeverity;
+  }>({
+    event: "account_error",
+    severity: "critical",
+  });
+  const [previewItems, setPreviewItems] = useState<NotificationPreviewItem[]>(
+    [],
+  );
+  const [channels, setChannels] = useState<NotificationChannel[]>([]);
+  const [eventTypes, setEventTypes] = useState<NotificationEventType[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [channelDialogOpen, setChannelDialogOpen] = useState(false);
+  const [channelDraft, setChannelDraft] = useState<NotificationChannelDraft>(
+    emptyChannelDraft("generic_webhook"),
+  );
+  const [channelSaving, setChannelSaving] = useState(false);
+  const [channelDeleting, setChannelDeleting] = useState<NotificationChannel | null>(
+    null,
+  );
+  const [testingChannelId, setTestingChannelId] = useState<number | null>(null);
   const [pruning, setPruning] = useState(false);
   const [importDraft, setImportDraft] = useState<ParsedImportEnvelope | null>(
     null,
@@ -195,7 +309,6 @@ export default function SettingsPage() {
           health_check_interval: settingsData.health_check_interval,
         });
         setNotificationForm({
-          webhook_url: settingsData.webhook_url,
           notification_expiring_days: settingsData.notification_expiring_days,
         });
       })
@@ -207,6 +320,12 @@ export default function SettingsPage() {
 
   useEffect(() => {
     load();
+  }, []);
+
+  useEffect(() => {
+    void reloadNotifications(true).catch((err) => {
+      toast(err instanceof Error ? err.message : "通知渠道加载失败", "error");
+    });
   }, []);
 
   useEffect(() => {
@@ -285,7 +404,7 @@ export default function SettingsPage() {
               : current,
           );
         }
-        if (field === "webhook_url" || field === "notification_expiring_days") {
+        if (field === "notification_expiring_days") {
           setNotificationForm((current) => ({
             ...current,
             [field]: prevSettings[field],
@@ -573,24 +692,155 @@ export default function SettingsPage() {
     }
   }
 
-  async function testWebhook() {
-    const webhookURL = notificationForm.webhook_url.trim();
-    if (!webhookURL) {
+  async function reloadNotifications(silent = false) {
+    if (!silent) {
+      setPreviewLoading(true);
+    }
+    try {
+      const [channelData, eventTypeData] = await Promise.all([
+        api.get<NotificationChannel[]>("/notifications/channels"),
+        api.get<NotificationEventType[]>("/notifications/event-types"),
+      ]);
+      setChannels(channelData ?? []);
+      setEventTypes(eventTypeData ?? []);
+      if (eventTypeData?.length) {
+        setPreviewForm((current) => {
+          const matched = eventTypeData.find((item) => item.event === current.event);
+          if (matched) {
+            return current;
+          }
+          return {
+            event: eventTypeData[0].event,
+            severity: eventTypeData[0].default_severity,
+          };
+        });
+      }
+    } finally {
+      if (!silent) {
+        setPreviewLoading(false);
+      }
+    }
+  }
+
+  async function runNotificationPreview() {
+    setPreviewLoading(true);
+    try {
+      const items = await api.post<NotificationPreviewItem[]>(
+        "/notifications/preview",
+        previewForm,
+      );
+      setPreviewItems(items ?? []);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "预览失败", "error");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  function openCreateChannel() {
+    setChannelDraft(emptyChannelDraft("generic_webhook"));
+    setChannelDialogOpen(true);
+  }
+
+  function openEditChannel(channel: NotificationChannel) {
+    setChannelDraft(channelToDraft(channel));
+    setChannelDialogOpen(true);
+  }
+
+  async function saveChannel() {
+    if (!channelDraft.name.trim()) {
+      toast("请先填写渠道名称", "error");
+      return;
+    }
+    setChannelSaving(true);
+    try {
+      const payload = {
+        name: channelDraft.name.trim(),
+        type: channelDraft.type,
+        enabled: channelDraft.enabled,
+        config: buildChannelConfig(channelDraft),
+        subscriptions:
+          channelDraft.subscriptions.filter((item) => item.event.trim()).length > 0
+            ? channelDraft.subscriptions.filter((item) => item.event.trim())
+            : [DEFAULT_SUBSCRIPTION],
+        title_template: channelDraft.title_template.trim(),
+        body_template: channelDraft.body_template.trim(),
+      };
+      if (channelDraft.id) {
+        await api.put(`/notifications/channels/${channelDraft.id}`, payload);
+        toast("渠道已更新");
+      } else {
+        await api.post("/notifications/channels", payload);
+        toast("渠道已创建");
+      }
+      setChannelDialogOpen(false);
+      await reloadNotifications(true);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "保存渠道失败", "error");
+    } finally {
+      setChannelSaving(false);
+    }
+  }
+
+  async function testChannel(channel: NotificationChannel) {
+    setTestingChannelId(channel.id);
+    try {
+      const result = await api.post<{
+        ok: boolean;
+        latency_ms: number;
+        upstream_code: string;
+        upstream_message: string;
+      }>(`/notifications/channels/${channel.id}/test`, {});
+      toast(
+        result.ok
+          ? `${channel.name} 测试成功 · ${latency(result.latency_ms)} · ${result.upstream_code || "ok"}`
+          : result.upstream_message || "测试失败",
+        result.ok ? "success" : "error",
+      );
+      await reloadNotifications(true);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "测试渠道失败", "error");
+    } finally {
+      setTestingChannelId(null);
+    }
+  }
+
+  async function toggleChannelEnabled(channel: NotificationChannel, enabled: boolean) {
+    const previous = channels;
+    setChannels((current) =>
+      current.map((item) =>
+        item.id === channel.id ? { ...item, enabled } : item,
+      ),
+    );
+    try {
+      await api.put(`/notifications/channels/${channel.id}`, {
+        name: channel.name,
+        type: channel.type,
+        enabled,
+        config: channel.config,
+        subscriptions: channel.subscriptions,
+        title_template: channel.title_template,
+        body_template: channel.body_template,
+      });
+      toast(enabled ? "渠道已启用" : "渠道已停用");
+      await reloadNotifications(true);
+    } catch (err) {
+      setChannels(previous);
+      toast(err instanceof Error ? err.message : "更新渠道状态失败", "error");
+    }
+  }
+
+  async function confirmDeleteChannel() {
+    if (!channelDeleting) {
       return;
     }
     try {
-      const result = await api.post<{ success: boolean; latency_ms: number }>(
-        "/settings/webhook/test",
-        { url: webhookURL },
-      );
-      toast(
-        result.success
-          ? `Webhook 测试成功 ${result.latency_ms}ms`
-          : "Webhook 测试失败",
-        result.success ? "success" : "error",
-      );
+      await api.delete(`/notifications/channels/${channelDeleting.id}`);
+      toast("渠道已删除");
+      setChannelDeleting(null);
+      await reloadNotifications(true);
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Webhook 测试失败", "error");
+      toast(err instanceof Error ? err.message : "删除渠道失败", "error");
     }
   }
 
@@ -781,111 +1031,400 @@ export default function SettingsPage() {
       <section className="surface-section px-5 py-5 sm:px-6">
         <SectionHeading
           title="Notifications"
-          description="将关键告警推送到外部 Webhook。"
+          description="把系统事件分发到不同渠道，并保留每次投递的结果痕迹。"
+          action={
+            <Button onClick={openCreateChannel}>
+              <Plus className="size-4" />
+              Add Channel
+            </Button>
+          }
         />
-        <div className="mt-4 flex flex-col gap-5">
-          <div className="space-y-2.5">
+        <div className="mt-5 space-y-6">
+          <div className="rounded-[1.45rem] border border-moon-200/45 bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(245,240,252,0.72))]">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left sm:px-5"
+              onClick={() => setPreviewOpen((current) => !current)}
+            >
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-moon-800">Event Preview</p>
+                <p className="text-sm text-moon-450">
+                  先看每个渠道会收到什么，再决定是否发送真实测试消息。
+                </p>
+              </div>
+              {previewOpen ? (
+                <ChevronUp className="size-4 text-moon-400" />
+              ) : (
+                <ChevronDown className="size-4 text-moon-400" />
+              )}
+            </button>
+
+            {previewOpen ? (
+              <div className="border-t border-moon-200/35 px-4 py-4 sm:px-5">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+                  <div className="grid flex-1 gap-3 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-moon-700">Event</p>
+                      <Select
+                        value={previewForm.event}
+                        onValueChange={(value) =>
+                          setPreviewForm((current) => ({
+                            ...current,
+                            event: value ?? current.event,
+                            severity:
+                              eventTypes.find((item) => item.event === value)
+                                ?.default_severity ?? current.severity,
+                          }))
+                        }
+                      >
+                        <SelectTrigger className="h-10 rounded-xl border-moon-200/65 bg-white/78">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {eventTypes.map((item) => (
+                            <SelectItem key={item.event} value={item.event}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-moon-700">Severity</p>
+                      <Select
+                        value={previewForm.severity}
+                        onValueChange={(value) =>
+                          setPreviewForm((current) => ({
+                            ...current,
+                            severity: value as NotificationSeverity,
+                          }))
+                        }
+                      >
+                        <SelectTrigger className="h-10 rounded-xl border-moon-200/65 bg-white/78">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {SEVERITY_OPTIONS.map((value) => (
+                            <SelectItem key={value} value={value}>
+                              {value}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    className="rounded-full"
+                    onClick={() => void runNotificationPreview()}
+                    disabled={previewLoading}
+                  >
+                    {previewLoading ? (
+                      <RefreshCw className="size-4 animate-spin" />
+                    ) : (
+                      <CircleDot className="size-4" />
+                    )}
+                    Preview
+                  </Button>
+                </div>
+
+                <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                  {previewItems.length ? (
+                    previewItems.map((item) => (
+                      <div
+                        key={`${item.channel_id}-${item.channel_name}`}
+                        className="rounded-[1.2rem] border border-moon-200/45 bg-white/70 px-4 py-4"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-moon-800">
+                              {item.channel_name}
+                            </p>
+                            <p className="mt-1 text-xs text-moon-400">
+                              {CHANNEL_TYPE_META[item.channel_type]?.label ??
+                                item.channel_type}
+                            </p>
+                          </div>
+                          <span
+                            className={cn(
+                              "rounded-full px-2.5 py-1 text-[11px] tracking-[0.14em]",
+                              item.matched
+                                ? "bg-lunar-100/80 text-moon-600"
+                                : "bg-moon-100/85 text-moon-400",
+                            )}
+                          >
+                            {item.matched ? "MATCHED" : "SKIPPED"}
+                          </span>
+                        </div>
+                        {item.matched ? (
+                          <div className="mt-3 space-y-3 text-sm text-moon-600">
+                            <div>
+                              <p className="text-[11px] tracking-[0.16em] text-moon-350">
+                                TITLE
+                              </p>
+                              <p className="mt-1 text-moon-700">
+                                {item.rendered_title || "--"}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[11px] tracking-[0.16em] text-moon-350">
+                                BODY
+                              </p>
+                              <p className="mt-1 whitespace-pre-wrap leading-6">
+                                {item.rendered_body || "--"}
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="mt-3 text-sm text-moon-450">
+                            跳过原因：{item.skipped_reason || "subscription_mismatch"}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-[1.2rem] border border-dashed border-moon-200/55 px-4 py-5 text-sm text-moon-450 lg:col-span-2">
+                      选择事件后点击 Preview，可看到命中的渠道与跳过原因。
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="space-y-3">
             <div className="flex items-center justify-between gap-3">
-              <label
-                htmlFor="webhook-url"
-                className="text-sm font-medium text-moon-800"
-              >
-                Webhook URL
-              </label>
+              <div>
+                <p className="text-sm font-medium text-moon-800">Channels</p>
+                <p className="mt-1 text-sm text-moon-450">
+                  每个渠道独立定义目标平台、订阅事件和最低严重级别。
+                </p>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
                 className="rounded-full"
-                onClick={() => void testWebhook()}
-                disabled={!notificationForm.webhook_url.trim()}
+                onClick={() => void reloadNotifications()}
+                disabled={previewLoading}
               >
-                <CircleDot className="size-4" />
-                Test
+                <RefreshCw
+                  className={cn(
+                    "size-4",
+                    previewLoading ? "animate-spin" : "",
+                  )}
+                />
+                Refresh
               </Button>
             </div>
-            <Input
-              id="webhook-url"
-              value={notificationForm.webhook_url}
-              placeholder="https://example.com/webhook"
-              onChange={(event) =>
-                setNotificationForm((current) => ({
-                  ...current,
-                  webhook_url: event.target.value,
-                }))
-              }
-              onBlur={() =>
-                void saveSetting("webhook_url", notificationForm.webhook_url)
-              }
-              onKeyDown={handleSettingKeyDown}
-            />
+
+            <div className="space-y-3">
+              {channels.length ? (
+                channels.map((channel) => (
+                  <div
+                    key={channel.id}
+                    className="rounded-[1.35rem] border border-moon-200/45 bg-white/72 px-4 py-4"
+                  >
+                    <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                      <div className="min-w-0 flex-1 space-y-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex size-8 items-center justify-center rounded-full bg-lunar-100/80 text-moon-600">
+                            <CircleDot className="size-4" />
+                          </span>
+                          <p className="text-sm font-medium text-moon-800">
+                            {channel.name}
+                          </p>
+                          <span
+                            className={cn(
+                              "rounded-full px-2.5 py-1 text-[11px] tracking-[0.14em]",
+                              CHANNEL_TYPE_META[channel.type]?.tone,
+                            )}
+                          >
+                            {CHANNEL_TYPE_META[channel.type]?.label ?? channel.type}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          {channel.subscriptions.length ? (
+                            channel.subscriptions.map((subscription, index) => (
+                              <span
+                                key={`${channel.id}-${subscription.event}-${index}`}
+                                className="rounded-full border border-moon-200/55 bg-white/82 px-3 py-1 text-xs text-moon-500"
+                              >
+                                {subscription.event}
+                                {subscription.min_severity
+                                  ? ` ≥ ${subscription.min_severity}`
+                                  : ""}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-sm text-moon-400">
+                              未设置订阅，默认不会投递。
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-moon-450">
+                          <span>
+                            最近结果：{formatDeliverySummary(channel.last_delivery)}
+                          </span>
+                          <span>更新于 {relativeTime(channel.updated_at)}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                        <div className="flex items-center gap-2 rounded-full border border-moon-200/60 bg-white/85 px-3 py-1.5">
+                          <span className="text-xs text-moon-450">Enabled</span>
+                          <Switch
+                            checked={channel.enabled}
+                            onCheckedChange={(checked) =>
+                              void toggleChannelEnabled(channel, checked)
+                            }
+                          />
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="rounded-full"
+                          onClick={() => void testChannel(channel)}
+                          disabled={testingChannelId === channel.id}
+                        >
+                          {testingChannelId === channel.id ? (
+                            <RefreshCw className="size-4 animate-spin" />
+                          ) : (
+                            <CircleDot className="size-4" />
+                          )}
+                          Test
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="rounded-full"
+                          onClick={() => openEditChannel(channel)}
+                        >
+                          <PencilLine className="size-4" />
+                          Edit
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="rounded-full text-status-red"
+                          onClick={() => setChannelDeleting(channel)}
+                        >
+                          <Trash2 className="size-4" />
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-[1.35rem] border border-dashed border-moon-200/55 px-5 py-6 text-sm text-moon-450">
+                  还没有通知渠道。先添加一个真实目标，例如企业微信机器人、飞书机器人或 Generic Webhook。
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="rounded-[1.35rem] border border-moon-200/35 bg-white/50 px-4 py-4">
-            <div className="flex items-center justify-between gap-3 border-b border-moon-200/25 pb-4">
-              <div className="space-y-0.5">
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+            <div className="rounded-[1.35rem] border border-moon-200/45 bg-white/68 px-4 py-4">
+              <div className="space-y-1">
                 <p className="text-sm font-medium text-moon-800">
-                  Enable Webhook
+                  Built-in Templates
                 </p>
-                <p className="text-xs text-moon-350">
-                  关闭后保留 URL，但不会发送任何推送。
+                <p className="text-sm text-moon-450">
+                  默认模板直接展示出来，方便你在编辑渠道前先看变量和文案骨架。
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                {savingToggles.webhook_enabled ? (
-                  <RefreshCw className="size-4 animate-spin text-moon-350" />
-                ) : null}
-                <Switch
-                  checked={settings?.webhook_enabled ?? false}
-                  disabled={savingToggles.webhook_enabled}
-                  onCheckedChange={(checked) =>
-                    void saveToggle("webhook_enabled", checked)
-                  }
-                />
+              <div className="mt-4 space-y-3">
+                {eventTypes.map((item) => (
+                  <div
+                    key={item.event}
+                    className="rounded-[1.15rem] border border-moon-200/40 bg-white/85 px-4 py-4"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-medium text-moon-800">
+                        {item.label}
+                      </p>
+                      <span className="rounded-full bg-moon-100/90 px-2.5 py-1 text-[11px] text-moon-500">
+                        {item.event}
+                      </span>
+                      <span className="rounded-full bg-lunar-100/85 px-2.5 py-1 text-[11px] text-moon-500">
+                        default {item.default_severity}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-3 text-sm text-moon-600 sm:grid-cols-2">
+                      <div>
+                        <p className="text-[11px] tracking-[0.16em] text-moon-350">
+                          TITLE TEMPLATE
+                        </p>
+                        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-[0.95rem] bg-moon-50/90 px-3 py-2 font-mono text-[12px] leading-5 text-moon-600">
+                          {item.default_title_template}
+                        </pre>
+                      </div>
+                      <div>
+                        <p className="text-[11px] tracking-[0.16em] text-moon-350">
+                          BODY TEMPLATE
+                        </p>
+                        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-[0.95rem] bg-moon-50/90 px-3 py-2 font-mono text-[12px] leading-5 text-moon-600">
+                          {item.default_body_template}
+                        </pre>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
-            <div className="divide-y divide-moon-200/25">
-              <SettingsToggleRow
-                label="Account Health Failure"
-                helper="账号健康检查进入 error 状态时触发。"
-                checked={settings?.notification_error_enabled ?? false}
-                saving={savingToggles.notification_error_enabled ?? false}
-                disabled={savingToggles.notification_error_enabled ?? false}
-                onCheckedChange={(checked) =>
-                  void saveToggle("notification_error_enabled", checked)
-                }
-              />
-              <SettingsToggleRow
-                label="Account Expiring Soon"
-                helper="CPA 账号即将过期或已过期时触发。"
-                checked={settings?.notification_expiring_enabled ?? false}
-                saving={savingToggles.notification_expiring_enabled ?? false}
-                disabled={savingToggles.notification_expiring_enabled ?? false}
-                onCheckedChange={(checked) =>
-                  void saveToggle("notification_expiring_enabled", checked)
-                }
-              />
-              <SettingsNumericRow
-                label="Expiring Threshold"
-                helper="到期前多少天开始告警"
-                value={notificationForm.notification_expiring_days}
-                suffix="天"
-                min={1}
-                saving={savingField === "notification_expiring_days"}
-                onChange={(value) =>
-                  setNotificationForm((current) => ({
-                    ...current,
-                    notification_expiring_days: value,
-                  }))
-                }
-                onBlur={() =>
-                  void saveSetting(
-                    "notification_expiring_days",
-                    notificationForm.notification_expiring_days,
-                  )
-                }
-                onKeyDown={handleSettingKeyDown}
-              />
+            <div className="rounded-[1.35rem] border border-moon-200/45 bg-[linear-gradient(180deg,rgba(255,255,255,0.78),rgba(243,239,251,0.72))] px-4 py-4">
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-moon-800">Event Sources</p>
+                <p className="text-sm text-moon-450">
+                  渠道决定“发到哪”，这里仍决定“哪些系统事件会被产生”。
+                </p>
+              </div>
+              <div className="mt-4 divide-y divide-moon-200/25">
+                <SettingsToggleRow
+                  label="Account Health Failure"
+                  helper="账号健康检查进入 error 状态时产生事件。"
+                  checked={settings?.notification_error_enabled ?? false}
+                  saving={savingToggles.notification_error_enabled ?? false}
+                  disabled={savingToggles.notification_error_enabled ?? false}
+                  onCheckedChange={(checked) =>
+                    void saveToggle("notification_error_enabled", checked)
+                  }
+                />
+                <SettingsToggleRow
+                  label="Account Expiring Soon"
+                  helper="CPA 账号即将过期或已过期时产生事件。"
+                  checked={settings?.notification_expiring_enabled ?? false}
+                  saving={savingToggles.notification_expiring_enabled ?? false}
+                  disabled={savingToggles.notification_expiring_enabled ?? false}
+                  onCheckedChange={(checked) =>
+                    void saveToggle("notification_expiring_enabled", checked)
+                  }
+                />
+                <SettingsNumericRow
+                  label="Expiring Threshold"
+                  helper="到期前多少天开始生成 expiring 事件"
+                  value={notificationForm.notification_expiring_days}
+                  suffix="天"
+                  min={1}
+                  saving={savingField === "notification_expiring_days"}
+                  onChange={(value) =>
+                    setNotificationForm((current) => ({
+                      ...current,
+                      notification_expiring_days: value,
+                    }))
+                  }
+                  onBlur={() =>
+                    void saveSetting(
+                      "notification_expiring_days",
+                      notificationForm.notification_expiring_days,
+                    )
+                  }
+                  onKeyDown={handleSettingKeyDown}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1079,6 +1618,287 @@ export default function SettingsPage() {
           </div>
         </div>
       </section>
+
+      <Dialog open={channelDialogOpen} onOpenChange={setChannelDialogOpen}>
+        <DialogContent className="max-w-2xl overflow-hidden rounded-[1.6rem] border border-white/75 bg-white/95 p-0 shadow-[0_26px_70px_-38px_rgba(74,68,108,0.34)]">
+          <DialogHeader className="border-b border-moon-200/55 px-6 py-5 pr-12">
+            <DialogTitle>
+              {channelDraft.id ? "Edit Notification Channel" : "Add Notification Channel"}
+            </DialogTitle>
+            <DialogDescription>
+              为每个目标平台单独定义配置、订阅范围与模板覆写。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[72vh] space-y-5 overflow-y-auto px-6 py-6">
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-moon-700">Name</label>
+                <Input
+                  value={channelDraft.name}
+                  onChange={(event) =>
+                    setChannelDraft((current) => ({
+                      ...current,
+                      name: event.target.value,
+                    }))
+                  }
+                  placeholder="例如：Ops WeCom"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-moon-700">Type</label>
+                <Select
+                  value={channelDraft.type}
+                  onValueChange={(value) =>
+                    setChannelDraft((current) => ({
+                      ...emptyChannelDraft(value as NotificationChannel["type"]),
+                      id: current.id,
+                      name: current.name,
+                      enabled: current.enabled,
+                    }))
+                  }
+                >
+                  <SelectTrigger className="h-10 rounded-xl border-moon-200/65 bg-white/78">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(CHANNEL_TYPE_META).map(([value, meta]) => (
+                      <SelectItem key={value} value={value}>
+                        {meta.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="rounded-[1.2rem] border border-moon-200/45 bg-moon-50/70 px-4 py-4 text-sm text-moon-500">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="font-medium text-moon-700">
+                    {CHANNEL_TYPE_META[channelDraft.type].label}
+                  </p>
+                  <p>{CHANNEL_TYPE_META[channelDraft.type].description}</p>
+                </div>
+                {CHANNEL_TYPE_META[channelDraft.type].docsUrl ? (
+                  <a
+                    href={CHANNEL_TYPE_META[channelDraft.type].docsUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sm text-moon-600 underline underline-offset-4"
+                  >
+                    View docs
+                  </a>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              {CHANNEL_TYPE_META[channelDraft.type].fields.map((field) => (
+                <div
+                  key={field.key}
+                  className={cn(
+                    "space-y-2",
+                    field.key === "headers_json" || field.key === "to_csv"
+                      ? "sm:col-span-2"
+                      : "",
+                  )}
+                >
+                  <label className="text-sm font-medium text-moon-700">
+                    {field.label}
+                  </label>
+                  <Input
+                    value={channelDraft.config[field.key] ?? ""}
+                    onChange={(event) =>
+                      setChannelDraft((current) => ({
+                        ...current,
+                        config: {
+                          ...current.config,
+                          [field.key]: event.target.value,
+                        },
+                      }))
+                    }
+                    placeholder={field.placeholder}
+                    type={field.secret ? "password" : "text"}
+                  />
+                  {field.helper ? (
+                    <p className="text-xs text-moon-400">{field.helper}</p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-moon-700">Subscriptions</p>
+                  <p className="text-xs text-moon-400">
+                    `*` 表示全部事件；可按最低严重级别继续收窄。
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  onClick={() =>
+                    setChannelDraft((current) => ({
+                      ...current,
+                      subscriptions: [
+                        ...current.subscriptions,
+                        { event: "*", min_severity: "info" },
+                      ],
+                    }))
+                  }
+                >
+                  <Plus className="size-4" />
+                  Add Rule
+                </Button>
+              </div>
+
+              <div className="space-y-3">
+                {channelDraft.subscriptions.map((subscription, index) => (
+                  <div
+                    key={`${subscription.event}-${index}`}
+                    className="grid gap-3 rounded-[1.1rem] border border-moon-200/45 bg-white/78 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_10rem_auto]"
+                  >
+                    <Select
+                      value={subscription.event}
+                      onValueChange={(value) =>
+                        setChannelDraft((current) => ({
+                          ...current,
+                          subscriptions: current.subscriptions.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? { ...item, event: value ?? item.event }
+                              : item,
+                          ),
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="h-10 rounded-xl border-moon-200/65 bg-white/82">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="*">All Events</SelectItem>
+                        {eventTypes.map((item) => (
+                          <SelectItem key={item.event} value={item.event}>
+                            {item.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={subscription.min_severity ?? "info"}
+                      onValueChange={(value) =>
+                        setChannelDraft((current) => ({
+                          ...current,
+                          subscriptions: current.subscriptions.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? { ...item, min_severity: value as NotificationSeverity }
+                              : item,
+                          ),
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="h-10 rounded-xl border-moon-200/65 bg-white/82">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SEVERITY_OPTIONS.map((value) => (
+                          <SelectItem key={value} value={value}>
+                            {value}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="rounded-full"
+                      onClick={() =>
+                        setChannelDraft((current) => ({
+                          ...current,
+                          subscriptions:
+                            current.subscriptions.length === 1
+                              ? [DEFAULT_SUBSCRIPTION]
+                              : current.subscriptions.filter((_, itemIndex) => itemIndex !== index),
+                        }))
+                      }
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-moon-700">Template Overrides</p>
+                  <p className="text-xs text-moon-400">
+                    留空则使用内置模板；填写后会按该渠道单独覆写。
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 rounded-full border border-moon-200/60 bg-white/82 px-3 py-1.5">
+                  <span className="text-xs text-moon-450">Enabled</span>
+                  <Switch
+                    checked={channelDraft.enabled}
+                    onCheckedChange={(checked) =>
+                      setChannelDraft((current) => ({
+                        ...current,
+                        enabled: checked,
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-moon-700">Title Template</label>
+                <Input
+                  value={channelDraft.title_template}
+                  onChange={(event) =>
+                    setChannelDraft((current) => ({
+                      ...current,
+                      title_template: event.target.value,
+                    }))
+                  }
+                  placeholder="留空则使用默认标题模板"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-moon-700">Body Template</label>
+                <textarea
+                  value={channelDraft.body_template}
+                  onChange={(event) =>
+                    setChannelDraft((current) => ({
+                      ...current,
+                      body_template: event.target.value,
+                    }))
+                  }
+                  placeholder="留空则使用默认正文模板"
+                  className="min-h-32 w-full rounded-[1rem] border border-moon-200/65 bg-white/78 px-3 py-3 text-sm text-moon-700 outline-none transition focus:border-lunar-300/70"
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="border-t border-moon-200/55 bg-white/76 px-6 py-4">
+            <Button variant="outline" onClick={() => setChannelDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={() => void saveChannel()} disabled={channelSaving}>
+              {channelSaving ? <RefreshCw className="size-4 animate-spin" /> : null}
+              {channelDraft.id ? "Save Channel" : "Create Channel"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(channelDeleting)}
+        onOpenChange={(open) => !open && setChannelDeleting(null)}
+        title="删除通知渠道"
+        description={`删除后，${channelDeleting?.name ?? "该渠道"} 的历史投递记录仍会保留，但后续不会再投递。`}
+        onConfirm={confirmDeleteChannel}
+      />
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md overflow-hidden rounded-[1.6rem] border border-white/75 bg-white/95 p-0 shadow-[0_26px_70px_-38px_rgba(74,68,108,0.34)]">
@@ -1277,6 +2097,129 @@ export default function SettingsPage() {
       </Dialog>
     </div>
   );
+}
+
+function emptyChannelDraft(
+  type: NotificationChannel["type"],
+): NotificationChannelDraft {
+  const meta = CHANNEL_TYPE_META[type];
+  return {
+    name: "",
+    type,
+    enabled: true,
+    config: { ...meta.defaults },
+    subscriptions: [DEFAULT_SUBSCRIPTION],
+    title_template: "",
+    body_template: "",
+  };
+}
+
+function channelToDraft(channel: NotificationChannel): NotificationChannelDraft {
+  return {
+    id: channel.id,
+    name: channel.name,
+    type: channel.type,
+    enabled: channel.enabled,
+    config: configToDraft(channel.type, channel.config),
+    subscriptions:
+      channel.subscriptions.length > 0 ? channel.subscriptions : [DEFAULT_SUBSCRIPTION],
+    title_template: channel.title_template,
+    body_template: channel.body_template,
+  };
+}
+
+function configToDraft(
+  type: NotificationChannel["type"],
+  config: Record<string, unknown>,
+): Record<string, string> {
+  const meta = CHANNEL_TYPE_META[type];
+  const next = { ...meta.defaults };
+  for (const field of meta.fields) {
+    if (field.key === "headers_json") {
+      const headers = config.headers;
+      next.headers_json =
+        headers && typeof headers === "object"
+          ? JSON.stringify(headers, null, 2)
+          : "";
+      continue;
+    }
+    if (field.key === "to_csv") {
+      next.to_csv = Array.isArray(config.to)
+        ? config.to.map((item) => String(item)).join(", ")
+        : "";
+      continue;
+    }
+    const raw = config[field.key];
+    next[field.key] = raw == null ? meta.defaults[field.key] ?? "" : String(raw);
+  }
+  return next;
+}
+
+function buildChannelConfig(
+  draft: NotificationChannelDraft,
+): Record<string, unknown> {
+  const value = draft.config;
+  switch (draft.type) {
+    case "generic_webhook": {
+      const headers = value.headers_json.trim()
+        ? (JSON.parse(value.headers_json) as Record<string, string>)
+        : undefined;
+      return {
+        schema: 1,
+        url: value.url.trim(),
+        ...(headers ? { headers } : {}),
+      };
+    }
+    case "wechat_work_bot":
+      return {
+        schema: 1,
+        webhook_url: value.webhook_url.trim(),
+        format: value.format.trim() || "markdown",
+        mention_list: splitCSV(value.mention_list),
+        mention_mobile_list: splitCSV(value.mention_mobile_list),
+      };
+    case "feishu_bot":
+      return {
+        schema: 1,
+        webhook_url: value.webhook_url.trim(),
+        secret: value.secret,
+        format: value.format.trim() || "post",
+      };
+    case "email_smtp":
+      return {
+        schema: 1,
+        host: value.host.trim(),
+        port: Number(value.port || "0"),
+        username: value.username,
+        password: value.password,
+        from: value.from.trim(),
+        to: splitCSV(value.to_csv),
+        tls_mode: value.tls_mode.trim() || "starttls",
+      };
+  }
+}
+
+function splitCSV(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function formatDeliverySummary(
+  delivery?: NotificationDeliveryMeta | null,
+): string {
+  if (!delivery) {
+    return "尚无投递记录";
+  }
+  const prefix =
+    delivery.status === "success"
+      ? "✓"
+      : delivery.status === "failed"
+        ? "✗"
+        : "•";
+  const code = delivery.upstream_code ? ` · ${delivery.upstream_code}` : "";
+  return `${relativeTime(delivery.created_at)} ${prefix}${code}`;
 }
 
 function SettingsNumericRow({

@@ -9,10 +9,10 @@ import (
 	"lune/internal/auth"
 	"lune/internal/gateway"
 	"lune/internal/health"
+	"lune/internal/notify"
 	"lune/internal/router"
 	"lune/internal/site"
 	"lune/internal/store"
-	"lune/internal/webhook"
 )
 
 type Server struct {
@@ -22,10 +22,10 @@ type Server struct {
 	cpaAuthDir       string
 	cpaManagementKey string
 	healthChecker    *health.Checker
-	webhookSender    *webhook.Sender
+	notifier         *notify.Service
 }
 
-func New(st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, webhookSender *webhook.Sender) *Server {
+func New(st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, notifier *notify.Service) *Server {
 	s := &Server{
 		mux:              http.NewServeMux(),
 		store:            st,
@@ -33,7 +33,7 @@ func New(st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKe
 		cpaAuthDir:       cpaAuthDir,
 		cpaManagementKey: cpaManagementKey,
 		healthChecker:    hc,
-		webhookSender:    webhookSender,
+		notifier:         notifier,
 	}
 	s.routes()
 	return s
@@ -52,7 +52,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 
 	// admin API
-	adminHandler := admin.NewHandler(s.store, s.cache, s.cpaAuthDir, s.cpaManagementKey, s.healthChecker, s.webhookSender)
+	adminHandler := admin.NewHandler(s.store, s.cache, s.cpaAuthDir, s.cpaManagementKey, s.healthChecker, s.notifier)
 	adminWrap := func(next http.Handler) http.Handler {
 		return auth.AdminAuth(next, s.cache)
 	}

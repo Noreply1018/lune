@@ -16,9 +16,9 @@ import (
 
 	"lune/internal/cpa"
 	"lune/internal/health"
+	"lune/internal/notify"
 	"lune/internal/store"
 	"lune/internal/syscfg"
-	"lune/internal/webhook"
 	"lune/internal/webutil"
 )
 
@@ -29,10 +29,10 @@ type Handler struct {
 	cpaManagementKey string
 	sessions         *cpa.SessionStore
 	healthChecker    *health.Checker
-	webhookSender    *webhook.Sender
+	notifier         *notify.Service
 }
 
-func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, webhookSender *webhook.Sender) *Handler {
+func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, notifier *notify.Service) *Handler {
 	sessionPath := ""
 	if cpaAuthDir != "" {
 		sessionPath = filepath.Join(cpaAuthDir, ".login-sessions.json")
@@ -45,7 +45,7 @@ func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagement
 		cpaManagementKey: cpaManagementKey,
 		sessions:         cpa.NewSessionStore(sessionPath),
 		healthChecker:    hc,
-		webhookSender:    webhookSender,
+		notifier:         notifier,
 	}
 	h.resumeActiveLoginSessions()
 	return h
@@ -114,6 +114,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("POST /admin/api/settings/webhook/test", h.testWebhook)
 	handle("GET /admin/api/settings/data-retention", h.getDataRetention)
 	handle("POST /admin/api/settings/data-retention/prune", h.pruneDataRetention)
+	handle("GET /admin/api/notifications/channels", h.listNotificationChannels)
+	handle("POST /admin/api/notifications/channels", h.createNotificationChannel)
+	handle("GET /admin/api/notifications/channels/{id}", h.getNotificationChannel)
+	handle("PUT /admin/api/notifications/channels/{id}", h.updateNotificationChannel)
+	handle("DELETE /admin/api/notifications/channels/{id}", h.deleteNotificationChannel)
+	handle("POST /admin/api/notifications/channels/{id}/test", h.testNotificationChannel)
+	handle("POST /admin/api/notifications/preview", h.previewNotifications)
+	handle("GET /admin/api/notifications/deliveries", h.listNotificationDeliveries)
+	handle("GET /admin/api/notifications/event-types", h.listNotificationEventTypes)
 
 	// Stats & Export
 	handle("GET /admin/api/overview", h.getOverview)
@@ -1019,7 +1028,7 @@ func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) testWebhook(w http.ResponseWriter, r *http.Request) {
-	if h.webhookSender == nil {
+	if h.notifier == nil {
 		webutil.WriteAdminError(w, 500, "webhook_unavailable", "webhook sender is not configured")
 		return
 	}
@@ -1036,12 +1045,12 @@ func (h *Handler) testWebhook(w http.ResponseWriter, r *http.Request) {
 
 	webhookURL := strings.TrimSpace(req.URL)
 	if webhookURL == "" {
-		settings, err := h.store.GetSettings()
+		var err error
+		webhookURL, err = h.deprecatedWebhookURL()
 		if err != nil {
 			h.internalError(w, err)
 			return
 		}
-		webhookURL = strings.TrimSpace(settings["webhook_url"])
 	}
 	if webhookURL == "" {
 		webutil.WriteAdminError(w, 400, "bad_request", "webhook URL is required")
@@ -1052,24 +1061,12 @@ func (h *Handler) testWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := webhook.Payload{
-		Event:     "test",
-		Severity:  "warning",
-		Title:     "Lune Webhook Test",
-		Message:   "This is a test notification from Lune.",
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	}
-
-	start := time.Now()
-	if err := h.webhookSender.Send(r.Context(), webhookURL, payload); err != nil {
-		webutil.WriteAdminError(w, 502, "webhook_failed", err.Error())
+	result, err := h.notifier.SendLegacyWebhookTest(r.Context(), webhookURL, h.notifier.BuildTestNotification("test", "info"))
+	if err != nil {
+		webutil.WriteAdminError(w, 502, "webhook_failed", firstNonEmpty(result.UpstreamMessage, err.Error()))
 		return
 	}
-
-	webutil.WriteData(w, 200, map[string]any{
-		"success":    true,
-		"latency_ms": time.Since(start).Milliseconds(),
-	})
+	webutil.WriteData(w, 200, result)
 }
 
 func isWebhookURL(value string) bool {
@@ -1104,17 +1101,24 @@ func (h *Handler) pruneDataRetention(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
+	deletedDeliveries, deletedOutbox, err := h.store.PruneNotificationHistory(retentionDays)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	summary, err := h.store.GetDataRetentionSummary(retentionDays)
 	if err != nil {
 		h.internalError(w, err)
 		return
 	}
 	webutil.WriteData(w, 200, map[string]any{
-		"retention_days": summary.RetentionDays,
-		"deleted_logs":   deleted,
-		"total_logs":     summary.TotalLogs,
-		"oldest_log_at":  summary.OldestLogAt,
-		"newest_log_at":  summary.NewestLogAt,
+		"retention_days":                  summary.RetentionDays,
+		"deleted_logs":                    deleted,
+		"deleted_notification_deliveries": deletedDeliveries,
+		"deleted_notification_outbox":     deletedOutbox,
+		"total_logs":                      summary.TotalLogs,
+		"oldest_log_at":                   summary.OldestLogAt,
+		"newest_log_at":                   summary.NewestLogAt,
 	})
 }
 

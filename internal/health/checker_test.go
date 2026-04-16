@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"lune/internal/notify"
+	"lune/internal/notify/drivers"
 	"lune/internal/store"
 	"lune/internal/syscfg"
-	"lune/internal/webhook"
 )
 
 func newTestStore(t *testing.T) *store.Store {
@@ -26,7 +27,33 @@ func newTestStore(t *testing.T) *store.Store {
 	return st
 }
 
-func TestSendWebhookNotificationsDedupesAndResendsAfterRecovery(t *testing.T) {
+func newTestNotifier(st *store.Store) *notify.Service {
+	return notify.NewServiceWithRegistry(
+		st,
+		notify.NewRegistry(
+			drivers.NewGenericWebhookDriver(),
+			drivers.NewWeChatWorkBotDriver(),
+			drivers.NewFeishuBotDriver(),
+			drivers.NewEmailSMTPDriver(),
+		),
+	)
+}
+
+func createTestChannel(t *testing.T, st *store.Store, url string) {
+	t.Helper()
+	cfg := json.RawMessage(`{"schema":1,"url":"` + url + `"}`)
+	if _, err := st.CreateNotificationChannel(&store.NotificationChannel{
+		Name:          "Test Webhook",
+		Type:          "generic_webhook",
+		Enabled:       true,
+		Config:        cfg,
+		Subscriptions: []store.NotificationSubscription{{Event: "*"}},
+	}); err != nil {
+		t.Fatalf("create notification channel: %v", err)
+	}
+}
+
+func TestSendWebhookNotificationsDedupesWithinBackoffWindow(t *testing.T) {
 	t.Parallel()
 
 	st := newTestStore(t)
@@ -52,16 +79,13 @@ func TestSendWebhookNotificationsDedupesAndResendsAfterRecovery(t *testing.T) {
 		t.Fatalf("create account: %v", err)
 	}
 
-	var received []webhook.Payload
+	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload webhook.Payload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode payload: %v", err)
-		}
-		received = append(received, payload)
+		attempts++
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
+	createTestChannel(t, st, server.URL)
 
 	if err := st.UpdateSettings(map[string]string{
 		"webhook_enabled":               syscfg.BoolString(true),
@@ -73,45 +97,72 @@ func TestSendWebhookNotificationsDedupesAndResendsAfterRecovery(t *testing.T) {
 	}
 	cache.Invalidate()
 
-	sender := webhook.NewSender()
-	checker := NewChecker(st, cache, "", sender)
+	checker := NewChecker(st, cache, "", newTestNotifier(st))
 
 	if err := st.UpdateAccountHealth(accountID, "error", "boom"); err != nil {
 		t.Fatalf("set account error: %v", err)
 	}
 	cache.Invalidate()
-
-	checker.sendWebhookNotifications(context.Background())
-	waitFor(t, func() bool { return len(received) == 1 })
-	if len(received) != 1 {
-		t.Fatalf("expected first webhook, got %d", len(received))
+	notifications, err := st.ListSystemNotifications()
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
 	}
-	if received[0].Event != "account_error" {
-		t.Fatalf("expected account_error event, got %q", received[0].Event)
+	if len(notifications) == 0 {
+		t.Fatalf("expected system notifications to be generated")
+	}
+	channels, err := st.ListEnabledNotificationChannels()
+	if err != nil {
+		t.Fatalf("list channels: %v", err)
+	}
+	if len(channels) == 0 {
+		t.Fatalf("expected notification channels to be enabled")
 	}
 
-	checker.sendWebhookNotifications(context.Background())
-	if len(received) != 1 {
-		t.Fatalf("expected dedupe to suppress resend, got %d", len(received))
+	checker.dispatchSystemNotifications(context.Background())
+	deliveries, err := st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list deliveries: %v", err)
+	}
+	if len(deliveries) != 1 || deliveries[0].Event != "account_error" || deliveries[0].Status != "success" {
+		t.Fatalf("expected one successful account_error delivery, got %+v", deliveries)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected first send attempt, got %d", attempts)
+	}
+
+	checker.dispatchSystemNotifications(context.Background())
+	deliveries, err = st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list deliveries after dedupe: %v", err)
+	}
+	if len(deliveries) != 1 || attempts != 1 {
+		t.Fatalf("expected dedupe to suppress resend, deliveries=%d attempts=%d", len(deliveries), attempts)
 	}
 
 	if err := st.UpdateAccountHealth(accountID, "healthy", ""); err != nil {
 		t.Fatalf("recover account: %v", err)
 	}
 	cache.Invalidate()
-	checker.sendWebhookNotifications(context.Background())
-	if len(received) != 1 {
-		t.Fatalf("expected no webhook after recovery, got %d", len(received))
+	checker.dispatchSystemNotifications(context.Background())
+	deliveries, err = st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list deliveries after recovery: %v", err)
+	}
+	if len(deliveries) != 1 || attempts != 1 {
+		t.Fatalf("expected no resend after recovery, deliveries=%d attempts=%d", len(deliveries), attempts)
 	}
 
 	if err := st.UpdateAccountHealth(accountID, "error", "boom again"); err != nil {
 		t.Fatalf("set account error again: %v", err)
 	}
 	cache.Invalidate()
-	checker.sendWebhookNotifications(context.Background())
-	waitFor(t, func() bool { return len(received) == 2 })
-	if len(received) != 2 {
-		t.Fatalf("expected webhook after recovery, got %d", len(received))
+	checker.dispatchSystemNotifications(context.Background())
+	deliveries, err = st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list deliveries after repeat error: %v", err)
+	}
+	if len(deliveries) != 1 || attempts != 1 {
+		t.Fatalf("expected backoff window dedupe to persist after recovery, deliveries=%d attempts=%d", len(deliveries), attempts)
 	}
 }
 
@@ -145,6 +196,7 @@ func TestSendWebhookNotificationsRetriesAfterFailure(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
+	createTestChannel(t, st, server.URL)
 
 	if err := st.UpdateSettings(map[string]string{
 		"webhook_enabled":               syscfg.BoolString(true),
@@ -156,14 +208,25 @@ func TestSendWebhookNotificationsRetriesAfterFailure(t *testing.T) {
 	}
 	cache.Invalidate()
 
-	checker := NewChecker(st, cache, "", webhook.NewSender())
-	checker.sendWebhookNotifications(context.Background())
+	checker := NewChecker(st, cache, "", newTestNotifier(st))
+	checker.dispatchSystemNotifications(context.Background())
 	waitFor(t, func() bool { return attempts >= 1 })
-	checker.sendWebhookNotifications(context.Background())
-	waitFor(t, func() bool { return attempts == 2 })
-
-	if attempts != 2 {
-		t.Fatalf("expected retry after first failure, got %d attempts", attempts)
+	if attempts != 1 {
+		t.Fatalf("expected initial send attempt, got %d attempts", attempts)
+	}
+	outbox, err := st.ListDueNotificationOutbox(10)
+	if err != nil {
+		t.Fatalf("list due outbox: %v", err)
+	}
+	if len(outbox) != 0 {
+		t.Fatalf("expected retry to be scheduled in the future")
+	}
+	deliveries, err := st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list deliveries: %v", err)
+	}
+	if len(deliveries) == 0 || deliveries[0].Status != "failed" {
+		t.Fatalf("expected failed delivery to be recorded, got %+v", deliveries)
 	}
 }
 
@@ -193,16 +256,11 @@ func TestSendWebhookNotificationsSendsSeverityUpgrade(t *testing.T) {
 		t.Fatalf("create account: %v", err)
 	}
 
-	var received []webhook.Payload
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload webhook.Payload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode payload: %v", err)
-		}
-		received = append(received, payload)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
+	createTestChannel(t, st, server.URL)
 
 	if err := st.UpdateSettings(map[string]string{
 		"webhook_enabled":               syscfg.BoolString(true),
@@ -220,26 +278,34 @@ func TestSendWebhookNotificationsSendsSeverityUpgrade(t *testing.T) {
 	}
 	cache.Invalidate()
 
-	checker := NewChecker(st, cache, "", webhook.NewSender())
-	checker.sendWebhookNotifications(context.Background())
-	waitFor(t, func() bool { return len(received) == 1 })
+	checker := NewChecker(st, cache, "", newTestNotifier(st))
+	checker.dispatchSystemNotifications(context.Background())
+	deliveries, err := st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list deliveries: %v", err)
+	}
+	if len(deliveries) != 1 || deliveries[0].Severity != "warning" {
+		t.Fatalf("expected first warning delivery, got %+v", deliveries)
+	}
 
 	expiredAt := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
 	if err := setAccountExpiry(st, accountID, expiredAt); err != nil {
 		t.Fatalf("set expired expiry: %v", err)
 	}
 	cache.Invalidate()
-	checker.sendWebhookNotifications(context.Background())
-	waitFor(t, func() bool { return len(received) == 2 })
-
-	if len(received) != 2 {
-		t.Fatalf("expected warning and critical notifications, got %d", len(received))
+	checker.dispatchSystemNotifications(context.Background())
+	deliveries, err = st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list deliveries after severity upgrade: %v", err)
 	}
-	if received[0].Severity != "warning" {
-		t.Fatalf("expected first notification to be warning, got %q", received[0].Severity)
+	if len(deliveries) != 2 {
+		t.Fatalf("expected warning and critical deliveries, got %d", len(deliveries))
 	}
-	if received[1].Severity != "critical" {
-		t.Fatalf("expected second notification to be critical, got %q", received[1].Severity)
+	if deliveries[1].Severity != "warning" {
+		t.Fatalf("expected first persisted delivery to be warning, got %q", deliveries[1].Severity)
+	}
+	if deliveries[0].Severity != "critical" {
+		t.Fatalf("expected second persisted delivery to be critical, got %q", deliveries[0].Severity)
 	}
 }
 

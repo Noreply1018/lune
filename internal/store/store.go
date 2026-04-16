@@ -19,7 +19,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 4
+const v3SchemaVersion = 5
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -127,6 +127,57 @@ CREATE TABLE IF NOT EXISTS request_logs (
 
 CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_request_logs_pool_id ON request_logs(pool_id);
+
+CREATE TABLE IF NOT EXISTS notification_channels (
+    id              INTEGER PRIMARY KEY,
+    name            TEXT NOT NULL,
+    type            TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    config          TEXT NOT NULL DEFAULT '{}',
+    subscriptions   TEXT NOT NULL DEFAULT '[]',
+    title_template  TEXT NOT NULL DEFAULT '',
+    body_template   TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS notification_outbox (
+    id               INTEGER PRIMARY KEY,
+    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
+    event            TEXT NOT NULL,
+    severity         TEXT NOT NULL,
+    payload          TEXT NOT NULL,
+    dedup_key        TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    attempt          INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    last_error       TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    id                INTEGER PRIMARY KEY,
+    channel_id        INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
+    channel_name      TEXT NOT NULL DEFAULT '',
+    channel_type      TEXT NOT NULL DEFAULT '',
+    event             TEXT NOT NULL,
+    severity          TEXT NOT NULL,
+    title             TEXT NOT NULL DEFAULT '',
+    payload_summary   TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL,
+    upstream_code     TEXT NOT NULL DEFAULT '',
+    upstream_message  TEXT NOT NULL DEFAULT '',
+    latency_ms        INTEGER NOT NULL DEFAULT 0,
+    attempt           INTEGER NOT NULL DEFAULT 1,
+    dedup_key         TEXT NOT NULL DEFAULT '',
+    triggered_by      TEXT NOT NULL DEFAULT 'system',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending ON notification_outbox(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_recent ON notification_deliveries(channel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_deliveries(created_at);
 `
 
 func New(dbPath string) (*Store, error) {
@@ -169,6 +220,17 @@ func (s *Store) migrateV3(dbPath string) error {
 
 	if ver >= v3SchemaVersion {
 		return nil // already at v3
+	}
+
+	if ver == 4 {
+		slog.Info("migrating schema v4 -> v5")
+		if err := s.createNotificationSchema(); err != nil {
+			return fmt.Errorf("create notification schema: %w", err)
+		}
+		if err := s.migrateLegacyWebhookChannel(); err != nil {
+			return fmt.Errorf("migrate legacy webhook channel: %w", err)
+		}
+		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
 	}
 
 	if ver == 0 {
@@ -222,6 +284,105 @@ func (s *Store) createV3Schema() error {
 		return err
 	}
 	return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
+}
+
+func (s *Store) createNotificationSchema() error {
+	_, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS notification_channels (
+    id              INTEGER PRIMARY KEY,
+    name            TEXT NOT NULL,
+    type            TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    config          TEXT NOT NULL DEFAULT '{}',
+    subscriptions   TEXT NOT NULL DEFAULT '[]',
+    title_template  TEXT NOT NULL DEFAULT '',
+    body_template   TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS notification_outbox (
+    id               INTEGER PRIMARY KEY,
+    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
+    event            TEXT NOT NULL,
+    severity         TEXT NOT NULL,
+    payload          TEXT NOT NULL,
+    dedup_key        TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    attempt          INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    last_error       TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    id                INTEGER PRIMARY KEY,
+    channel_id        INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
+    channel_name      TEXT NOT NULL DEFAULT '',
+    channel_type      TEXT NOT NULL DEFAULT '',
+    event             TEXT NOT NULL,
+    severity          TEXT NOT NULL,
+    title             TEXT NOT NULL DEFAULT '',
+    payload_summary   TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL,
+    upstream_code     TEXT NOT NULL DEFAULT '',
+    upstream_message  TEXT NOT NULL DEFAULT '',
+    latency_ms        INTEGER NOT NULL DEFAULT 0,
+    attempt           INTEGER NOT NULL DEFAULT 1,
+    dedup_key         TEXT NOT NULL DEFAULT '',
+    triggered_by      TEXT NOT NULL DEFAULT 'system',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending ON notification_outbox(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_recent ON notification_deliveries(channel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_deliveries(created_at);
+`)
+	return err
+}
+
+func (s *Store) migrateLegacyWebhookChannel() error {
+	migrated, err := s.GetSetting("notification_legacy_migrated")
+	if err == nil && migrated == "1" {
+		return nil
+	}
+
+	settings, err := s.GetSettings()
+	if err != nil {
+		return err
+	}
+
+	webhookURL := strings.TrimSpace(settings["webhook_url"])
+	if webhookURL == "" {
+		return s.SetSetting("notification_legacy_migrated", "1")
+	}
+
+	var existingCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM notification_channels`).Scan(&existingCount); err != nil {
+		return err
+	}
+	if existingCount > 0 {
+		return s.SetSetting("notification_legacy_migrated", "1")
+	}
+
+	enabled := 0
+	if settings["webhook_enabled"] == "1" || strings.EqualFold(settings["webhook_enabled"], "true") {
+		enabled = 1
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO notification_channels (name, type, enabled, config, subscriptions) VALUES (?, ?, ?, ?, ?)`,
+		"Legacy Webhook",
+		"generic_webhook",
+		enabled,
+		fmt.Sprintf(`{"schema":1,"url":%q}`, webhookURL),
+		`[{"event":"*"}]`,
+	)
+	if err != nil {
+		return err
+	}
+	return s.SetSetting("notification_legacy_migrated", "1")
 }
 
 type cpaServiceBackup struct {

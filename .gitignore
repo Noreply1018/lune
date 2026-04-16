@@ -45,7 +45,6 @@ web/node_modules/
 web/*.tsbuildinfo
 web/dist/
 web/.vite/
-internal/site/dist/
 
 # Generated JS typings in TS workspace
 web/*.js

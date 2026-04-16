@@ -18,8 +18,9 @@ import (
 
 	"lune/internal/health"
 	"lune/internal/httpserver"
+	"lune/internal/notify"
+	"lune/internal/notify/drivers"
 	"lune/internal/store"
-	"lune/internal/webhook"
 
 	"gopkg.in/yaml.v3"
 )
@@ -162,12 +163,18 @@ func (a *App) Run() error {
 	// auto-configure default CPA service if env vars are set
 	a.ensureDefaultCpa()
 
-	webhookSender := webhook.NewSender()
+	registry := notify.NewRegistry(
+		drivers.NewGenericWebhookDriver(),
+		drivers.NewWeChatWorkBotDriver(),
+		drivers.NewFeishuBotDriver(),
+		drivers.NewEmailSMTPDriver(),
+	)
+	notifier := notify.NewServiceWithRegistry(a.store, registry)
 
 	// create health checker (needed by admin handler for model discovery)
-	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir, webhookSender)
+	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir, notifier)
 
-	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, hc, webhookSender)
+	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, hc, notifier)
 
 	// Prefer an explicit IPv4 listener so WSL localhost forwarding can
 	// consistently expose the service to Windows browsers.
@@ -193,6 +200,7 @@ func (a *App) Run() error {
 
 	// start health checker
 	go hc.Run(ctx)
+	go notifier.Run(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -230,7 +238,9 @@ func (a *App) resolveAdminToken() (token, source string) {
 
 	// 3. auto-generate
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Errorf("generate admin token: %w", err))
+	}
 	token = "lune-" + hex.EncodeToString(b)
 	_ = a.store.SetSetting("admin_token", token)
 	a.cache.Invalidate()

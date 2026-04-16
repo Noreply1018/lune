@@ -171,6 +171,78 @@ export interface SystemSettings {
   data_retention_days: number;
 }
 
+export type NotificationSeverity = "info" | "warning" | "critical";
+
+export type ChannelType =
+  | "generic_webhook"
+  | "wechat_work_bot"
+  | "feishu_bot"
+  | "email_smtp";
+
+export interface NotificationSubscription {
+  event: string;
+  min_severity?: NotificationSeverity;
+}
+
+export interface NotificationDeliveryMeta {
+  status: "success" | "failed" | "dropped";
+  created_at: string;
+  upstream_code?: string | null;
+}
+
+export interface NotificationChannel {
+  id: number;
+  name: string;
+  type: ChannelType;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  subscriptions: NotificationSubscription[];
+  title_template: string;
+  body_template: string;
+  created_at: string;
+  updated_at: string;
+  last_delivery?: NotificationDeliveryMeta | null;
+}
+
+export interface NotificationPreviewItem {
+  channel_id: number;
+  channel_name: string;
+  channel_type: ChannelType;
+  matched: boolean;
+  rendered_title: string;
+  rendered_body: string;
+  dry_run_ok: boolean;
+  skipped_reason?: string;
+}
+
+export interface NotificationEventType {
+  event: string;
+  label: string;
+  default_severity: NotificationSeverity;
+  default_title_template: string;
+  default_body_template: string;
+  sample_vars: Record<string, unknown>;
+}
+
+export interface NotificationDelivery {
+  id: number;
+  channel_id: number;
+  channel_name: string;
+  channel_type: ChannelType;
+  event: string;
+  severity: NotificationSeverity;
+  title: string;
+  payload_summary: string;
+  status: "success" | "failed" | "dropped";
+  upstream_code: string;
+  upstream_message: string;
+  latency_ms: number;
+  attempt: number;
+  dedup_key: string;
+  triggered_by: "system" | "test";
+  created_at: string;
+}
+
 export interface ConfigImportResult {
   created_pools: number;
   updated_pools: number;

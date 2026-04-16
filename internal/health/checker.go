@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"lune/internal/cpa"
+	"lune/internal/notify"
 	"lune/internal/store"
 	"lune/internal/syscfg"
-	"lune/internal/webhook"
 )
 
 const (
@@ -24,30 +24,20 @@ const (
 )
 
 type Checker struct {
-	store               *store.Store
-	cache               *store.RoutingCache
-	client              *http.Client
-	cpaAuthDir          string
-	webhook             *webhook.Sender
-	lastNotifiedMu      sync.Mutex
-	lastNotified        map[string]time.Time
-	notifying           map[string]bool
-	inFlightSeq         map[string]uint64
-	nextNotifySeq       uint64
-	notificationBackoff time.Duration
+	store      *store.Store
+	cache      *store.RoutingCache
+	client     *http.Client
+	cpaAuthDir string
+	notifier   *notify.Service
 }
 
-func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir string, sender *webhook.Sender) *Checker {
+func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir string, notifier *notify.Service) *Checker {
 	return &Checker{
-		store:               st,
-		cache:               cache,
-		client:              &http.Client{Timeout: 15 * time.Second},
-		cpaAuthDir:          cpaAuthDir,
-		webhook:             sender,
-		lastNotified:        make(map[string]time.Time),
-		notifying:           make(map[string]bool),
-		inFlightSeq:         make(map[string]uint64),
-		notificationBackoff: time.Hour,
+		store:      st,
+		cache:      cache,
+		client:     &http.Client{Timeout: 15 * time.Second},
+		cpaAuthDir: cpaAuthDir,
+		notifier:   notifier,
 	}
 }
 
@@ -103,7 +93,7 @@ func (c *Checker) checkAll(ctx context.Context) {
 	c.pruneRequestLogs()
 
 	c.cache.Invalidate()
-	c.sendWebhookNotifications(ctx)
+	c.dispatchSystemNotifications(ctx)
 }
 
 // checkOne probes an account's health and discovers its available models.
@@ -302,120 +292,56 @@ func (c *Checker) pruneRequestLogs() {
 	deleted, err := c.store.PruneRequestLogs(retentionDays)
 	if err != nil {
 		slog.Error("prune request logs", "err", err)
+	} else if deleted > 0 {
+		slog.Info("pruned request logs", "deleted", deleted, "retention_days", retentionDays)
+	}
+
+	deletedDeliveries, deletedOutbox, err := c.store.PruneNotificationHistory(retentionDays)
+	if err != nil {
+		slog.Error("prune notification history", "err", err)
 		return
 	}
-	if deleted > 0 {
-		slog.Info("pruned request logs", "deleted", deleted, "retention_days", retentionDays)
+	if deletedDeliveries > 0 || deletedOutbox > 0 {
+		slog.Info(
+			"pruned notification history",
+			"deleted_deliveries", deletedDeliveries,
+			"deleted_outbox", deletedOutbox,
+			"retention_days", retentionDays,
+		)
 	}
 }
 
-func (c *Checker) sendWebhookNotifications(ctx context.Context) {
-	if c.webhook == nil {
-		return
-	}
-
-	webhookEnabled := syscfg.ParseBool(c.cache.GetSetting("webhook_enabled"), syscfg.DefaultWebhookEnabled)
-	webhookURL := strings.TrimSpace(c.cache.GetSetting("webhook_url"))
-	if !webhookEnabled || webhookURL == "" {
+func (c *Checker) dispatchSystemNotifications(ctx context.Context) {
+	if c.notifier == nil {
 		return
 	}
 
 	notifications, err := c.store.ListSystemNotifications()
 	if err != nil {
-		slog.Error("list system notifications for webhook", "err", err)
+		slog.Error("list system notifications", "err", err)
 		return
 	}
-
-	now := time.Now().UTC()
-	activeKeys := make(map[string]struct{}, len(notifications))
-
-	c.lastNotifiedMu.Lock()
-	for _, notification := range notifications {
-		key := notificationDedupKey(notification)
-		if key == "" {
-			continue
+	for _, item := range notifications {
+		n := notify.Notification{
+			Event:     item.Type,
+			Severity:  item.Severity,
+			Title:     item.Title,
+			Message:   item.Message,
+			Timestamp: time.Now().UTC(),
+			Source: notify.NotificationSource{
+				AccountID: item.AccountID,
+				ServiceID: item.ServiceID,
+			},
+			Vars: map[string]any{
+				"title":   item.Title,
+				"message": item.Message,
+			},
 		}
-		activeKeys[key] = struct{}{}
-	}
-	for key := range c.lastNotified {
-		if _, ok := activeKeys[key]; !ok {
-			delete(c.lastNotified, key)
+		if item.ExpiresAt != "" {
+			n.Vars["expires_at"] = item.ExpiresAt
 		}
-	}
-	for key := range c.notifying {
-		if _, ok := activeKeys[key]; !ok {
-			delete(c.notifying, key)
-			delete(c.inFlightSeq, key)
+		if err := c.notifier.Dispatch(ctx, n); err != nil {
+			slog.Error("dispatch notification", "event", n.Event, "err", err)
 		}
-	}
-	c.lastNotifiedMu.Unlock()
-
-	for _, notification := range notifications {
-		key := notificationDedupKey(notification)
-		if key == "" {
-			continue
-		}
-
-		c.lastNotifiedMu.Lock()
-		lastSentAt, exists := c.lastNotified[key]
-		inFlight := c.notifying[key]
-		var seq uint64
-		if !inFlight && (!exists || now.Sub(lastSentAt) >= c.notificationBackoff) {
-			c.notifying[key] = true
-			c.nextNotifySeq++
-			seq = c.nextNotifySeq
-			c.inFlightSeq[key] = seq
-		}
-		c.lastNotifiedMu.Unlock()
-		if inFlight || (exists && now.Sub(lastSentAt) < c.notificationBackoff) {
-			continue
-		}
-
-		payload := webhook.Payload{
-			Event:     notification.Type,
-			Severity:  notification.Severity,
-			Title:     notification.Title,
-			Message:   notification.Message,
-			Timestamp: now.Format(time.RFC3339),
-		}
-		go c.deliverWebhookNotification(ctx, webhookURL, key, seq, payload)
-	}
-}
-
-func (c *Checker) deliverWebhookNotification(ctx context.Context, webhookURL, key string, seq uint64, payload webhook.Payload) {
-	err := c.webhook.Send(ctx, webhookURL, payload)
-
-	c.lastNotifiedMu.Lock()
-	defer c.lastNotifiedMu.Unlock()
-
-	currentSeq, ok := c.inFlightSeq[key]
-	if !ok || currentSeq != seq {
-		return
-	}
-
-	delete(c.notifying, key)
-	delete(c.inFlightSeq, key)
-	if err != nil {
-		slog.Error("deliver webhook notification", "event", payload.Event, "err", err)
-		return
-	}
-
-	c.lastNotified[key] = time.Now().UTC()
-}
-
-func notificationDedupKey(notification store.SystemNotification) string {
-	switch notification.Type {
-	case "account_error", "account_expiring":
-		if notification.AccountID == nil {
-			return ""
-		}
-		return fmt.Sprintf("%s:%d:%s:%s", notification.Type, *notification.AccountID, notification.Severity, notification.Title)
-	case "cpa_service_error":
-		if notification.ServiceID == nil {
-			return ""
-		}
-		return fmt.Sprintf("%s:%d:%s:%s", notification.Type, *notification.ServiceID, notification.Severity, notification.Title)
-	default:
-		return ""
 	}
 }

@@ -7,7 +7,15 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { compact, latency, pct, relativeTime, shortDate, tokenCount } from "@/lib/fmt";
-import type { Overview, Pool, RequestLog, UsageLogPage, UsageStats } from "@/lib/types";
+import type {
+  NotificationChannel,
+  NotificationDelivery,
+  Overview,
+  Pool,
+  RequestLog,
+  UsageLogPage,
+  UsageStats,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type TimeRange = "24h" | "7d" | "30d";
@@ -22,6 +30,8 @@ type UsageBundle = {
   total: number;
   truncated: boolean;
 };
+
+type NotificationStatusFilter = "all" | "success" | "failed" | "dropped" | "test";
 
 type TrendBucket = {
   key: string;
@@ -332,23 +342,36 @@ export default function ActivityPage() {
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterModel, setFilterModel] = useState("all");
   const [expandedRowId, setExpandedRowId] = useState<number | null>(null);
+  const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
+  const [notificationDeliveries, setNotificationDeliveries] = useState<NotificationDelivery[]>([]);
+  const [notificationFilterChannel, setNotificationFilterChannel] = useState("all");
+  const [notificationFilterEvent, setNotificationFilterEvent] = useState("all");
+  const [notificationFilterStatus, setNotificationFilterStatus] =
+    useState<NotificationStatusFilter>("all");
+  const [notificationExpandedId, setNotificationExpandedId] = useState<number | null>(null);
+  const [notificationLoadingMore, setNotificationLoadingMore] = useState(false);
+  const [notificationHasMore, setNotificationHasMore] = useState(false);
   const loadRequestIdRef = useRef(0);
+  const notificationRequestIdRef = useRef(0);
 
   function load() {
     const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     setError(null);
+    loadNotificationDeliveries(true);
     Promise.all([
       api.get<Overview>("/overview"),
       api.get<Pool[]>("/pools"),
+      api.get<NotificationChannel[]>("/notifications/channels"),
       loadUsageBundle(range),
     ])
-      .then(([overviewData, poolData, usageData]) => {
+      .then(([overviewData, poolData, channelData, usageData]) => {
         if (requestId !== loadRequestIdRef.current) {
           return;
         }
         setOverview(overviewData);
         setPools(poolData ?? []);
+        setNotificationChannels(channelData ?? []);
         setUsage(usageData);
         setLastUpdated(new Date().toISOString());
       })
@@ -365,11 +388,68 @@ export default function ActivityPage() {
       });
   }
 
+  function loadNotificationDeliveries(reset = true) {
+    const requestId = ++notificationRequestIdRef.current;
+    const before =
+      !reset && notificationDeliveries.length
+        ? notificationDeliveries[notificationDeliveries.length - 1]
+        : null;
+    const params = new URLSearchParams();
+    params.set("limit", "40");
+    if (notificationFilterChannel !== "all") {
+      params.set("channel_id", notificationFilterChannel);
+    }
+    if (notificationFilterEvent !== "all") {
+      params.set("event", notificationFilterEvent);
+    }
+    if (notificationFilterStatus !== "all") {
+      if (notificationFilterStatus === "test") {
+        params.set("triggered_by", "test");
+      } else {
+        params.set("status", notificationFilterStatus);
+      }
+    }
+    if (before) {
+      params.set("before", before.created_at);
+      params.set("before_id", String(before.id));
+    }
+    if (reset) {
+      setNotificationLoadingMore(false);
+    } else {
+      setNotificationLoadingMore(true);
+    }
+    api.get<NotificationDelivery[]>(`/notifications/deliveries?${params.toString()}`)
+      .then((items) => {
+        if (requestId !== notificationRequestIdRef.current) {
+          return;
+        }
+        setNotificationDeliveries((current) =>
+          reset ? (items ?? []) : [...current, ...(items ?? [])],
+        );
+        setNotificationHasMore((items?.length ?? 0) >= 40);
+      })
+      .catch((err) => {
+        if (requestId !== notificationRequestIdRef.current) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : "通知历史加载失败");
+      })
+      .finally(() => {
+        if (requestId === notificationRequestIdRef.current) {
+          setNotificationLoadingMore(false);
+        }
+      });
+  }
+
   useEffect(() => {
     load();
     const timer = window.setInterval(load, 15000);
     return () => window.clearInterval(timer);
   }, [range]);
+
+  useEffect(() => {
+    loadNotificationDeliveries(true);
+  }, [notificationFilterChannel, notificationFilterEvent, notificationFilterStatus]);
 
   const poolMap = useMemo(
     () => new Map(pools.map((pool) => [pool.id, pool.label])),
@@ -386,6 +466,10 @@ export default function ActivityPage() {
     });
     return Array.from(values).sort();
   }, [usage]);
+
+  const notificationEvents = useMemo(() => {
+    return Array.from(new Set(notificationDeliveries.map((item) => item.event))).sort();
+  }, [notificationDeliveries]);
 
   const filteredLogs = useMemo(() => {
     const logs = usage?.logs ?? [];
@@ -739,6 +823,174 @@ export default function ActivityPage() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="surface-section px-5 py-5">
+        <SectionHeading
+          title="Notifications"
+          description="查看每次渠道投递是成功、失败还是被人工测试触发。"
+        />
+
+        <div className="mt-5 flex flex-wrap gap-3">
+          <select
+            value={notificationFilterChannel}
+            onChange={(event) => setNotificationFilterChannel(event.target.value)}
+            className="rounded-full border border-moon-200/70 bg-white/82 px-3 py-2 text-sm text-moon-600"
+          >
+            <option value="all">全部渠道</option>
+            {notificationChannels.map((channel) => (
+              <option key={channel.id} value={String(channel.id)}>
+                {channel.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={notificationFilterEvent}
+            onChange={(event) => setNotificationFilterEvent(event.target.value)}
+            className="rounded-full border border-moon-200/70 bg-white/82 px-3 py-2 text-sm text-moon-600"
+          >
+            <option value="all">全部事件</option>
+            {notificationEvents.map((event) => (
+              <option key={event} value={event}>
+                {event}
+              </option>
+            ))}
+          </select>
+          <select
+            value={notificationFilterStatus}
+            onChange={(event) =>
+              setNotificationFilterStatus(event.target.value as NotificationStatusFilter)
+            }
+            className="rounded-full border border-moon-200/70 bg-white/82 px-3 py-2 text-sm text-moon-600"
+          >
+            <option value="all">全部状态</option>
+            <option value="success">success</option>
+            <option value="failed">failed</option>
+            <option value="dropped">dropped</option>
+            <option value="test">test</option>
+          </select>
+        </div>
+
+        <div className="mt-4 overflow-x-auto rounded-[1.45rem] border border-moon-200/60">
+          <table className="min-w-full text-left text-sm">
+            <thead className="bg-moon-100/60 text-xs uppercase tracking-[0.16em] text-moon-400">
+              <tr>
+                <th className="px-4 py-3">Time</th>
+                <th className="px-4 py-3">Channel</th>
+                <th className="px-4 py-3">Event</th>
+                <th className="px-4 py-3">Severity</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Upstream</th>
+                <th className="px-4 py-3">Latency</th>
+                <th className="px-4 py-3">Payload</th>
+                <th className="px-4 py-3" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-moon-200/50 bg-white/66">
+              {notificationDeliveries.length ? notificationDeliveries.map((item) => {
+                const expanded = notificationExpandedId === item.id;
+                return (
+                  <Fragment key={item.id}>
+                    <tr
+                      className={cn(
+                        "cursor-pointer transition-colors hover:bg-white/55",
+                        expanded ? "bg-white/82" : "",
+                      )}
+                      onClick={() =>
+                        setNotificationExpandedId((current) =>
+                          current === item.id ? null : item.id,
+                        )
+                      }
+                    >
+                      <td className="px-4 py-3 text-moon-400">{shortDate(item.created_at)}</td>
+                      <td className="px-4 py-3">
+                        <div className="space-y-1">
+                          <p className="text-moon-700">{item.channel_name}</p>
+                          <p className="text-xs text-moon-400">{item.channel_type}</p>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-moon-500">{item.event}</td>
+                      <td className="px-4 py-3 text-moon-500">{item.severity}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={cn(
+                            "inline-flex rounded-full px-2 py-1 text-xs",
+                            item.status === "success"
+                              ? "bg-status-green/12 text-status-green"
+                              : item.status === "failed"
+                                ? "bg-status-red/12 text-status-red"
+                                : "bg-moon-100/90 text-moon-500",
+                          )}
+                        >
+                          {item.triggered_by === "test" ? "test" : item.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-moon-500">{item.upstream_code || "--"}</td>
+                      <td className="px-4 py-3 text-moon-500">{latency(item.latency_ms)}</td>
+                      <td className="max-w-xs px-4 py-3 text-moon-500">
+                        <div className="truncate">{item.payload_summary || "--"}</div>
+                      </td>
+                      <td className="px-4 py-3 text-moon-300">
+                        <ChevronDown className={cn("size-4 transition-transform", expanded ? "rotate-180" : "")} />
+                      </td>
+                    </tr>
+                    {expanded ? (
+                      <tr className="bg-white/80">
+                        <td colSpan={9} className="px-4 py-4">
+                          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            <div className="space-y-1">
+                              <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">Title</p>
+                              <p className="text-sm text-moon-700">{item.title || "--"}</p>
+                            </div>
+                            <div className="space-y-1">
+                              <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">Attempt</p>
+                              <p className="text-sm text-moon-700">#{item.attempt}</p>
+                            </div>
+                            <div className="space-y-1">
+                              <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">Triggered By</p>
+                              <p className="text-sm text-moon-700">{item.triggered_by}</p>
+                            </div>
+                            <div className="space-y-1">
+                              <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">Upstream Message</p>
+                              <p className="text-sm text-moon-700">{item.upstream_message || "--"}</p>
+                            </div>
+                          </div>
+                          <div className="mt-4 rounded-[1.1rem] border border-moon-200/45 bg-moon-50/80 px-4 py-3">
+                            <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">Payload Summary</p>
+                            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-moon-600">
+                              {item.payload_summary || "没有可展示的摘要。"}
+                            </p>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              }) : (
+                <tr>
+                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-moon-400">
+                    当前筛选下没有可显示的通知投递记录。
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {notificationHasMore ? (
+          <div className="mt-4 flex justify-center">
+            <Button
+              variant="outline"
+              onClick={() => loadNotificationDeliveries(false)}
+              disabled={notificationLoadingMore}
+            >
+              {notificationLoadingMore ? (
+                <RefreshCw className="size-4 animate-spin" />
+              ) : null}
+              Load More
+            </Button>
+          </div>
+        ) : null}
       </section>
     </div>
   );

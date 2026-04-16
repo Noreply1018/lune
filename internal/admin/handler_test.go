@@ -10,8 +10,9 @@ import (
 	"testing"
 
 	"lune/internal/cpa"
+	"lune/internal/notify"
+	"lune/internal/notify/drivers"
 	"lune/internal/store"
-	"lune/internal/webhook"
 )
 
 func newTestStore(t *testing.T) *store.Store {
@@ -24,6 +25,18 @@ func newTestStore(t *testing.T) *store.Store {
 		_ = st.Close()
 	})
 	return st
+}
+
+func newTestNotifier(st *store.Store) *notify.Service {
+	return notify.NewServiceWithRegistry(
+		st,
+		notify.NewRegistry(
+			drivers.NewGenericWebhookDriver(),
+			drivers.NewWeChatWorkBotDriver(),
+			drivers.NewFeishuBotDriver(),
+			drivers.NewEmailSMTPDriver(),
+		),
+	)
 }
 
 func TestNormalizeSettingValueWebhookURL(t *testing.T) {
@@ -81,7 +94,7 @@ func TestTestWebhookUsesStoredURL(t *testing.T) {
 	}
 	cache.Invalidate()
 
-	handler := NewHandler(st, cache, "", "", nil, webhook.NewSender())
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings/webhook/test", http.NoBody)
 	rr := httptest.NewRecorder()
 
@@ -119,7 +132,7 @@ func TestBatchImportCpaAccountsRollsBackWhenPoolMembershipFails(t *testing.T) {
 		t.Fatalf("write auth file: %v", err)
 	}
 
-	handler := NewHandler(st, cache, authDir, "", nil, webhook.NewSender())
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
 	body := bytes.NewBufferString(fmt.Sprintf(`{"service_id":%d,"account_keys":["acct-key"],"pool_id":999}`, svcID))
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import/batch", body)
 	rr := httptest.NewRecorder()
@@ -175,7 +188,7 @@ func TestListPoolTokensIncludesPoolLabel(t *testing.T) {
 		t.Fatalf("create token: %v", err)
 	}
 
-	handler := NewHandler(st, cache, "", "", nil, webhook.NewSender())
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/admin/api/pools/%d/tokens", poolID), http.NoBody)
 	req.SetPathValue("id", fmt.Sprintf("%d", poolID))
 	rr := httptest.NewRecorder()
@@ -220,7 +233,7 @@ func TestImportConfigCreatesPoolsSkipsExistingTokensAndIgnoresAdminToken(t *test
 		t.Fatalf("create existing token: %v", err)
 	}
 
-	handler := NewHandler(st, cache, "", "", nil, webhook.NewSender())
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 	body := bytes.NewBufferString(`{
 		"data":{
 			"pools":[
@@ -296,7 +309,7 @@ func TestImportConfigCreatesPoolsSkipsExistingTokensAndIgnoresAdminToken(t *test
 func TestImportConfigRejectsInvalidSettingValue(t *testing.T) {
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
-	handler := NewHandler(st, cache, "", "", nil, webhook.NewSender())
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 
 	req := httptest.NewRequest(
 		http.MethodPost,
