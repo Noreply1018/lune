@@ -8,13 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"lune/internal/cpa"
 	"lune/internal/store"
+	"lune/internal/syscfg"
 )
 
 const (
@@ -89,6 +89,7 @@ func (c *Checker) checkAll(ctx context.Context) {
 
 	// sync CPA metadata from auth files
 	c.syncCpaMetadata()
+	c.pruneRequestLogs()
 
 	c.cache.Invalidate()
 }
@@ -281,9 +282,17 @@ func (c *Checker) syncCpaMetadata() {
 }
 
 func (c *Checker) getInterval() time.Duration {
-	v := c.cache.GetSetting("health_check_interval")
-	if n, err := strconv.Atoi(v); err == nil && n > 0 {
-		return time.Duration(n) * time.Second
+	return time.Duration(syscfg.ParsePositiveInt(c.cache.GetSetting("health_check_interval"), syscfg.DefaultHealthCheckInterval)) * time.Second
+}
+
+func (c *Checker) pruneRequestLogs() {
+	retentionDays := syscfg.ParseNonNegativeInt(c.cache.GetSetting("data_retention_days"), syscfg.DefaultDataRetentionDays)
+	deleted, err := c.store.PruneRequestLogs(retentionDays)
+	if err != nil {
+		slog.Error("prune request logs", "err", err)
+		return
 	}
-	return 60 * time.Second
+	if deleted > 0 {
+		slog.Info("pruned request logs", "deleted", deleted, "retention_days", retentionDays)
+	}
 }

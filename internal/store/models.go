@@ -52,9 +52,10 @@ type Pool struct {
 	UpdatedAt string `json:"updated_at"`
 
 	// aggregated fields (populated at response time)
-	AccountCount        int      `json:"account_count"`
-	HealthyAccountCount int      `json:"healthy_account_count"`
-	Models              []string `json:"models"`
+	AccountCount         int      `json:"account_count"`
+	HealthyAccountCount  int      `json:"healthy_account_count"`
+	RoutableAccountCount int      `json:"routable_account_count"`
+	Models               []string `json:"models"`
 }
 
 type PoolMember struct {
@@ -160,21 +161,39 @@ type UsageLogPage struct {
 }
 
 type Overview struct {
-	PoolsTotal       int     `json:"pools_total"`
-	PoolsHealthy     int     `json:"pools_healthy"`
-	AccountsTotal    int     `json:"accounts_total"`
-	AccountsHealthy  int     `json:"accounts_healthy"`
-	ModelsTotal      int     `json:"models_total"`
-	RequestsToday    int64   `json:"requests_today"`
-	SuccessRateToday float64 `json:"success_rate_today"`
-	GlobalToken      string  `json:"global_token"`
-	Alerts           []Alert `json:"alerts"`
+	PoolsTotal        int     `json:"pools_total"`
+	PoolsHealthy      int     `json:"pools_healthy"`
+	AccountsTotal     int     `json:"accounts_total"`
+	AccountsHealthy   int     `json:"accounts_healthy"`
+	ModelsTotal       int     `json:"models_total"`
+	RequestsToday     int64   `json:"requests_today"`
+	SuccessRateToday  float64 `json:"success_rate_today"`
+	GlobalTokenID     *int64  `json:"global_token_id,omitempty"`
+	GlobalTokenMasked string  `json:"global_token_masked"`
+	Alerts            []Alert `json:"alerts"`
 }
 
 type Alert struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
 	PoolID  int64  `json:"pool_id"`
+}
+
+type SystemNotification struct {
+	Type      string `json:"type"`
+	Severity  string `json:"severity"`
+	Title     string `json:"title"`
+	Message   string `json:"message"`
+	AccountID *int64 `json:"account_id,omitempty"`
+	ServiceID *int64 `json:"service_id,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+type DataRetentionSummary struct {
+	RetentionDays int     `json:"retention_days"`
+	TotalLogs     int64   `json:"total_logs"`
+	OldestLogAt   *string `json:"oldest_log_at"`
+	NewestLogAt   *string `json:"newest_log_at"`
 }
 
 // LatencyBucket holds percentile latencies for a single time bucket.

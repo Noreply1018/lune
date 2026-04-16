@@ -17,6 +17,7 @@ import (
 	"lune/internal/auth"
 	"lune/internal/router"
 	"lune/internal/store"
+	"lune/internal/syscfg"
 	"lune/internal/webutil"
 )
 
@@ -278,19 +279,11 @@ func (h *Handler) updateHealth(accountID int64, status, lastError string) {
 }
 
 func (h *Handler) getMaxRetries() int {
-	v := h.cache.GetSetting("max_retry_attempts")
-	if n, err := strconv.Atoi(v); err == nil && n > 0 {
-		return n
-	}
-	return 3
+	return syscfg.ParsePositiveInt(h.cache.GetSetting("max_retry_attempts"), syscfg.DefaultMaxRetryAttempts)
 }
 
 func (h *Handler) getRequestTimeout() time.Duration {
-	v := h.cache.GetSetting("request_timeout")
-	if n, err := strconv.Atoi(v); err == nil && n > 0 {
-		return time.Duration(n) * time.Second
-	}
-	return 120 * time.Second
+	return time.Duration(syscfg.ParsePositiveInt(h.cache.GetSetting("request_timeout"), syscfg.DefaultRequestTimeout)) * time.Second
 }
 
 func extractPathSuffix(path string) string {

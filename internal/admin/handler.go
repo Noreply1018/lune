@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"lune/internal/cpa"
 	"lune/internal/health"
 	"lune/internal/store"
+	"lune/internal/syscfg"
 	"lune/internal/webutil"
 )
 
@@ -30,14 +33,21 @@ type Handler struct {
 }
 
 func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker) *Handler {
-	return &Handler{
+	sessionPath := ""
+	if cpaAuthDir != "" {
+		sessionPath = filepath.Join(cpaAuthDir, ".login-sessions.json")
+	}
+
+	h := &Handler{
 		store:            s,
 		cache:            c,
 		cpaAuthDir:       cpaAuthDir,
 		cpaManagementKey: cpaManagementKey,
-		sessions:         cpa.NewSessionStore(),
+		sessions:         cpa.NewSessionStore(sessionPath),
 		healthChecker:    hc,
 	}
+	h.resumeActiveLoginSessions()
+	return h
 }
 
 func (h *Handler) internalError(w http.ResponseWriter, err error) {
@@ -88,14 +98,20 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	// Tokens
 	handle("GET /admin/api/tokens", h.listTokens)
 	handle("POST /admin/api/tokens", h.createToken)
+	handle("POST /admin/api/tokens/global/reveal", h.revealGlobalToken)
+	handle("POST /admin/api/tokens/{id}/reveal", h.revealToken)
 	handle("PUT /admin/api/tokens/{id}", h.updateToken)
 	handle("POST /admin/api/tokens/{id}/enable", h.enableToken)
 	handle("POST /admin/api/tokens/{id}/disable", h.disableToken)
+	handle("POST /admin/api/tokens/{id}/regenerate", h.regenerateToken)
 	handle("DELETE /admin/api/tokens/{id}", h.deleteToken)
 
 	// Settings
 	handle("GET /admin/api/settings", h.getSettings)
 	handle("PUT /admin/api/settings", h.updateSettings)
+	handle("GET /admin/api/settings/notifications", h.listNotifications)
+	handle("GET /admin/api/settings/data-retention", h.getDataRetention)
+	handle("POST /admin/api/settings/data-retention/prune", h.pruneDataRetention)
 
 	// Stats & Export
 	handle("GET /admin/api/overview", h.getOverview)
@@ -113,6 +129,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 
 	// CPA Login Sessions
 	handle("POST /admin/api/accounts/cpa/login-sessions", h.createLoginSession)
+	handle("GET /admin/api/accounts/cpa/login-sessions/active", h.getActiveLoginSession)
 	handle("GET /admin/api/accounts/cpa/login-sessions/{id}", h.getLoginSession)
 	handle("POST /admin/api/accounts/cpa/login-sessions/{id}/cancel", h.cancelLoginSession)
 
@@ -395,9 +412,14 @@ func (h *Handler) getPoolDetail(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
+	if tokens == nil {
+		tokens = []store.AccessToken{}
+	}
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		tokens[i].Token = ""
+		tokens[i].IsGlobal = tokens[i].PoolID == nil
+		tokens[i].PoolLabel = pool.Label
 	}
 
 	models, err := h.store.GetPoolModels(id)
@@ -405,19 +427,34 @@ func (h *Handler) getPoolDetail(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
+	if models == nil {
+		models = []string{}
+	}
 
 	stats, err := h.store.GetPoolStats(id, "24h")
 	if err != nil {
 		h.internalError(w, err)
 		return
 	}
+	if stats.ByAccount == nil {
+		stats.ByAccount = []store.UsageByAccount{}
+	}
+	if stats.ByToken == nil {
+		stats.ByToken = []store.UsageByToken{}
+	}
 
-	webutil.WriteData(w, 200, map[string]any{
-		"pool":    pool,
-		"members": members,
-		"tokens":  tokens,
-		"models":  models,
-		"stats":   stats,
+	webutil.WriteData(w, 200, struct {
+		Pool    *store.Pool         `json:"pool"`
+		Members []store.PoolMember  `json:"members"`
+		Tokens  []store.AccessToken `json:"tokens"`
+		Models  []string            `json:"models"`
+		Stats   *store.UsageStats   `json:"stats"`
+	}{
+		Pool:    pool,
+		Members: members,
+		Tokens:  tokens,
+		Models:  models,
+		Stats:   stats,
 	})
 }
 
@@ -592,6 +629,7 @@ func (h *Handler) listPoolTokens(w http.ResponseWriter, r *http.Request) {
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		tokens[i].Token = ""
+		tokens[i].IsGlobal = tokens[i].PoolID == nil
 	}
 	if tokens == nil {
 		tokens = []store.AccessToken{}
@@ -649,6 +687,11 @@ func (h *Handler) listTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
+		if tokens[i].PoolID != nil {
+			if pool, err := h.store.GetPool(*tokens[i].PoolID); err == nil && pool != nil {
+				tokens[i].PoolLabel = pool.Label
+			}
+		}
 		tokens[i].Token = ""
 	}
 	webutil.WriteList(w, tokens, len(tokens))
@@ -677,6 +720,52 @@ func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
 	req.IsGlobal = req.PoolID == nil
 	// return full token on creation
 	webutil.WriteData(w, 201, req)
+}
+
+func (h *Handler) revealGlobalToken(w http.ResponseWriter, r *http.Request) {
+	tokens, err := h.store.ListGlobalTokens()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	var token *store.AccessToken
+	for i := range tokens {
+		if tokens[i].Enabled {
+			token = &tokens[i]
+			break
+		}
+	}
+	if token == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "global token not found")
+		return
+	}
+	token.TokenMasked = maskKey(token.Token)
+	token.IsGlobal = true
+	webutil.WriteData(w, 200, token)
+}
+
+func (h *Handler) revealToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	token, err := h.store.GetToken(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if token == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "token not found")
+		return
+	}
+	token.TokenMasked = maskKey(token.Token)
+	token.IsGlobal = token.PoolID == nil
+	if token.PoolID != nil {
+		if pool, err := h.store.GetPool(*token.PoolID); err == nil && pool != nil {
+			token.PoolLabel = pool.Label
+		}
+	}
+	webutil.WriteData(w, 200, token)
 }
 
 func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
@@ -740,14 +829,42 @@ func (h *Handler) deleteToken(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
 }
 
+func (h *Handler) regenerateToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	token, err := h.store.RegenerateToken(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if token == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "token not found")
+		return
+	}
+	h.cache.Invalidate()
+	token.TokenMasked = maskKey(token.Token)
+	token.IsGlobal = token.PoolID == nil
+	if token.PoolID != nil {
+		if pool, err := h.store.GetPool(*token.PoolID); err == nil && pool != nil {
+			token.PoolLabel = pool.Label
+		}
+	}
+	webutil.WriteData(w, 200, token)
+}
+
 // --- Settings ---
 
 type systemSettingsResponse struct {
-	AdminTokenMasked    string `json:"admin_token_masked"`
-	HealthCheckInterval int    `json:"health_check_interval"`
-	RequestTimeout      int    `json:"request_timeout"`
-	MaxRetryAttempts    int    `json:"max_retry_attempts"`
-	ExternalURL         string `json:"external_url"`
+	AdminTokenMasked            string `json:"admin_token_masked"`
+	HealthCheckInterval         int    `json:"health_check_interval"`
+	RequestTimeout              int    `json:"request_timeout"`
+	MaxRetryAttempts            int    `json:"max_retry_attempts"`
+	NotificationErrorEnabled    bool   `json:"notification_error_enabled"`
+	NotificationExpiringEnabled bool   `json:"notification_expiring_enabled"`
+	NotificationExpiringDays    int    `json:"notification_expiring_days"`
+	DataRetentionDays           int    `json:"data_retention_days"`
 }
 
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -758,20 +875,14 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := systemSettingsResponse{
-		AdminTokenMasked:    maskKey(settings["admin_token"]),
-		HealthCheckInterval: 60,
-		RequestTimeout:      30,
-		MaxRetryAttempts:    1,
-		ExternalURL:         settings["external_url"],
-	}
-	if v, err := strconv.Atoi(settings["health_check_interval"]); err == nil && v > 0 {
-		resp.HealthCheckInterval = v
-	}
-	if v, err := strconv.Atoi(settings["request_timeout"]); err == nil && v > 0 {
-		resp.RequestTimeout = v
-	}
-	if v, err := strconv.Atoi(settings["max_retry_attempts"]); err == nil && v >= 0 {
-		resp.MaxRetryAttempts = v
+		AdminTokenMasked:            maskKey(settings["admin_token"]),
+		HealthCheckInterval:         syscfg.ParsePositiveInt(settings["health_check_interval"], syscfg.DefaultHealthCheckInterval),
+		RequestTimeout:              syscfg.ParsePositiveInt(settings["request_timeout"], syscfg.DefaultRequestTimeout),
+		MaxRetryAttempts:            syscfg.ParsePositiveInt(settings["max_retry_attempts"], syscfg.DefaultMaxRetryAttempts),
+		NotificationErrorEnabled:    syscfg.ParseBool(settings["notification_error_enabled"], syscfg.DefaultNotificationErrorEnabled),
+		NotificationExpiringEnabled: syscfg.ParseBool(settings["notification_expiring_enabled"], syscfg.DefaultNotificationExpiringEnabled),
+		NotificationExpiringDays:    syscfg.ParsePositiveInt(settings["notification_expiring_days"], syscfg.DefaultNotificationExpiringDays),
+		DataRetentionDays:           syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays),
 	}
 	webutil.WriteData(w, 200, resp)
 }
@@ -784,28 +895,21 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	pairs := make(map[string]string)
 	for k, v := range raw {
+		if !syscfg.IsAllowedSettingKey(k) {
+			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("unsupported setting key: %s", k))
+			return
+		}
 		s := strings.TrimSpace(string(v))
 		if s == "null" || s == "" {
-			pairs[k] = ""
-			continue
+			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("setting %s cannot be empty", k))
+			return
 		}
-		// try as string first
-		var str string
-		if json.Unmarshal(v, &str) == nil {
-			pairs[k] = str
-			continue
+		value, err := normalizeSettingValue(k, v)
+		if err != nil {
+			webutil.WriteAdminError(w, 400, "bad_request", err.Error())
+			return
 		}
-		// try as number
-		var num float64
-		if json.Unmarshal(v, &num) == nil {
-			if num == float64(int(num)) {
-				pairs[k] = strconv.Itoa(int(num))
-			} else {
-				pairs[k] = strconv.FormatFloat(num, 'f', -1, 64)
-			}
-			continue
-		}
-		pairs[k] = s
+		pairs[k] = value
 	}
 	if err := h.store.UpdateSettings(pairs); err != nil {
 		h.internalError(w, err)
@@ -813,6 +917,97 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+func normalizeSettingValue(key string, raw json.RawMessage) (string, error) {
+	switch key {
+	case "notification_error_enabled", "notification_expiring_enabled":
+		var boolean bool
+		if err := json.Unmarshal(raw, &boolean); err == nil {
+			return syscfg.BoolString(boolean), nil
+		}
+
+		var str string
+		if err := json.Unmarshal(raw, &str); err == nil {
+			if syscfg.ParseBool(str, false) || strings.EqualFold(str, "false") || str == "0" {
+				return syscfg.BoolString(syscfg.ParseBool(str, false)), nil
+			}
+		}
+		return "", fmt.Errorf("setting %s must be a boolean", key)
+	default:
+		var num float64
+		if err := json.Unmarshal(raw, &num); err != nil {
+			return "", fmt.Errorf("setting %s must be a number", key)
+		}
+		if num != float64(int(num)) {
+			return "", fmt.Errorf("setting %s must be an integer", key)
+		}
+		value := int(num)
+		switch key {
+		case "health_check_interval", "request_timeout", "max_retry_attempts", "notification_expiring_days":
+			if value <= 0 {
+				return "", fmt.Errorf("setting %s must be greater than 0", key)
+			}
+		case "data_retention_days":
+			if value < 0 {
+				return "", fmt.Errorf("setting %s must be 0 or greater", key)
+			}
+		}
+		return strconv.Itoa(value), nil
+	}
+}
+
+func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
+	notifications, err := h.store.ListSystemNotifications()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if notifications == nil {
+		notifications = []store.SystemNotification{}
+	}
+	webutil.WriteList(w, notifications, len(notifications))
+}
+
+func (h *Handler) getDataRetention(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.store.GetSettings()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	retentionDays := syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays)
+	summary, err := h.store.GetDataRetentionSummary(retentionDays)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteData(w, 200, summary)
+}
+
+func (h *Handler) pruneDataRetention(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.store.GetSettings()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	retentionDays := syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays)
+	deleted, err := h.store.PruneRequestLogs(retentionDays)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	summary, err := h.store.GetDataRetentionSummary(retentionDays)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteData(w, 200, map[string]any{
+		"retention_days": summary.RetentionDays,
+		"deleted_logs":   deleted,
+		"total_logs":     summary.TotalLogs,
+		"oldest_log_at":  summary.OldestLogAt,
+		"newest_log_at":  summary.NewestLogAt,
+	})
 }
 
 // --- Overview, Usage, Export ---
@@ -934,6 +1129,11 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 	tokens, _ := h.store.ListTokens()
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
+		if tokens[i].PoolID != nil {
+			if pool, err := h.store.GetPool(*tokens[i].PoolID); err == nil && pool != nil {
+				tokens[i].PoolLabel = pool.Label
+			}
+		}
 		tokens[i].Token = ""
 	}
 	settings, _ := h.store.GetSettings()
@@ -954,6 +1154,120 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 		"access_tokens": tokens,
 		"settings":      settings,
 		"cpa_services":  cpaServices,
+	})
+}
+
+func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Settings map[string]string   `json:"settings"`
+		Pools    []store.Pool        `json:"pools"`
+		Tokens   []store.AccessToken `json:"access_tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+
+	existingPools, err := h.store.ListPools()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	poolByLabel := make(map[string]store.Pool, len(existingPools))
+	for _, pool := range existingPools {
+		poolByLabel[pool.Label] = pool
+	}
+
+	poolIDByLabel := make(map[string]int64)
+	createdPools := 0
+	updatedPools := 0
+	for _, pool := range req.Pools {
+		if pool.Label == "" {
+			continue
+		}
+		if existing, ok := poolByLabel[pool.Label]; ok {
+			if err := h.store.UpdatePool(existing.ID, pool.Label, pool.Priority, pool.Enabled); err != nil {
+				h.internalError(w, err)
+				return
+			}
+			poolIDByLabel[pool.Label] = existing.ID
+			updatedPools++
+			continue
+		}
+		id, err := h.store.CreatePool(pool.Label, pool.Priority, pool.Enabled)
+		if err != nil {
+			h.internalError(w, err)
+			return
+		}
+		poolIDByLabel[pool.Label] = id
+		createdPools++
+	}
+
+	existingTokens, err := h.store.ListTokens()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	tokenByName := make(map[string]store.AccessToken, len(existingTokens))
+	for _, token := range existingTokens {
+		tokenByName[token.Name] = token
+	}
+
+	createdTokens := 0
+	updatedTokens := 0
+	for _, token := range req.Tokens {
+		if token.Name == "" {
+			continue
+		}
+		if token.PoolLabel != "" {
+			if mappedID, ok := poolIDByLabel[token.PoolLabel]; ok {
+				token.PoolID = &mappedID
+			}
+		}
+		if existing, ok := tokenByName[token.Name]; ok {
+			if err := h.store.UpdateToken(existing.ID, &store.AccessToken{
+				Name:    token.Name,
+				PoolID:  token.PoolID,
+				Enabled: token.Enabled,
+			}); err != nil {
+				h.internalError(w, err)
+				return
+			}
+			updatedTokens++
+			continue
+		}
+		if _, err := h.store.CreateToken(&store.AccessToken{
+			Name:    token.Name,
+			PoolID:  token.PoolID,
+			Enabled: token.Enabled,
+		}); err != nil {
+			h.internalError(w, err)
+			return
+		}
+		createdTokens++
+	}
+
+	settings := make(map[string]string)
+	for key, value := range req.Settings {
+		switch key {
+		case "health_check_interval", "request_timeout", "max_retry_attempts":
+			settings[key] = value
+		}
+	}
+	if len(settings) > 0 {
+		if err := h.store.UpdateSettings(settings); err != nil {
+			h.internalError(w, err)
+			return
+		}
+	}
+
+	h.cache.Invalidate()
+	webutil.WriteData(w, 200, map[string]any{
+		"created_pools":    createdPools,
+		"updated_pools":    updatedPools,
+		"created_tokens":   createdTokens,
+		"updated_tokens":   updatedTokens,
+		"updated_settings": len(settings),
 	})
 }
 
@@ -1340,8 +1654,9 @@ func generateToken() string {
 
 func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ServiceID int64 `json:"service_id"`
-		PoolID    int64 `json:"pool_id"`
+		ServiceID int64  `json:"service_id"`
+		PoolID    int64  `json:"pool_id"`
+		Provider  string `json:"provider"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
@@ -1349,6 +1664,10 @@ func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PoolID == 0 {
 		webutil.WriteAdminError(w, 400, "bad_request", "pool_id is required")
+		return
+	}
+	if req.Provider == "" {
+		webutil.WriteAdminError(w, 400, "bad_request", "provider is required")
 		return
 	}
 
@@ -1363,32 +1682,51 @@ func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if existing := h.sessions.GetActiveSession(req.ServiceID); existing != nil {
+		if existing.PoolID == 0 && req.PoolID > 0 {
+			h.sessions.UpdatePoolID(existing.ID, req.PoolID)
+			existing.PoolID = req.PoolID
+		}
+		webutil.WriteData(w, 200, h.loginSessionResponse(existing))
+		return
+	}
+
 	dcr, err := cpa.RequestDeviceCode(r.Context())
 	if err != nil {
 		webutil.WriteAdminError(w, 502, "upstream_error", fmt.Sprintf("device code request failed: %v", err))
 		return
 	}
 
-	session, err := h.sessions.CreateSession(req.ServiceID, dcr)
+	session, err := h.sessions.CreateSession(req.ServiceID, req.Provider, dcr)
 	if err != nil {
 		webutil.WriteAdminError(w, 409, "active_session", err.Error())
 		return
 	}
 	session.PoolID = req.PoolID
+	h.sessions.UpdatePoolID(session.ID, req.PoolID)
 
 	ctx, cancel := context.WithDeadline(context.Background(), session.ExpiresAt)
 	session.CancelFunc = cancel
 
 	go h.pollLoginSession(ctx, session, svc)
 
-	webutil.WriteData(w, 201, map[string]any{
-		"id":                    session.ID,
-		"status":                session.Status,
-		"verification_uri":      session.VerificationURI,
-		"user_code":             session.UserCode,
-		"expires_at":            session.ExpiresAt.Format(time.RFC3339),
-		"poll_interval_seconds": session.PollInterval,
-	})
+	webutil.WriteData(w, 201, h.loginSessionResponse(session))
+}
+
+func (h *Handler) getActiveLoginSession(w http.ResponseWriter, r *http.Request) {
+	serviceID, err := strconv.ParseInt(r.URL.Query().Get("service_id"), 10, 64)
+	if err != nil || serviceID == 0 {
+		webutil.WriteAdminError(w, 400, "bad_request", "service_id is required")
+		return
+	}
+
+	session := h.sessions.GetActiveSession(serviceID)
+	if session == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "active login session not found")
+		return
+	}
+
+	webutil.WriteData(w, 200, h.loginSessionResponse(session))
 }
 
 func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSession, svc *store.CpaService) {
@@ -1427,6 +1765,10 @@ func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSessio
 					h.sessions.UpdateStatus(session.ID, "failed", "access_denied", "User denied authorization")
 					return
 				}
+				if ctx.Err() == nil && isTransientCPAPollError(err) {
+					slog.Warn("cpa login poll transient error", "session_id", session.ID, "err", err)
+					continue
+				}
 				h.sessions.UpdateStatus(session.ID, "failed", "poll_error", err.Error())
 				return
 			}
@@ -1436,6 +1778,21 @@ func (h *Handler) pollLoginSession(ctx context.Context, session *cpa.LoginSessio
 			return
 		}
 	}
+}
+
+func isTransientCPAPollError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+
+	msg := err.Error()
+	return strings.Contains(msg, "(HTTP 408)") ||
+		strings.Contains(msg, "(HTTP 429)") ||
+		strings.Contains(msg, "(HTTP 500)") ||
+		strings.Contains(msg, "(HTTP 502)") ||
+		strings.Contains(msg, "(HTTP 503)") ||
+		strings.Contains(msg, "(HTTP 504)")
 }
 
 func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService, tokenResp *cpa.TokenResponse) {
@@ -1449,7 +1806,11 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 	if planType == "" {
 		planType = "unknown"
 	}
-	accountKey := fmt.Sprintf("codex-%s-%s", info.Email, planType)
+	provider := session.Provider
+	if provider == "" {
+		provider = "codex"
+	}
+	accountKey := fmt.Sprintf("%s-%s-%s", provider, info.Email, planType)
 
 	expiredAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
 	lastRefresh := time.Now().Format(time.RFC3339)
@@ -1463,7 +1824,7 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 		Disabled:     false,
 		Expired:      expiredAt,
 		LastRefresh:  lastRefresh,
-		Type:         "codex",
+		Type:         provider,
 	}
 	if err := cpa.WriteAuthFile(h.cpaAuthDir, authFile, accountKey); err != nil {
 		h.sessions.UpdateStatus(session.ID, "failed", "file_write_error", fmt.Sprintf("Failed to write credential file: %v", err))
@@ -1499,33 +1860,7 @@ func (h *Handler) getLoginSession(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 404, "not_found", "login session not found")
 		return
 	}
-
-	resp := map[string]any{
-		"id":     session.ID,
-		"status": session.Status,
-	}
-
-	switch session.Status {
-	case "pending":
-		resp["verification_uri"] = session.VerificationURI
-		resp["user_code"] = session.UserCode
-		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
-		resp["poll_interval_seconds"] = session.PollInterval
-	case "authorized":
-		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
-	case "succeeded":
-		if session.AccountID != nil {
-			resp["account_id"] = *session.AccountID
-		}
-		if session.Account != nil {
-			resp["account"] = session.Account
-		}
-	case "failed", "expired":
-		resp["error_code"] = session.ErrorCode
-		resp["error_message"] = session.ErrorMessage
-	}
-
-	webutil.WriteData(w, 200, resp)
+	webutil.WriteData(w, 200, h.loginSessionResponse(session))
 }
 
 func (h *Handler) cancelLoginSession(w http.ResponseWriter, r *http.Request) {
@@ -1535,6 +1870,58 @@ func (h *Handler) cancelLoginSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) loginSessionResponse(session *cpa.LoginSession) map[string]any {
+	resp := map[string]any{
+		"id":         session.ID,
+		"service_id": session.ServiceID,
+		"pool_id":    session.PoolID,
+		"provider":   session.Provider,
+		"status":     session.Status,
+	}
+
+	switch session.Status {
+	case "pending", "authorized":
+		resp["verification_uri"] = session.VerificationURI
+		resp["user_code"] = session.UserCode
+		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
+		resp["poll_interval_seconds"] = session.PollInterval
+	case "succeeded":
+		if session.AccountID != nil {
+			resp["account_id"] = *session.AccountID
+		}
+		if session.Account != nil {
+			resp["account"] = session.Account
+		}
+	case "failed", "expired":
+		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
+		resp["error_code"] = session.ErrorCode
+		resp["error_message"] = session.ErrorMessage
+	case "cancelled":
+		resp["expires_at"] = session.ExpiresAt.Format(time.RFC3339)
+	}
+
+	return resp
+}
+
+func (h *Handler) resumeActiveLoginSessions() {
+	for _, session := range h.sessions.ListActiveSessions() {
+		if session.ExpiresAt.Before(time.Now()) {
+			h.sessions.UpdateStatus(session.ID, "expired", "expired_token", "Device code expired")
+			continue
+		}
+
+		svc, err := h.store.GetCpaServiceByID(session.ServiceID)
+		if err != nil || svc == nil {
+			h.sessions.UpdateStatus(session.ID, "failed", "service_missing", "CPA service not found")
+			continue
+		}
+
+		ctx, cancel := context.WithDeadline(context.Background(), session.ExpiresAt)
+		session.CancelFunc = cancel
+		go h.pollLoginSession(ctx, session, svc)
+	}
 }
 
 func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey string, f *cpa.CpaAuthFile, label string, enabled bool, notes string) (*store.Account, error) {

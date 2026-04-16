@@ -37,6 +37,7 @@ export interface Pool {
   enabled: boolean;
   account_count: number;
   healthy_account_count: number;
+  routable_account_count: number;
   models: string[];
   created_at: string;
   updated_at: string;
@@ -72,6 +73,10 @@ export interface AccessTokenCreated {
   pool_id: number | null;
 }
 
+export interface RevealedAccessToken extends AccessToken {
+  token: string;
+}
+
 export interface RequestLog {
   id: number;
   request_id: string;
@@ -101,7 +106,8 @@ export interface Overview {
   models_total: number;
   requests_today: number;
   success_rate_today: number;
-  global_token: string;
+  global_token_id: number | null;
+  global_token_masked: string;
   alerts: OverviewAlert[];
 }
 
@@ -151,7 +157,35 @@ export interface SystemSettings {
   health_check_interval: number;
   request_timeout: number;
   max_retry_attempts: number;
-  external_url: string;
+  notification_error_enabled: boolean;
+  notification_expiring_enabled: boolean;
+  notification_expiring_days: number;
+  data_retention_days: number;
+}
+
+export interface ConfigImportResult {
+  created_pools: number;
+  updated_pools: number;
+  created_tokens: number;
+  updated_tokens: number;
+  updated_settings: number;
+}
+
+export interface SystemNotification {
+  type: string;
+  severity: "warning" | "critical";
+  title: string;
+  message: string;
+  account_id?: number;
+  service_id?: number;
+  expires_at?: string;
+}
+
+export interface DataRetentionSummary {
+  retention_days: number;
+  total_logs: number;
+  oldest_log_at: string | null;
+  newest_log_at: string | null;
 }
 
 export interface CpaService {
@@ -178,6 +212,9 @@ export interface CpaServiceTestResult {
 
 export interface LoginSession {
   id: string;
+  service_id?: number;
+  pool_id?: number;
+  provider?: string;
   status:
     | "pending"
     | "authorized"
