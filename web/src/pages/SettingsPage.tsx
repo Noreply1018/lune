@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -21,17 +27,54 @@ import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
 import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import { shortDate } from "@/lib/fmt";
+import { relativeTime, shortDate } from "@/lib/fmt";
 import { maskToken } from "@/lib/lune";
-import type { AccessToken, CpaService, Pool, RevealedAccessToken, SystemSettings } from "@/lib/types";
+import type {
+  AccessToken,
+  CpaService,
+  Pool,
+  RevealedAccessToken,
+  SystemSettings,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type EditableSettingField = "request_timeout" | "max_retry_attempts" | "health_check_interval";
+type EditableSettingField =
+  | "request_timeout"
+  | "max_retry_attempts"
+  | "health_check_interval"
+  | "notification_expiring_days"
+  | "webhook_url";
+
+type ToggleSettingField =
+  | "notification_error_enabled"
+  | "notification_expiring_enabled"
+  | "webhook_enabled";
 
 type TokenDraft = {
   name: string;
@@ -43,18 +86,18 @@ const INITIAL_TOKEN_DRAFT: TokenDraft = {
   name: "",
   scope: "global",
   poolId: "",
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 };
 
 const TOKEN_GRID_COLUMNS =
-  "xl:grid-cols-[minmax(11rem,1.1fr)_minmax(0,4.2fr)_9.5rem_7rem_7.5rem_10rem]";
-const TOKEN_COLUMN_LABELS = ["名称", "Token", "创建时间", "状态", "归属"];
+  "xl:grid-cols-[minmax(11rem,1.05fr)_minmax(0,4fr)_9rem_8rem_7rem_7.5rem_10rem]";
+const TOKEN_COLUMN_LABELS = [
+  "名称",
+  "Token",
+  "创建时间",
+  "最后使用",
+  "状态",
+  "归属",
+];
 
 export default function SettingsPage() {
   const [service, setService] = useState<CpaService | null>(null);
@@ -63,19 +106,37 @@ export default function SettingsPage() {
   const [pools, setPools] = useState<Pool[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [gatewayForm, setGatewayForm] = useState({ request_timeout: 120, max_retry_attempts: 3 });
+  const [gatewayForm, setGatewayForm] = useState({
+    request_timeout: 120,
+    max_retry_attempts: 3,
+  });
   const [systemForm, setSystemForm] = useState({ health_check_interval: 60 });
-  const [savingField, setSavingField] = useState<EditableSettingField | null>(null);
+  const [notificationForm, setNotificationForm] = useState({
+    webhook_url: "",
+    notification_expiring_days: 7,
+  });
+  const [savingField, setSavingField] = useState<EditableSettingField | null>(
+    null,
+  );
+  const [savingToggle, setSavingToggle] = useState<ToggleSettingField | null>(
+    null,
+  );
   const [createOpen, setCreateOpen] = useState(false);
-  const [createDraft, setCreateDraft] = useState<TokenDraft>(INITIAL_TOKEN_DRAFT);
+  const [createDraft, setCreateDraft] =
+    useState<TokenDraft>(INITIAL_TOKEN_DRAFT);
   const [editingToken, setEditingToken] = useState<AccessToken | null>(null);
   const [editingName, setEditingName] = useState("");
   const [deleteToken, setDeleteToken] = useState<AccessToken | null>(null);
-  const [regenerateToken, setRegenerateToken] = useState<AccessToken | null>(null);
-  const [revealedTokens, setRevealedTokens] = useState<Record<number, string>>({});
+  const [regenerateToken, setRegenerateToken] = useState<AccessToken | null>(
+    null,
+  );
+  const [revealedTokens, setRevealedTokens] = useState<Record<number, string>>(
+    {},
+  );
   const [visibleTokenIds, setVisibleTokenIds] = useState<number[]>([]);
   const [testingService, setTestingService] = useState(false);
   const [systemOpen, setSystemOpen] = useState(false);
+  const toggleSaving = savingToggle !== null;
 
   function load() {
     setLoading(true);
@@ -98,8 +159,14 @@ export default function SettingsPage() {
         setSystemForm({
           health_check_interval: settingsData.health_check_interval,
         });
+        setNotificationForm({
+          webhook_url: settingsData.webhook_url,
+          notification_expiring_days: settingsData.notification_expiring_days,
+        });
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Settings 加载失败"))
+      .catch((err) =>
+        setError(err instanceof Error ? err.message : "Settings 加载失败"),
+      )
       .finally(() => setLoading(false));
   }
 
@@ -107,8 +174,14 @@ export default function SettingsPage() {
     load();
   }, []);
 
-  const poolNameMap = useMemo(() => Object.fromEntries(pools.map((pool) => [pool.id, pool.label])), [pools]);
-  const globalTokens = useMemo(() => tokens.filter((token) => token.pool_id == null), [tokens]);
+  const poolNameMap = useMemo(
+    () => Object.fromEntries(pools.map((pool) => [pool.id, pool.label])),
+    [pools],
+  );
+  const globalTokens = useMemo(
+    () => tokens.filter((token) => token.pool_id == null),
+    [tokens],
+  );
   const poolGroups = useMemo(
     () =>
       pools
@@ -120,26 +193,65 @@ export default function SettingsPage() {
     [pools, tokens],
   );
 
-  async function saveSetting(field: EditableSettingField, value: number) {
-    const normalized = Number.isFinite(value) ? value : 0;
+  async function saveSetting(
+    field: EditableSettingField,
+    value: number | string,
+  ) {
+    const payloadValue =
+      typeof value === "number"
+        ? Number.isFinite(value)
+          ? value
+          : 0
+        : value.trim();
     setSavingField(field);
     try {
-      await api.put("/settings", { [field]: normalized });
-      setSettings((current) => (current ? { ...current, [field]: normalized } : current));
-      toast(field === "health_check_interval" ? "维护项已更新" : "网关设置已更新");
+      await api.put("/settings", { [field]: payloadValue });
+      setSettings((current) =>
+        current ? { ...current, [field]: payloadValue } : current,
+      );
+      toast(field === "health_check_interval" ? "维护项已更新" : "设置已更新");
     } catch (err) {
       toast(err instanceof Error ? err.message : "保存设置失败", "error");
-      if (settings && field === "health_check_interval") {
-        setSystemForm((current) => ({ ...current, health_check_interval: settings.health_check_interval }));
-      }
-      if (settings && field !== "health_check_interval") {
-        setGatewayForm((current) => ({
-          ...current,
-          [field]: settings[field],
-        }));
+      if (settings) {
+        if (field === "health_check_interval") {
+          setSystemForm((current) => ({
+            ...current,
+            health_check_interval: settings.health_check_interval,
+          }));
+        }
+        if (field === "request_timeout" || field === "max_retry_attempts") {
+          setGatewayForm((current) => ({
+            ...current,
+            [field]: settings[field],
+          }));
+        }
+        if (field === "webhook_url" || field === "notification_expiring_days") {
+          setNotificationForm((current) => ({
+            ...current,
+            [field]: settings[field],
+          }));
+        }
       }
     } finally {
       setSavingField(null);
+    }
+  }
+
+  async function saveToggle(field: ToggleSettingField, value: boolean) {
+    setSavingToggle(field);
+    setSettings((current) =>
+      current ? { ...current, [field]: value } : current,
+    );
+    try {
+      await api.put("/settings", { [field]: value });
+      toast("设置已更新");
+    } catch (err) {
+      setSettings((current) =>
+        current ? { ...current, [field]: !value } : current,
+      );
+      toast(err instanceof Error ? err.message : "保存设置失败", "error");
+    } finally {
+      setSavingToggle(null);
     }
   }
 
@@ -155,8 +267,13 @@ export default function SettingsPage() {
     if (cached) {
       return cached;
     }
-    const revealed = await api.post<RevealedAccessToken>(`/tokens/${token.id}/reveal`);
-    setRevealedTokens((current) => ({ ...current, [token.id]: revealed.token }));
+    const revealed = await api.post<RevealedAccessToken>(
+      `/tokens/${token.id}/reveal`,
+    );
+    setRevealedTokens((current) => ({
+      ...current,
+      [token.id]: revealed.token,
+    }));
     return revealed.token;
   }
 
@@ -186,13 +303,26 @@ export default function SettingsPage() {
 
   async function toggleEnabled(token: AccessToken) {
     const nextEnabled = !token.enabled;
-    setTokens((current) => current.map((item) => (item.id === token.id ? { ...item, enabled: nextEnabled } : item)));
+    setTokens((current) =>
+      current.map((item) =>
+        item.id === token.id ? { ...item, enabled: nextEnabled } : item,
+      ),
+    );
     try {
-      await api.post(`/tokens/${token.id}/${token.enabled ? "disable" : "enable"}`);
+      await api.post(
+        `/tokens/${token.id}/${token.enabled ? "disable" : "enable"}`,
+      );
       toast(nextEnabled ? "Token 已启用" : "Token 已停用");
     } catch (err) {
-      setTokens((current) => current.map((item) => (item.id === token.id ? { ...item, enabled: token.enabled } : item)));
-      toast(err instanceof Error ? err.message : "更新 Token 状态失败", "error");
+      setTokens((current) =>
+        current.map((item) =>
+          item.id === token.id ? { ...item, enabled: token.enabled } : item,
+        ),
+      );
+      toast(
+        err instanceof Error ? err.message : "更新 Token 状态失败",
+        "error",
+      );
     }
   }
 
@@ -201,7 +331,8 @@ export default function SettingsPage() {
       toast("请先填写 Token 名称", "error");
       return;
     }
-    const poolId = createDraft.scope === "pool" ? Number(createDraft.poolId) : null;
+    const poolId =
+      createDraft.scope === "pool" ? Number(createDraft.poolId) : null;
     if (createDraft.scope === "pool" && !poolId) {
       toast("请选择归属 Pool", "error");
       return;
@@ -216,7 +347,8 @@ export default function SettingsPage() {
       const createdToken: AccessToken = {
         ...created,
         token_masked: maskToken(created.token),
-        pool_label: created.pool_id != null ? poolNameMap[created.pool_id] : undefined,
+        pool_label:
+          created.pool_id != null ? poolNameMap[created.pool_id] : undefined,
         is_global: created.pool_id == null,
         created_at: now,
         updated_at: now,
@@ -225,8 +357,13 @@ export default function SettingsPage() {
       setTokens((current) => [createdToken, ...current]);
       setCreateOpen(false);
       setCreateDraft(INITIAL_TOKEN_DRAFT);
-      setRevealedTokens((current) => ({ ...current, [created.id]: created.token }));
-      setVisibleTokenIds((current) => Array.from(new Set([...current, created.id])));
+      setRevealedTokens((current) => ({
+        ...current,
+        [created.id]: created.token,
+      }));
+      setVisibleTokenIds((current) =>
+        Array.from(new Set([...current, created.id])),
+      );
       toast("Token 已创建");
     } catch (err) {
       toast(err instanceof Error ? err.message : "创建 Token 失败", "error");
@@ -244,7 +381,11 @@ export default function SettingsPage() {
     }
 
     const previousName = editingToken.name;
-    setTokens((current) => current.map((token) => (token.id === editingToken.id ? { ...token, name } : token)));
+    setTokens((current) =>
+      current.map((token) =>
+        token.id === editingToken.id ? { ...token, name } : token,
+      ),
+    );
 
     try {
       await api.put(`/tokens/${editingToken.id}`, {
@@ -256,7 +397,13 @@ export default function SettingsPage() {
       setEditingToken(null);
       setEditingName("");
     } catch (err) {
-      setTokens((current) => current.map((token) => (token.id === editingToken.id ? { ...token, name: previousName } : token)));
+      setTokens((current) =>
+        current.map((token) =>
+          token.id === editingToken.id
+            ? { ...token, name: previousName }
+            : token,
+        ),
+      );
       toast(err instanceof Error ? err.message : "更新名称失败", "error");
     }
   }
@@ -266,9 +413,17 @@ export default function SettingsPage() {
       return;
     }
     try {
-      const revealed = await api.post<RevealedAccessToken>(`/tokens/${regenerateToken.id}/regenerate`, {});
-      setRevealedTokens((current) => ({ ...current, [revealed.id]: revealed.token }));
-      setVisibleTokenIds((current) => Array.from(new Set([...current, revealed.id])));
+      const revealed = await api.post<RevealedAccessToken>(
+        `/tokens/${regenerateToken.id}/regenerate`,
+        {},
+      );
+      setRevealedTokens((current) => ({
+        ...current,
+        [revealed.id]: revealed.token,
+      }));
+      setVisibleTokenIds((current) =>
+        Array.from(new Set([...current, revealed.id])),
+      );
       setTokens((current) =>
         current.map((token) =>
           token.id === revealed.id
@@ -305,7 +460,9 @@ export default function SettingsPage() {
       setDeleteToken(null);
     } catch (err) {
       setTokens((current) => {
-        const existingIndex = current.findIndex((token) => token.id === removed.id);
+        const existingIndex = current.findIndex(
+          (token) => token.id === removed.id,
+        );
         if (existingIndex >= 0) {
           return current;
         }
@@ -321,14 +478,44 @@ export default function SettingsPage() {
     }
     setTestingService(true);
     try {
-      const result = await api.post<{ reachable: boolean; latency_ms: number; error: string }>("/cpa/service/test", {});
-      toast(result.reachable ? `连接正常 ${result.latency_ms}ms` : result.error || "连接失败", result.reachable ? "success" : "error");
+      const result = await api.post<{
+        reachable: boolean;
+        latency_ms: number;
+        error: string;
+      }>("/cpa/service/test", {});
+      toast(
+        result.reachable
+          ? `连接正常 ${result.latency_ms}ms`
+          : result.error || "连接失败",
+        result.reachable ? "success" : "error",
+      );
       const serviceData = await api.get<CpaService | null>("/cpa/service");
       setService(serviceData);
     } catch (err) {
       toast(err instanceof Error ? err.message : "测试失败", "error");
     } finally {
       setTestingService(false);
+    }
+  }
+
+  async function testWebhook() {
+    const webhookURL = notificationForm.webhook_url.trim();
+    if (!webhookURL) {
+      return;
+    }
+    try {
+      const result = await api.post<{ success: boolean; latency_ms: number }>(
+        "/settings/webhook/test",
+        { url: webhookURL },
+      );
+      toast(
+        result.success
+          ? `Webhook 测试成功 ${result.latency_ms}ms`
+          : "Webhook 测试失败",
+        result.success ? "success" : "error",
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Webhook 测试失败", "error");
     }
   }
 
@@ -352,11 +539,17 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-12 pb-8">
-      <PageHeader title="Settings" description="管理网关行为、访问凭证与系统连接。" />
+      <PageHeader
+        title="Settings"
+        description="管理网关行为、访问凭证与系统连接。"
+      />
 
-      <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-stretch">
+      <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] lg:items-stretch">
         <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
-          <SectionHeading title="Gateway Behavior" description="控制请求超时与重试行为。" />
+          <SectionHeading
+            title="Gateway Behavior"
+            description="控制请求超时与重试行为。"
+          />
           <div className="mt-4 flex-1 divide-y divide-moon-200/30">
             <SettingsNumericRow
               label="Request Timeout"
@@ -364,8 +557,15 @@ export default function SettingsPage() {
               suffix="秒"
               min={1}
               saving={savingField === "request_timeout"}
-              onChange={(value) => setGatewayForm((current) => ({ ...current, request_timeout: value }))}
-              onBlur={() => void saveSetting("request_timeout", gatewayForm.request_timeout)}
+              onChange={(value) =>
+                setGatewayForm((current) => ({
+                  ...current,
+                  request_timeout: value,
+                }))
+              }
+              onBlur={() =>
+                void saveSetting("request_timeout", gatewayForm.request_timeout)
+              }
               onKeyDown={handleSettingKeyDown}
             />
             <SettingsNumericRow
@@ -374,8 +574,18 @@ export default function SettingsPage() {
               suffix="次"
               min={1}
               saving={savingField === "max_retry_attempts"}
-              onChange={(value) => setGatewayForm((current) => ({ ...current, max_retry_attempts: value }))}
-              onBlur={() => void saveSetting("max_retry_attempts", gatewayForm.max_retry_attempts)}
+              onChange={(value) =>
+                setGatewayForm((current) => ({
+                  ...current,
+                  max_retry_attempts: value,
+                }))
+              }
+              onBlur={() =>
+                void saveSetting(
+                  "max_retry_attempts",
+                  gatewayForm.max_retry_attempts,
+                )
+              }
               onKeyDown={handleSettingKeyDown}
             />
           </div>
@@ -383,22 +593,161 @@ export default function SettingsPage() {
 
         <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
           <SectionHeading
+            title="Notifications"
+            description="将关键告警推送到外部 Webhook。"
+          />
+          <div className="mt-4 flex flex-1 flex-col gap-5">
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <label
+                  htmlFor="webhook-url"
+                  className="text-sm font-medium text-moon-800"
+                >
+                  Webhook URL
+                </label>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  onClick={() => void testWebhook()}
+                  disabled={!notificationForm.webhook_url.trim()}
+                >
+                  <CircleDot className="size-4" />
+                  Test
+                </Button>
+              </div>
+              <Input
+                id="webhook-url"
+                value={notificationForm.webhook_url}
+                placeholder="https://example.com/webhook"
+                onChange={(event) =>
+                  setNotificationForm((current) => ({
+                    ...current,
+                    webhook_url: event.target.value,
+                  }))
+                }
+                onBlur={() =>
+                  void saveSetting("webhook_url", notificationForm.webhook_url)
+                }
+                onKeyDown={handleSettingKeyDown}
+              />
+            </div>
+
+            <div className="rounded-[1.35rem] border border-moon-200/35 bg-white/50 px-4 py-4">
+              <div className="flex items-center justify-between gap-3 border-b border-moon-200/25 pb-4">
+                <div className="space-y-0.5">
+                  <p className="text-sm font-medium text-moon-800">
+                    Enable Webhook
+                  </p>
+                  <p className="text-xs text-moon-350">
+                    关闭后保留 URL，但不会发送任何推送。
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {savingToggle === "webhook_enabled" ? (
+                    <RefreshCw className="size-4 animate-spin text-moon-350" />
+                  ) : null}
+                  <Switch
+                    checked={settings?.webhook_enabled ?? false}
+                    disabled={toggleSaving}
+                    onCheckedChange={(checked) =>
+                      void saveToggle("webhook_enabled", checked)
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="divide-y divide-moon-200/25">
+                <SettingsToggleRow
+                  label="Account Health Failure"
+                  helper="账号健康检查进入 error 状态时触发。"
+                  checked={settings?.notification_error_enabled ?? false}
+                  saving={savingToggle === "notification_error_enabled"}
+                  disabled={toggleSaving}
+                  onCheckedChange={(checked) =>
+                    void saveToggle("notification_error_enabled", checked)
+                  }
+                />
+                <SettingsToggleRow
+                  label="Account Expiring Soon"
+                  helper="CPA 账号即将过期或已过期时触发。"
+                  checked={settings?.notification_expiring_enabled ?? false}
+                  saving={savingToggle === "notification_expiring_enabled"}
+                  disabled={toggleSaving}
+                  onCheckedChange={(checked) =>
+                    void saveToggle("notification_expiring_enabled", checked)
+                  }
+                />
+                <SettingsNumericRow
+                  label="Expiring Threshold"
+                  helper="到期前多少天开始告警"
+                  value={notificationForm.notification_expiring_days}
+                  suffix="天"
+                  min={1}
+                  saving={savingField === "notification_expiring_days"}
+                  onChange={(value) =>
+                    setNotificationForm((current) => ({
+                      ...current,
+                      notification_expiring_days: value,
+                    }))
+                  }
+                  onBlur={() =>
+                    void saveSetting(
+                      "notification_expiring_days",
+                      notificationForm.notification_expiring_days,
+                    )
+                  }
+                  onKeyDown={handleSettingKeyDown}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
+          <SectionHeading
             title="CPA Service"
             description="查看当前 CPA 通道状态。"
-            action={service ? (
-              <Button variant="outline" size="sm" className="rounded-full" onClick={testService} disabled={testingService}>
-                {testingService ? <RefreshCw className="size-4 animate-spin" /> : <CircleDot className="size-4" />}
-                Test Connection
-              </Button>
-            ) : undefined}
+            action={
+              service ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  onClick={testService}
+                  disabled={testingService}
+                >
+                  {testingService ? (
+                    <RefreshCw className="size-4 animate-spin" />
+                  ) : (
+                    <CircleDot className="size-4" />
+                  )}
+                  Test Connection
+                </Button>
+              ) : undefined
+            }
           />
           <div className="mt-4 flex flex-1 flex-col gap-4">
             {service ? (
               <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-                <InfoBlock label="Status" value={<StatusBadge ok={service.status === "healthy"}>{service.status === "healthy" ? "Healthy" : "Error"}</StatusBadge>} />
+                <InfoBlock
+                  label="Status"
+                  value={
+                    <StatusBadge ok={service.status === "healthy"}>
+                      {service.status === "healthy" ? "Healthy" : "Error"}
+                    </StatusBadge>
+                  }
+                />
                 <InfoBlock label="Label" value={service.label || "--"} />
                 <InfoBlock label="Base URL" value={service.base_url || "--"} />
-                <InfoBlock label="Last Checked" value={service.last_checked_at ? shortDate(service.last_checked_at) : "尚未检查"} />
+                <InfoBlock
+                  label="Last Checked"
+                  value={
+                    service.last_checked_at
+                      ? shortDate(service.last_checked_at)
+                      : "尚未检查"
+                  }
+                />
               </div>
             ) : (
               <div className="flex h-full flex-col gap-3 rounded-[1.35rem] border border-dashed border-moon-200/55 px-4 py-4 text-sm text-moon-500">
@@ -441,7 +790,9 @@ export default function SettingsPage() {
 
           <div className="space-y-6">
             <div className="border-t border-moon-200/30 pt-6">
-              <p className="text-[11px] font-medium tracking-[0.18em] text-moon-350">Pool Tokens</p>
+              <p className="text-[11px] font-medium tracking-[0.18em] text-moon-350">
+                Pool Tokens
+              </p>
             </div>
             {poolGroups.length === 0 ? (
               <div className="border-y border-moon-200/30 py-5">
@@ -478,7 +829,9 @@ export default function SettingsPage() {
             <h2 className="text-[1.05rem] font-semibold tracking-[-0.02em] text-moon-800 sm:text-[1.12rem]">
               System Administration
             </h2>
-            <p className="text-sm leading-6 text-moon-500">低频维护项默认折叠显示。</p>
+            <p className="text-sm leading-6 text-moon-500">
+              低频维护项默认折叠显示。
+            </p>
           </div>
           <button
             type="button"
@@ -486,7 +839,11 @@ export default function SettingsPage() {
             onClick={() => setSystemOpen((current) => !current)}
             aria-label={systemOpen ? "收起系统维护项" : "展开系统维护项"}
           >
-            {systemOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+            {systemOpen ? (
+              <ChevronDown className="size-4" />
+            ) : (
+              <ChevronRight className="size-4" />
+            )}
           </button>
         </div>
         {systemOpen ? (
@@ -498,16 +855,33 @@ export default function SettingsPage() {
               suffix="秒"
               min={1}
               saving={savingField === "health_check_interval"}
-              onChange={(value) => setSystemForm({ health_check_interval: value })}
-              onBlur={() => void saveSetting("health_check_interval", systemForm.health_check_interval)}
+              onChange={(value) =>
+                setSystemForm({ health_check_interval: value })
+              }
+              onBlur={() =>
+                void saveSetting(
+                  "health_check_interval",
+                  systemForm.health_check_interval,
+                )
+              }
               onKeyDown={handleSettingKeyDown}
             />
             <div className="flex flex-wrap gap-3">
-              <Button variant="outline" size="sm" className="rounded-full" onClick={() => window.open("/admin/api/export", "_blank") }>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                onClick={() => window.open("/admin/api/export", "_blank")}
+              >
                 <Download className="size-4" />
                 Export Configuration
               </Button>
-              <Button variant="outline" size="sm" className="rounded-full" disabled>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                disabled
+              >
                 <Upload className="size-4" />
                 Import Configuration
               </Button>
@@ -517,8 +891,8 @@ export default function SettingsPage() {
       </section>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="max-w-md rounded-[1.6rem] border border-white/75 bg-white/95 p-0">
-          <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
+        <DialogContent className="max-w-md overflow-hidden rounded-[1.6rem] border border-white/75 bg-white/95 p-0 shadow-[0_26px_70px_-38px_rgba(74,68,108,0.34)]">
+          <DialogHeader className="border-b border-moon-200/55 px-6 py-5 pr-12">
             <DialogTitle>Create Token</DialogTitle>
             <DialogDescription>选择归属并创建新的访问凭证。</DialogDescription>
           </DialogHeader>
@@ -620,17 +994,25 @@ export default function SettingsPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(editingToken)} onOpenChange={(open) => !open && setEditingToken(null)}>
-        <DialogContent className="max-w-md overflow-hidden rounded-[1.6rem] border border-white/75 bg-white/95 p-0 shadow-[0_26px_70px_-38px_rgba(74,68,108,0.34)]">
-          <DialogHeader className="border-b border-moon-200/55 px-6 py-5 pr-12">
+      <Dialog
+        open={Boolean(editingToken)}
+        onOpenChange={(open) => !open && setEditingToken(null)}
+      >
+        <DialogContent className="max-w-md rounded-[1.6rem] border border-white/75 bg-white/95 p-0">
+          <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
             <DialogTitle>Edit Token Name</DialogTitle>
             <DialogDescription>只更新名称。</DialogDescription>
           </DialogHeader>
           <div className="px-6 py-6">
-            <Input value={editingName} onChange={(event) => setEditingName(event.target.value)} />
+            <Input
+              value={editingName}
+              onChange={(event) => setEditingName(event.target.value)}
+            />
           </div>
           <DialogFooter className="border-t border-moon-200/55 bg-white/76 px-6 py-4">
-            <Button variant="outline" onClick={() => setEditingToken(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setEditingToken(null)}>
+              取消
+            </Button>
             <Button onClick={() => void submitRename()}>保存</Button>
           </DialogFooter>
         </DialogContent>
@@ -695,7 +1077,48 @@ function SettingsNumericRow({
           onKeyDown={onKeyDown}
         />
         <span className="w-5 text-sm text-moon-350">{suffix ?? ""}</span>
-        {saving ? <RefreshCw className="size-4 animate-spin text-moon-350" /> : <span className="size-4" />}
+        {saving ? (
+          <RefreshCw className="size-4 animate-spin text-moon-350" />
+        ) : (
+          <span className="size-4" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SettingsToggleRow({
+  label,
+  helper,
+  checked,
+  saving,
+  disabled,
+  onCheckedChange,
+}: {
+  label: string;
+  helper: string;
+  checked: boolean;
+  saving?: boolean;
+  disabled?: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-4">
+      <div className="space-y-0.5">
+        <p className="text-sm font-medium text-moon-800">{label}</p>
+        <p className="text-xs text-moon-350">{helper}</p>
+      </div>
+      <div className="flex items-center gap-2">
+        {saving ? (
+          <RefreshCw className="size-4 animate-spin text-moon-350" />
+        ) : (
+          <span className="size-4" />
+        )}
+        <Switch
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={onCheckedChange}
+        />
       </div>
     </div>
   );
@@ -736,23 +1159,41 @@ function TokenGroup({
       </div>
       {tokens.length === 0 ? (
         <div className="border-y border-moon-200/30 py-5">
-          <p className="text-sm text-moon-400">{emptyText ?? "当前分组为空。"}</p>
+          <p className="text-sm text-moon-400">
+            {emptyText ?? "当前分组为空。"}
+          </p>
         </div>
       ) : (
         <div className="border-y border-moon-200/30">
-          <div className={cn("hidden border-b border-moon-200/20 py-2.5 xl:grid xl:gap-x-4", TOKEN_GRID_COLUMNS)}>
+          <div
+            className={cn(
+              "hidden border-b border-moon-200/20 py-2.5 xl:grid xl:gap-x-4",
+              TOKEN_GRID_COLUMNS,
+            )}
+          >
             {TOKEN_COLUMN_LABELS.map((label) => (
-              <p key={label} className="text-[11px] font-medium tracking-[0.16em] text-moon-300">
+              <p
+                key={label}
+                className="text-[11px] font-medium tracking-[0.16em] text-moon-300"
+              >
                 {label}
               </p>
             ))}
-            <p className="text-[11px] font-medium tracking-[0.16em] text-moon-300">操作</p>
+            <p className="text-[11px] font-medium tracking-[0.16em] text-moon-300">
+              操作
+            </p>
           </div>
           {tokens.map((token) => (
             <TokenRow
               key={token.id}
               token={token}
-              ownerLabel={token.pool_id ? poolNameMap[token.pool_id] ?? token.pool_label ?? `Pool #${token.pool_id}` : "Global"}
+              ownerLabel={
+                token.pool_id
+                  ? (poolNameMap[token.pool_id] ??
+                    token.pool_label ??
+                    `Pool #${token.pool_id}`)
+                  : "Global"
+              }
               visible={visibleTokenIds.includes(token.id)}
               revealedValue={revealedTokens[token.id]}
               onCopy={() => onCopy(token)}
@@ -792,26 +1233,69 @@ function TokenRow({
   onRegenerate: () => void;
   onDelete: () => void;
 }) {
-  const displayToken = visible ? revealedValue ?? token.token_masked : token.token_masked;
+  const displayToken = visible
+    ? (revealedValue ?? token.token_masked)
+    : token.token_masked;
 
   return (
-    <div className={cn("grid gap-4 border-b border-moon-200/20 py-3.5 last:border-b-0 xl:items-start xl:gap-x-4", TOKEN_GRID_COLUMNS)}>
+    <div
+      className={cn(
+        "grid gap-4 border-b border-moon-200/20 py-3.5 last:border-b-0 xl:items-start xl:gap-x-4",
+        TOKEN_GRID_COLUMNS,
+      )}
+    >
       <InlineMeta label="名称" value={token.name} strong />
-      <InlineMeta label="Token" value={displayToken || "--"} mono muted={!visible} wrap />
+      <InlineMeta
+        label="Token"
+        value={displayToken || "--"}
+        mono
+        muted={!visible}
+        wrap
+      />
       <InlineMeta label="创建时间" value={shortDate(token.created_at)} />
-      <InlineMeta label="状态" value={<StatusBadge ok={token.enabled}>{token.enabled ? "Enabled" : "Disabled"}</StatusBadge>} />
+      <InlineMeta label="最后使用" value={relativeTime(token.last_used_at)} />
+      <InlineMeta
+        label="状态"
+        value={
+          <StatusBadge ok={token.enabled}>
+            {token.enabled ? "Enabled" : "Disabled"}
+          </StatusBadge>
+        }
+      />
       <InlineMeta label="归属" value={ownerLabel} />
       <div className="flex flex-wrap items-center justify-start gap-1.5 xl:self-start">
-        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onCopy}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="rounded-full px-2.5 text-moon-500"
+          onClick={onCopy}
+        >
           <Copy className="size-3.5" />
           Copy
         </Button>
-        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onReveal}>
-          {visible ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="rounded-full px-2.5 text-moon-500"
+          onClick={onReveal}
+        >
+          {visible ? (
+            <EyeOff className="size-3.5" />
+          ) : (
+            <Eye className="size-3.5" />
+          )}
           Reveal
         </Button>
         <DropdownMenu>
-          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" className="rounded-full text-moon-500" />}>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="rounded-full text-moon-500"
+              />
+            }
+          >
             <MoreHorizontal className="size-4" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
@@ -828,7 +1312,10 @@ function TokenRow({
               <WandSparkles className="size-4" />
               Regenerate
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onDelete} className="text-status-red focus:text-status-red">
+            <DropdownMenuItem
+              onClick={onDelete}
+              className="text-status-red focus:text-status-red"
+            >
               <Trash2 className="size-4" />
               Delete
             </DropdownMenuItem>
@@ -856,7 +1343,9 @@ function InlineMeta({
 }) {
   return (
     <div className="min-w-0 space-y-1">
-      <p className="text-[11px] tracking-[0.16em] text-moon-300 xl:hidden">{label}</p>
+      <p className="text-[11px] tracking-[0.16em] text-moon-300 xl:hidden">
+        {label}
+      </p>
       <div
         className={cn(
           "text-sm text-moon-500",
@@ -886,7 +1375,9 @@ function StatusBadge({ ok, children }: { ok: boolean; children: string }) {
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium",
-        ok ? "bg-status-green/12 text-status-green" : "bg-status-red/10 text-status-red",
+        ok
+          ? "bg-status-green/12 text-status-green"
+          : "bg-status-red/10 text-status-red",
       )}
     >
       {children}
