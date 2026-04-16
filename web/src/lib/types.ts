@@ -112,7 +112,13 @@ export interface Overview {
 }
 
 export interface OverviewAlert {
-  type: "expiring" | "error";
+  type:
+    | "expiring"
+    | "error"
+    | "account_expiring"
+    | "account_error"
+    | "pool_unhealthy"
+    | string;
   message: string;
   pool_id?: number;
 }

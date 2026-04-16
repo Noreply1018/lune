@@ -6,7 +6,15 @@ export type PoolSnapshot = {
   enabled: boolean;
   activeAccountIds: number[];
   activeAccountCount: number | null;
-  healthyAccountCount: number | null;
+  availableAccountCount: number | null;
+  memberStatusCounts: {
+    healthy: number;
+    degraded: number;
+    error: number;
+    disabled: number;
+    unknown: number;
+    total: number;
+  } | null;
   models: string[];
   health: "healthy" | "degraded" | "error" | "disabled" | "unknown";
 };
@@ -53,7 +61,8 @@ export function derivePoolSnapshot(pool: Pool, detail?: PoolDetailResponse): Poo
       enabled: pool.enabled,
       activeAccountIds: [],
       activeAccountCount: null,
-      healthyAccountCount: null,
+      availableAccountCount: null,
+      memberStatusCounts: null,
       models: [],
       health: pool.enabled ? "unknown" : "disabled",
     };
@@ -63,9 +72,43 @@ export function derivePoolSnapshot(pool: Pool, detail?: PoolDetailResponse): Poo
     (member) => member.enabled && member.account?.enabled,
   );
   const healthyMembers = activeMembers.filter((member) => member.account?.status === "healthy");
+  const availableMembers = activeMembers.filter(
+    (member) => member.account?.status === "healthy" || member.account?.status === "degraded",
+  );
+  const memberStatusCounts = ensureArray(detail.members).reduce<NonNullable<PoolSnapshot["memberStatusCounts"]>>(
+    (counts, member) => {
+      counts.total += 1;
+      if (!member.enabled || !member.account?.enabled || member.account?.status === "disabled") {
+        counts.disabled += 1;
+        return counts;
+      }
+      if (member.account.status === "healthy") {
+        counts.healthy += 1;
+        return counts;
+      }
+      if (member.account.status === "degraded") {
+        counts.degraded += 1;
+        return counts;
+      }
+      if (member.account.status === "error") {
+        counts.error += 1;
+        return counts;
+      }
+      counts.unknown += 1;
+      return counts;
+    },
+    {
+      healthy: 0,
+      degraded: 0,
+      error: 0,
+      disabled: 0,
+      unknown: 0,
+      total: 0,
+    },
+  );
   const modelSet = new Set<string>();
 
-  healthyMembers.forEach((member) => {
+  availableMembers.forEach((member) => {
     ensureArray(member.account?.models).forEach((model) => {
       modelSet.add(model);
     });
@@ -76,7 +119,7 @@ export function derivePoolSnapshot(pool: Pool, detail?: PoolDetailResponse): Poo
     health = "disabled";
   } else if (activeMembers.length === 0) {
     health = "degraded";
-  } else if (healthyMembers.length === 0) {
+  } else if (availableMembers.length === 0) {
     health = "error";
   } else if (healthyMembers.length === activeMembers.length) {
     health = "healthy";
@@ -90,7 +133,8 @@ export function derivePoolSnapshot(pool: Pool, detail?: PoolDetailResponse): Poo
     enabled: pool.enabled,
     activeAccountIds: activeMembers.map((member) => member.account_id),
     activeAccountCount: activeMembers.length,
-    healthyAccountCount: healthyMembers.length,
+    availableAccountCount: availableMembers.length,
+    memberStatusCounts,
     models: pool.enabled ? Array.from(modelSet).sort() : [],
     health,
   };

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Check, Copy, KeyRound, QrCode, RefreshCw } from "lucide-react";
+import { AlertCircle, ArrowRight, Check, ChevronDown, Copy, KeyRound, QrCode, RefreshCw } from "lucide-react";
 import EmptyState from "@/components/EmptyState";
 import EnvSnippetsDialog from "@/components/EnvSnippetsDialog";
 import ErrorState from "@/components/ErrorState";
@@ -11,66 +11,333 @@ import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { compact } from "@/lib/fmt";
+import { compact, latency } from "@/lib/fmt";
 import { derivePoolSnapshot, getApiBaseUrl, type PoolSnapshot } from "@/lib/lune";
 import { useRouter } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import type {
-  Account,
+  LatencyBucket,
   Overview,
+  OverviewAlert,
   Pool,
   RevealedAccessToken,
-  UsageStats,
 } from "@/lib/types";
 
-type PoolActivity =
+const MIN_REQUESTS_FOR_SUCCESS_RATE = 5;
+const LATENCY_PERIOD = "1h";
+const LATENCY_BUCKET = "5m";
+
+type PoolLatencyState =
   | {
       status: "ready";
-      requestsToday: number;
+      buckets: LatencyBucket[];
+      currentP95: number | null;
+    }
+  | {
+      status: "empty";
     }
   | {
       status: "error";
     };
 
-function summarizeModels(models: string[]) {
-  if (models.length === 0) {
-    return "等待模型发现";
+function formatSuccessRate(value: number) {
+  const percent = value * 100;
+  if (percent >= 99.95) {
+    return "100%";
   }
-  if (models.length === 1) {
-    return models[0];
-  }
-  if (models.length === 2) {
-    return `${models[0]} · ${models[1]}`;
-  }
-  return `${models[0]} · ${models[1]} · +${models.length - 2}`;
+  return `${percent.toFixed(1).replace(/\.0$/, "")}%`;
 }
 
-function isExpiringSoon(account: Account) {
-  if (!account.enabled || !account.cpa_expired_at) {
-    return false;
-  }
-  const expiresAt = new Date(account.cpa_expired_at).getTime();
-  if (Number.isNaN(expiresAt)) {
-    return false;
-  }
-  const diff = expiresAt - Date.now();
-  const days = diff / (24 * 60 * 60 * 1000);
-  return days >= 0 && days <= 7;
-}
-
-function getStatusSentence(overview: Overview | null, accounts: Account[], poolSnapshots: PoolSnapshot[]) {
+function getStatusSentence(overview: Overview | null, poolSnapshots: PoolSnapshot[]) {
   if (!overview) return "";
-  const knownEnabledPools = poolSnapshots.filter((pool) => pool.enabled && pool.health !== "unknown");
-  const pendingPools = poolSnapshots.filter((pool) => pool.enabled && pool.health === "unknown").length;
-  const activeAccountIds = new Set(knownEnabledPools.flatMap((pool) => pool.activeAccountIds));
-  const activeAccounts = accounts.filter((account) => activeAccountIds.has(account.id));
-  const expiring = activeAccounts.filter((account) => isExpiringSoon(account)).length;
-  const broken = activeAccounts.filter((account) => account.status === "error").length;
-  const modelCount = new Set(knownEnabledPools.flatMap((pool) => pool.models)).size;
-  const expiringText = expiring === 0 ? "无临近到期账号" : `${expiring} 个账号临近到期`;
-  const brokenText = broken === 0 ? "" : ` · ${broken} 个异常账号`;
-  const pendingText = pendingPools === 0 ? "" : ` · ${pendingPools} 个 Pool 待确认`;
-  return `${modelCount} 个模型可用 · 今日 ${compact(overview.requests_today)} 次请求 · ${expiringText}${brokenText}${pendingText}`;
+  const parts: string[] = [];
+  const enabledPools = poolSnapshots.filter((pool) => pool.enabled && pool.health !== "disabled");
+  const knownPools = enabledPools.filter((pool) => pool.health !== "unknown");
+  const pendingPools = enabledPools.length - knownPools.length;
+  const routablePools = knownPools.filter((pool) => pool.health === "healthy" || pool.health === "degraded");
+
+  if (overview.alerts.length > 0) {
+    const leadAlert = getAlertSummary(overview.alerts[0]);
+    parts.push(
+      overview.alerts.length === 1
+        ? leadAlert
+        : `${overview.alerts.length} 条提醒待处理 · ${leadAlert}`,
+    );
+  }
+
+  if (knownPools.length > 0) {
+    const poolText = `${routablePools.length} / ${knownPools.length} 个 Pool 可路由`;
+    parts.push(pendingPools > 0 ? `${poolText} · ${pendingPools} 个待确认` : poolText);
+  } else if (enabledPools.length > 0) {
+    parts.push("Pool 状态确认中");
+  }
+
+  if (overview.requests_today >= MIN_REQUESTS_FOR_SUCCESS_RATE) {
+    parts.push(`今日成功率 ${formatSuccessRate(overview.success_rate_today)}`);
+  }
+
+  if (overview.requests_today > 0) {
+    parts.push(`今日 ${compact(overview.requests_today)} 次请求`);
+  } else {
+    parts.push("今日暂无请求");
+  }
+
+  return parts.join(" · ");
+}
+
+function extractQuotedLabel(message: string) {
+  const match = message.match(/"([^"]+)"/);
+  return match?.[1] ?? null;
+}
+
+function getAlertSummary(alert: OverviewAlert) {
+  const label = extractQuotedLabel(alert.message);
+
+  switch (alert.type) {
+    case "account_expiring":
+    case "expiring":
+      return label ? `${label} 7 天内到期` : "有账号即将到期";
+    case "account_error":
+    case "error":
+      return label ? `${label} 健康异常` : "有账号健康异常";
+    case "pool_unhealthy":
+      return label ? `${label} 需要处理` : "有 Pool 状态异常";
+    default:
+      return alert.message;
+  }
+}
+
+function getAlertDestination(alert: OverviewAlert) {
+  if (alert.pool_id) {
+    return `/admin/pools/${alert.pool_id}`;
+  }
+  return "/admin/settings";
+}
+
+function getAlertActionLabel(alert: OverviewAlert) {
+  return alert.pool_id ? "查看 Pool" : "前往 Settings";
+}
+
+function StatusDot({ health }: { health: PoolSnapshot["health"] }) {
+  return (
+    <span
+      className={cn(
+        "size-2 rounded-full",
+        health === "healthy"
+          ? "bg-status-green"
+          : health === "degraded"
+            ? "bg-status-yellow"
+            : health === "error"
+              ? "bg-status-red"
+              : "bg-moon-300",
+      )}
+    />
+  );
+}
+
+function HealthDistributionBar({
+  snapshot,
+}: {
+  snapshot: PoolSnapshot;
+}) {
+  const counts = snapshot.memberStatusCounts;
+  const total = counts?.total ?? 0;
+
+  if (!counts || total === 0) {
+    return (
+      <div className="h-1.5 overflow-hidden rounded-full bg-moon-150/85">
+        <div className="h-full w-full rounded-full bg-[linear-gradient(90deg,rgba(200,204,220,0.44),rgba(222,225,236,0.7))]" />
+      </div>
+    );
+  }
+
+  const segments = [
+    { key: "healthy", value: counts.healthy, className: "bg-status-green" },
+    { key: "degraded", value: counts.degraded, className: "bg-status-yellow" },
+    { key: "error", value: counts.error, className: "bg-status-red" },
+    { key: "disabled", value: counts.disabled, className: "bg-moon-300/80" },
+    { key: "unknown", value: counts.unknown, className: "bg-moon-200/90" },
+  ].filter((segment) => segment.value > 0);
+
+  return (
+    <div className="flex h-1.5 overflow-hidden rounded-full bg-moon-150/85">
+      {segments.map((segment) => (
+        <div
+          key={segment.key}
+          className={segment.className}
+          style={{ width: `${(segment.value / total) * 100}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function buildSparklinePath(values: number[], width: number, height: number) {
+  if (values.length === 0) {
+    return "";
+  }
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+
+  if (values.length === 1) {
+    const y = height - ((values[0] - min) / range) * height;
+    return `M 20 ${y.toFixed(2)} L ${Math.max(width - 20, 21)} ${y.toFixed(2)}`;
+  }
+
+  return values
+    .map((value, index) => {
+      const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
+      const y = height - ((value - min) / range) * height;
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function LatencySparkline({
+  state,
+}: {
+  state: PoolLatencyState | undefined;
+}) {
+  if (!state || state.status !== "ready" || state.buckets.length === 0 || state.currentP95 == null) {
+    return (
+      <svg viewBox="0 0 120 24" className="h-6 w-full" aria-hidden="true">
+        <path
+          d="M 1 12 L 119 12"
+          fill="none"
+          stroke="rgba(189, 194, 214, 0.72)"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+
+  const values = state.buckets.map((bucket) => bucket.p95);
+  const path = buildSparklinePath(values, 120, 20);
+
+  return (
+    <svg viewBox="0 0 120 24" className="h-6 w-full" aria-hidden="true">
+      <path
+        d="M 1 20 L 119 20"
+        fill="none"
+        stroke="rgba(212, 216, 230, 0.64)"
+        strokeWidth="1"
+        strokeLinecap="round"
+      />
+      <path
+        d={path}
+        fill="none"
+        stroke="rgba(134, 125, 193, 0.66)"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function getLatencyLabel(state: PoolLatencyState | undefined, pool: PoolSnapshot) {
+  if (!pool.enabled) {
+    return "已停用";
+  }
+  if (pool.health === "unknown") {
+    return "状态待确认";
+  }
+  if (!state) {
+    return "读取最近延迟";
+  }
+  if (state.status === "empty") {
+    return "最近 1h 暂无样本";
+  }
+  if (state.status === "error") {
+    return "延迟数据暂不可用";
+  }
+  if (state.currentP95 == null) {
+    return "最近 1h 暂无样本";
+  }
+  return `P95 ${latency(state.currentP95)}`;
+}
+
+function AlertsBar({
+  alerts,
+  onNavigate,
+}: {
+  alerts: OverviewAlert[];
+  onNavigate: (href: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (alerts.length === 0) {
+    return null;
+  }
+
+  const singleAlert = alerts.length === 1 ? alerts[0] : null;
+  const summary = singleAlert ? getAlertSummary(singleAlert) : `${alerts.length} 条需要处理的提醒`;
+
+  return (
+    <section className="surface-section fade-rise relative overflow-hidden border-lunar-200/42 bg-[linear-gradient(180deg,rgba(255,250,239,0.84),rgba(247,244,252,0.9))] px-4.5 py-4 sm:px-5">
+      <div className="absolute inset-x-4 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(192,154,85,0.42),transparent)]" />
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-white/80 bg-white/72 text-status-yellow shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
+              <AlertCircle className="size-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">提醒</p>
+              <p className="truncate text-sm text-moon-700">{summary}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {singleAlert ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onNavigate(getAlertDestination(singleAlert))}
+                className="rounded-full px-3 text-moon-600 hover:bg-white/70 hover:text-moon-800"
+              >
+                {getAlertActionLabel(singleAlert)}
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setExpanded((current) => !current)}
+                className="rounded-full px-3 text-moon-600 hover:bg-white/70 hover:text-moon-800"
+              >
+                {expanded ? "收起" : "展开"}
+                <ChevronDown className={cn("size-4 transition-transform", expanded && "rotate-180")} />
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {!singleAlert && expanded ? (
+          <div className="space-y-2 border-t border-moon-200/45 pt-3">
+            {alerts.map((alert, index) => (
+              <button
+                key={`${alert.type}:${alert.message}:${index}`}
+                type="button"
+                onClick={() => onNavigate(getAlertDestination(alert))}
+                className="flex w-full items-center justify-between gap-4 rounded-[1rem] border border-white/64 bg-white/55 px-3.5 py-3 text-left transition-colors hover:bg-white/80"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm text-moon-700">{getAlertSummary(alert)}</p>
+                  <p className="mt-1 truncate text-[12px] text-moon-400">{alert.message}</p>
+                </div>
+                <span className="shrink-0 text-[12px] font-medium text-moon-500">
+                  {getAlertActionLabel(alert)}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
 }
 
 function GlobalAccessCopyAction({
@@ -182,8 +449,7 @@ export default function OverviewPage() {
   const { navigate } = useRouter();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [pools, setPools] = useState<Pool[]>([]);
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [poolActivity, setPoolActivity] = useState<Record<number, PoolActivity>>({});
+  const [poolLatency, setPoolLatency] = useState<Record<number, PoolLatencyState>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [snippetsOpen, setSnippetsOpen] = useState(false);
@@ -193,33 +459,35 @@ export default function OverviewPage() {
     () => pools.map((pool) => poolSnapshots[pool.id] ?? derivePoolSnapshot(pool)),
     [pools, poolSnapshots],
   );
-  const activePoolStatsTargets = useMemo(
-    () => orderedPoolSnapshots.filter(
-      (pool) => pool.enabled && pool.health !== "unknown" && pool.health !== "disabled",
-    ),
+  const latencyTargets = useMemo(
+    () => orderedPoolSnapshots.filter((pool) => pool.enabled),
     [orderedPoolSnapshots],
   );
-  const activePoolStatsKey = useMemo(
-    () => activePoolStatsTargets.map((pool) => `${pool.id}:${pool.health}:${pool.enabled ? 1 : 0}`).join("|"),
-    [activePoolStatsTargets],
+  const latencyTargetsKey = useMemo(
+    () => latencyTargets.map((pool) => `${pool.id}:${pool.health}:${pool.enabled ? 1 : 0}`).join("|"),
+    [latencyTargets],
   );
   const firstPoolModel = orderedPoolSnapshots.find((pool) => pool.enabled && pool.models.length > 0)?.models[0];
+  const baseUrl = getApiBaseUrl();
+  const hasGlobalToken = Boolean(overview?.global_token_id);
+  const statusLine = useMemo(
+    () => getStatusSentence(overview, orderedPoolSnapshots),
+    [overview, orderedPoolSnapshots],
+  );
+  const title = "Pool Overview";
 
   function load() {
     setLoading(true);
     setError(null);
-    setPoolActivity({});
+    setPoolLatency({});
 
     Promise.all([
       api.get<Overview>("/overview"),
       api.get<Pool[]>("/pools"),
-      api.get<Account[]>("/accounts"),
     ])
-      .then(async ([overviewData, poolData, accountData]) => {
-        const safePools = poolData ?? [];
+      .then(([overviewData, poolData]) => {
         setOverview(overviewData);
-        setPools(safePools);
-        setAccounts(accountData ?? []);
+        setPools(poolData ?? []);
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : "总览加载失败");
@@ -238,40 +506,38 @@ export default function OverviewPage() {
   useEffect(() => {
     let cancelled = false;
 
-    if (activePoolStatsTargets.length === 0) {
-      setPoolActivity({});
+    if (latencyTargets.length === 0) {
+      setPoolLatency({});
       return () => {
         cancelled = true;
       };
     }
 
     Promise.all(
-      activePoolStatsTargets.map(async (pool) => {
+      latencyTargets.map(async (pool) => {
         try {
-          const stats = await api.get<UsageStats>(`/pools/${pool.id}/stats?window=today`);
-          return [pool.id, { status: "ready", requestsToday: stats.total_requests }] as const;
+          const buckets = await api.get<LatencyBucket[]>(
+            `/usage/latency?period=${LATENCY_PERIOD}&bucket=${LATENCY_BUCKET}&pool=${pool.id}`,
+          );
+          if (!buckets?.length) {
+            return [pool.id, { status: "empty" } satisfies PoolLatencyState] as const;
+          }
+          const currentP95 = buckets[buckets.length - 1]?.p95 ?? null;
+          return [pool.id, { status: "ready", buckets, currentP95 } satisfies PoolLatencyState] as const;
         } catch {
-          return [pool.id, { status: "error" }] as const;
+          return [pool.id, { status: "error" } satisfies PoolLatencyState] as const;
         }
       }),
     ).then((entries) => {
       if (!cancelled) {
-        setPoolActivity(Object.fromEntries(entries));
+        setPoolLatency(Object.fromEntries(entries));
       }
     });
 
     return () => {
       cancelled = true;
     };
-  }, [activePoolStatsKey]);
-
-  const baseUrl = getApiBaseUrl();
-  const hasGlobalToken = Boolean(overview?.global_token_id);
-  const statusLine = useMemo(
-    () => getStatusSentence(overview, accounts, orderedPoolSnapshots),
-    [overview, accounts, orderedPoolSnapshots],
-  );
-  const title = "Pool Overview";
+  }, [latencyTargetsKey]);
 
   async function revealGlobalTokenValue(): Promise<string> {
     if (revealedGlobalToken) {
@@ -315,13 +581,10 @@ export default function OverviewPage() {
         <Skeleton className="h-36 rounded-[2rem]" />
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_20rem] xl:items-start">
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Skeleton className="h-5 w-24 rounded-full" />
-              <Skeleton className="h-4 w-52 rounded-full" />
-            </div>
+            <Skeleton className="h-20 rounded-[1.5rem]" />
             <div className="grid gap-4 lg:grid-cols-2">
               {Array.from({ length: 2 }).map((_, index) => (
-                <Skeleton key={index} className="h-44 rounded-[1.8rem]" />
+                <Skeleton key={index} className="h-52 rounded-[1.8rem]" />
               ))}
             </div>
           </div>
@@ -351,6 +614,7 @@ export default function OverviewPage() {
       <PageHeader
         title={title}
         description={statusLine}
+        className={overview?.alerts?.length ? "border-status-yellow/18" : undefined}
         actions={
           <Button
             variant="ghost"
@@ -378,71 +642,61 @@ export default function OverviewPage() {
         }
       />
 
+      {overview?.alerts?.length ? (
+        <AlertsBar alerts={overview.alerts} onNavigate={navigate} />
+      ) : null}
+
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_20rem] xl:items-start">
         <div className="space-y-4">
           <SectionHeading
             title="Pools"
-            description="按健康、模型与今日活动浏览。"
+            description="按健康与最近延迟快速判断。"
           />
           <div className="grid gap-4 lg:grid-cols-2">
-            {orderedPoolSnapshots.map((pool) => {
-              const activity = poolActivity[pool.id];
+            {orderedPoolSnapshots.map((pool, index) => {
+              const counts = pool.memberStatusCounts;
+              const accountSummary =
+                pool.health === "disabled"
+                  ? "已停用，不参与当前工作面"
+                  : pool.activeAccountCount == null || pool.availableAccountCount == null
+                    ? "成员状态待确认"
+                    : counts && counts.total > 0
+                      ? `${counts.total} 账号 · ${pool.availableAccountCount} 可用`
+                      : `${pool.activeAccountCount} 账号 · ${pool.availableAccountCount} 可用`;
+              const animationClass = index % 3 === 0 ? "fade-rise-delay-1" : index % 3 === 1 ? "fade-rise-delay-2" : "fade-rise-delay-3";
+
               return (
                 <button
                   key={pool.id}
                   type="button"
                   onClick={() => navigate(`/admin/pools/${pool.id}`)}
-                  className="surface-section fade-rise fade-rise-delay-1 text-left transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-lunar-300/48 hover:shadow-[0_28px_68px_-54px_rgba(61,68,105,0.34)]"
+                  className={cn(
+                    "surface-section fade-rise text-left transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-lunar-300/48 hover:shadow-[0_28px_68px_-54px_rgba(61,68,105,0.34)]",
+                    animationClass,
+                  )}
                 >
                   <div className="px-4 py-4 sm:px-4.5 sm:py-4.5">
                     <div className="flex items-start justify-between gap-4">
-                      <div className="space-y-2.5">
+                      <div className="space-y-2">
                         <div className="flex items-center gap-2">
-                          <span
-                            className={`size-2 rounded-full ${
-                              pool.health === "healthy"
-                                ? "bg-status-green"
-                                : pool.health === "degraded"
-                                  ? "bg-status-yellow"
-                                  : pool.health === "error"
-                                    ? "bg-status-red"
-                                    : "bg-moon-300"
-                            }`}
-                          />
+                          <StatusDot health={pool.health} />
                           <p className="text-sm font-medium text-moon-800">{pool.label}</p>
                         </div>
-                        {pool.health === "disabled" ? (
-                          <p className="text-sm text-moon-400">已停用，不参与当前工作面</p>
-                        ) : pool.activeAccountCount == null || pool.healthyAccountCount == null ? (
-                          <p className="text-sm text-moon-400">成员状态待确认</p>
-                        ) : (
-                          <p className="text-sm text-moon-500">
-                            {pool.activeAccountCount} 账号 · {pool.healthyAccountCount} 可用
-                          </p>
-                        )}
+                        <p className="text-sm text-moon-500">{accountSummary}</p>
                       </div>
                       <ArrowRight className="mt-0.5 size-4 text-moon-400" />
                     </div>
 
-                    <div className="mt-4 border-t border-moon-200/50 pt-3">
-                      <p className="text-sm text-moon-700">
-                        {pool.health === "disabled"
-                          ? "当前不提供能力"
-                          : pool.health === "unknown"
-                            ? "能力状态待确认"
-                            : summarizeModels(pool.models).split(" · ").join(" / ")}
-                      </p>
-                      {pool.health === "disabled" ? (
-                        <p className="mt-2.5 text-sm text-moon-400">不参与今日活动统计</p>
-                      ) : pool.health === "unknown" ? (
-                        <p className="mt-2.5 text-sm text-moon-400">活动状态待确认</p>
-                      ) : activity?.status === "ready" ? (
-                        <p className="mt-2.5 text-sm text-moon-500">
-                          今日 {compact(activity.requestsToday)} 请求
+                    <div className="mt-4 space-y-2.5">
+                      <HealthDistributionBar snapshot={pool} />
+                      <div className="flex items-center justify-between gap-3 border-t border-moon-200/50 pt-3">
+                        <div className="min-w-0 flex-1">
+                          <LatencySparkline state={poolLatency[pool.id]} />
+                        </div>
+                        <p className="shrink-0 text-[12px] font-medium text-moon-600">
+                          {getLatencyLabel(poolLatency[pool.id], pool)}
                         </p>
-                      ) : (
-                        <p className="mt-2.5 text-sm text-moon-400">活动数据暂不可用</p>
-                      )}
+                      </div>
                     </div>
                   </div>
                 </button>

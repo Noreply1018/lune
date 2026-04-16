@@ -1375,13 +1375,24 @@ func (h *Handler) getLatencyStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var opts []int64
+	var poolID int64
 	if acStr := r.URL.Query().Get("account"); acStr != "" {
 		if v, err := strconv.ParseInt(acStr, 10, 64); err == nil {
 			opts = append(opts, v)
 		}
 	}
+	if poolStr := r.URL.Query().Get("pool"); poolStr != "" {
+		if v, err := strconv.ParseInt(poolStr, 10, 64); err == nil {
+			poolID = v
+		}
+	}
 
-	stats, err := h.store.GetLatencyStats(model, period, bucket, opts...)
+	var accountID int64
+	if len(opts) > 0 {
+		accountID = opts[0]
+	}
+
+	stats, err := h.store.GetLatencyStats(model, period, bucket, accountID, poolID)
 	if err != nil {
 		h.internalError(w, err)
 		return

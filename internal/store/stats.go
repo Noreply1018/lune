@@ -17,6 +17,10 @@ func (s *Store) GetOverview() (*Overview, error) {
 			 FROM pool_members pm
 			 JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
+			(SELECT COUNT(*)
+			 FROM pool_members pm
+			 JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS strictly_healthy_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS healthy_account_count
 		FROM pools p`)
@@ -25,15 +29,16 @@ func (s *Store) GetOverview() (*Overview, error) {
 		for poolRows.Next() {
 			var enabled int
 			var accountCount int
+			var strictlyHealthyCount int
 			var healthyAccountCount int
-			if err := poolRows.Scan(&enabled, &accountCount, &healthyAccountCount); err != nil {
+			if err := poolRows.Scan(&enabled, &accountCount, &strictlyHealthyCount, &healthyAccountCount); err != nil {
 				continue
 			}
 			if enabled == 0 {
 				continue
 			}
 			o.PoolsTotal++
-			if healthyAccountCount > 0 {
+			if accountCount > 0 && strictlyHealthyCount == accountCount {
 				o.PoolsHealthy++
 			}
 		}
@@ -83,8 +88,18 @@ func (s *Store) GetOverview() (*Overview, error) {
 	}
 
 	// alerts: accounts expiring within 7 days
-	expiringRows, err := s.db.Query(
-		`SELECT id, label, cpa_expired_at FROM accounts WHERE source_kind = 'cpa' AND cpa_expired_at != ''`,
+	expiringRows, err := s.db.Query(`
+		SELECT a.id, a.label, a.cpa_expired_at,
+			COALESCE((
+				SELECT pm.pool_id
+				FROM pool_members pm
+				JOIN pools p ON p.id = pm.pool_id
+				WHERE pm.account_id = a.id AND pm.enabled = 1 AND p.enabled = 1
+				ORDER BY p.priority, p.id
+				LIMIT 1
+			), 0) AS pool_id
+		FROM accounts a
+		WHERE a.source_kind = 'cpa' AND a.cpa_expired_at != '' AND a.enabled = 1`,
 	)
 	if err == nil {
 		defer expiringRows.Close()
@@ -93,7 +108,8 @@ func (s *Store) GetOverview() (*Overview, error) {
 		for expiringRows.Next() {
 			var id int64
 			var label, expiredAt string
-			if err := expiringRows.Scan(&id, &label, &expiredAt); err != nil {
+			var poolID int64
+			if err := expiringRows.Scan(&id, &label, &expiredAt, &poolID); err != nil {
 				continue
 			}
 			expiry, err := parseCpaExpiry(expiredAt)
@@ -101,22 +117,34 @@ func (s *Store) GetOverview() (*Overview, error) {
 				continue
 			}
 			o.Alerts = append(o.Alerts, Alert{
-				Type:    "expiring",
+				Type:    "account_expiring",
 				Message: fmt.Sprintf("Account %q expires at %s", label, expiredAt),
+				PoolID:  poolID,
 			})
 		}
 	}
 
 	// alerts: accounts with error status
-	errorRows, err := s.db.Query(
-		`SELECT id, label, last_error FROM accounts WHERE status = 'error'`,
+	errorRows, err := s.db.Query(`
+		SELECT a.id, a.label, a.last_error,
+			COALESCE((
+				SELECT pm.pool_id
+				FROM pool_members pm
+				JOIN pools p ON p.id = pm.pool_id
+				WHERE pm.account_id = a.id AND pm.enabled = 1 AND p.enabled = 1
+				ORDER BY p.priority, p.id
+				LIMIT 1
+			), 0) AS pool_id
+		FROM accounts a
+		WHERE a.status = 'error' AND a.enabled = 1`,
 	)
 	if err == nil {
 		defer errorRows.Close()
 		for errorRows.Next() {
 			var id int64
 			var label, lastError string
-			if err := errorRows.Scan(&id, &label, &lastError); err != nil {
+			var poolID int64
+			if err := errorRows.Scan(&id, &label, &lastError, &poolID); err != nil {
 				continue
 			}
 			msg := fmt.Sprintf("Account %q has error status", label)
@@ -124,8 +152,43 @@ func (s *Store) GetOverview() (*Overview, error) {
 				msg += ": " + lastError
 			}
 			o.Alerts = append(o.Alerts, Alert{
-				Type:    "error",
+				Type:    "account_error",
 				Message: msg,
+				PoolID:  poolID,
+			})
+		}
+	}
+
+	// alerts: pools without any routable account
+	poolAlertRows, err := s.db.Query(`
+		SELECT p.id, p.label,
+			(SELECT COUNT(*)
+			 FROM pool_members pm
+			 JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
+			(SELECT COUNT(*)
+			 FROM pool_members pm
+			 JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS available_count
+		FROM pools p
+		WHERE p.enabled = 1`,
+	)
+	if err == nil {
+		defer poolAlertRows.Close()
+		for poolAlertRows.Next() {
+			var poolID int64
+			var label string
+			var accountCount, availableCount int
+			if err := poolAlertRows.Scan(&poolID, &label, &accountCount, &availableCount); err != nil {
+				continue
+			}
+			if accountCount == 0 || availableCount > 0 {
+				continue
+			}
+			o.Alerts = append(o.Alerts, Alert{
+				Type:    "pool_unhealthy",
+				Message: fmt.Sprintf("Pool %q has no routable accounts", label),
+				PoolID:  poolID,
 			})
 		}
 	}
@@ -393,7 +456,7 @@ func (s *Store) GetPoolStats(poolID int64, window string) (*UsageStats, error) {
 	return stats, nil
 }
 
-func (s *Store) GetLatencyStats(model, period, bucket string, accountID ...int64) ([]LatencyBucket, error) {
+func (s *Store) GetLatencyStats(model, period, bucket string, accountID, poolID int64) ([]LatencyBucket, error) {
 	now := time.Now().UTC()
 	var since time.Time
 	switch period {
@@ -427,9 +490,13 @@ func (s *Store) GetLatencyStats(model, period, bucket string, accountID ...int64
 		where += " AND (model_requested = ? OR model_actual = ?)"
 		args = append(args, model, model)
 	}
-	if len(accountID) > 0 && accountID[0] > 0 {
+	if accountID > 0 {
 		where += " AND account_id = ?"
-		args = append(args, accountID[0])
+		args = append(args, accountID)
+	}
+	if poolID > 0 {
+		where += " AND pool_id = ?"
+		args = append(args, poolID)
 	}
 
 	query := "SELECT " + bucketExpr + " as bucket, latency_ms FROM request_logs WHERE " + where + " ORDER BY bucket, latency_ms"
