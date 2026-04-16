@@ -22,11 +22,11 @@ import SectionHeading from "@/components/SectionHeading";
 import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { relativeTime, shortDate } from "@/lib/fmt";
+import { shortDate } from "@/lib/fmt";
 import { maskToken } from "@/lib/lune";
 import type { AccessToken, CpaService, Pool, RevealedAccessToken, SystemSettings } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -43,9 +43,18 @@ const INITIAL_TOKEN_DRAFT: TokenDraft = {
   name: "",
   scope: "global",
   poolId: "",
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 };
 
-const TOKEN_GRID_COLUMNS = "xl:grid-cols-[minmax(0,1fr)_minmax(0,4.4fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,0.7fr)_minmax(0,0.75fr)_minmax(0,1.2fr)]";
+const TOKEN_GRID_COLUMNS =
+  "xl:grid-cols-[minmax(11rem,1.1fr)_minmax(0,4.2fr)_9.5rem_7rem_7.5rem_10rem]";
+const TOKEN_COLUMN_LABELS = ["名称", "Token", "创建时间", "状态", "归属"];
 
 export default function SettingsPage() {
   const [service, setService] = useState<CpaService | null>(null);
@@ -435,7 +444,9 @@ export default function SettingsPage() {
               <p className="text-[11px] font-medium tracking-[0.18em] text-moon-350">Pool Tokens</p>
             </div>
             {poolGroups.length === 0 ? (
-              <p className="text-sm text-moon-400">还没有 Pool Token。</p>
+              <div className="border-y border-moon-200/30 py-5">
+                <p className="text-sm text-moon-400">还没有 Pool Token。</p>
+              </div>
             ) : (
               poolGroups.map((group) => (
                 <TokenGroup
@@ -516,11 +527,16 @@ export default function SettingsPage() {
               <label className="text-sm font-medium text-moon-700">Name</label>
               <Input
                 value={createDraft.name}
-                onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))}
+                onChange={(event) =>
+                  setCreateDraft((current) => ({
+                    ...current,
+                    name: event.target.value,
+                  }))
+                }
                 placeholder="例如：global-cli"
               />
             </div>
-            <div className="space-y-3">
+            <div className="space-y-2">
               <p className="text-sm font-medium text-moon-700">Ownership</p>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -528,10 +544,16 @@ export default function SettingsPage() {
                   className={cn(
                     "rounded-full border px-3 py-1.5 text-sm transition-colors",
                     createDraft.scope === "global"
-                      ? "border-lunar-300/60 bg-lunar-100/55 text-moon-800"
-                      : "border-moon-200/65 bg-white/55 text-moon-500",
+                      ? "border-lunar-300/65 bg-lunar-100/60 text-moon-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]"
+                      : "border-moon-200/65 bg-white/60 text-moon-500 hover:border-moon-250/75 hover:bg-white/80",
                   )}
-                  onClick={() => setCreateDraft((current) => ({ ...current, scope: "global", poolId: "" }))}
+                  onClick={() =>
+                    setCreateDraft((current) => ({
+                      ...current,
+                      scope: "global",
+                      poolId: "",
+                    }))
+                  }
                 >
                   Global
                 </button>
@@ -540,10 +562,12 @@ export default function SettingsPage() {
                   className={cn(
                     "rounded-full border px-3 py-1.5 text-sm transition-colors",
                     createDraft.scope === "pool"
-                      ? "border-lunar-300/60 bg-lunar-100/55 text-moon-800"
-                      : "border-moon-200/65 bg-white/55 text-moon-500",
+                      ? "border-lunar-300/65 bg-lunar-100/60 text-moon-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]"
+                      : "border-moon-200/65 bg-white/60 text-moon-500 hover:border-moon-250/75 hover:bg-white/80",
                   )}
-                  onClick={() => setCreateDraft((current) => ({ ...current, scope: "pool" }))}
+                  onClick={() =>
+                    setCreateDraft((current) => ({ ...current, scope: "pool" }))
+                  }
                 >
                   指定 Pool
                 </button>
@@ -551,32 +575,54 @@ export default function SettingsPage() {
             </div>
             {createDraft.scope === "pool" ? (
               <div className="space-y-2">
-                <label className="text-sm font-medium text-moon-700">Pool</label>
-                <select
-                  className="flex h-9 w-full rounded-lg border border-moon-200/65 bg-white/72 px-3 text-sm text-moon-700 outline-none focus:border-lunar-300/70"
+                <label className="text-sm font-medium text-moon-700">
+                  Pool
+                </label>
+                <Select
                   value={createDraft.poolId}
-                  onChange={(event) => setCreateDraft((current) => ({ ...current, poolId: event.target.value }))}
+                  onValueChange={(value) =>
+                    setCreateDraft((current) => ({
+                      ...current,
+                      poolId: value ?? "",
+                    }))
+                  }
                 >
-                  <option value="">选择 Pool</option>
-                  {pools.map((pool) => (
-                    <option key={pool.id} value={pool.id}>
-                      {pool.label}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="h-9 w-full rounded-lg border-moon-200/65 bg-white/72 px-3 text-sm text-moon-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.52)] hover:border-moon-250/80 hover:bg-white/82 focus-visible:border-lunar-300/70 focus-visible:ring-lunar-200/45">
+                    <SelectValue placeholder="选择 Pool" />
+                  </SelectTrigger>
+                  <SelectContent
+                    sideOffset={2}
+                    align="start"
+                    className="w-(--anchor-width) rounded-[1rem] border border-moon-200/70 bg-white/95 p-1 shadow-[0_20px_44px_-28px_rgba(74,68,108,0.34)]"
+                  >
+                    {pools.map((pool) => (
+                      <SelectItem
+                        key={pool.id}
+                        value={String(pool.id)}
+                        className="rounded-[0.8rem] px-3 py-2 text-sm text-moon-700 focus:bg-lunar-100/80 focus:text-moon-800 data-[selected]:bg-lunar-100/70 data-[selected]:text-moon-800"
+                      >
+                        {pool.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             ) : null}
           </div>
-          <DialogFooter className="border-t border-moon-200/55 bg-white/76 px-6 py-4">
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
-            <Button onClick={() => void submitCreateToken()}>Create Token</Button>
-          </DialogFooter>
+          <div className="flex items-center justify-end gap-3 border-t border-moon-200/55 bg-white/72 px-6 py-4">
+            <Button variant="outline" onClick={() => setCreateOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={() => void submitCreateToken()}>
+              Create Token
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 
       <Dialog open={Boolean(editingToken)} onOpenChange={(open) => !open && setEditingToken(null)}>
-        <DialogContent className="max-w-md rounded-[1.6rem] border border-white/75 bg-white/95 p-0">
-          <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
+        <DialogContent className="max-w-md overflow-hidden rounded-[1.6rem] border border-white/75 bg-white/95 p-0 shadow-[0_26px_70px_-38px_rgba(74,68,108,0.34)]">
+          <DialogHeader className="border-b border-moon-200/55 px-6 py-5 pr-12">
             <DialogTitle>Edit Token Name</DialogTitle>
             <DialogDescription>只更新名称。</DialogDescription>
           </DialogHeader>
@@ -689,16 +735,18 @@ function TokenGroup({
         <p className="text-xs text-moon-350">{tokens.length} tokens</p>
       </div>
       {tokens.length === 0 ? (
-        <p className="text-sm text-moon-400">{emptyText ?? "当前分组为空。"}</p>
+        <div className="border-y border-moon-200/30 py-5">
+          <p className="text-sm text-moon-400">{emptyText ?? "当前分组为空。"}</p>
+        </div>
       ) : (
         <div className="border-y border-moon-200/30">
-          <div className={cn("hidden border-b border-moon-200/20 py-2.5 xl:grid xl:gap-4", TOKEN_GRID_COLUMNS)}>
-            {["名称", "Token", "创建时间", "最后使用", "状态", "归属"].map((label) => (
+          <div className={cn("hidden border-b border-moon-200/20 py-2.5 xl:grid xl:gap-x-4", TOKEN_GRID_COLUMNS)}>
+            {TOKEN_COLUMN_LABELS.map((label) => (
               <p key={label} className="text-[11px] font-medium tracking-[0.16em] text-moon-300">
                 {label}
               </p>
             ))}
-            <p className="text-right text-[11px] font-medium tracking-[0.16em] text-moon-300">操作</p>
+            <p className="text-[11px] font-medium tracking-[0.16em] text-moon-300">操作</p>
           </div>
           {tokens.map((token) => (
             <TokenRow
@@ -747,34 +795,35 @@ function TokenRow({
   const displayToken = visible ? revealedValue ?? token.token_masked : token.token_masked;
 
   return (
-    <div className={cn("grid gap-4 border-b border-moon-200/20 py-3.5 last:border-b-0 xl:items-start xl:gap-4", TOKEN_GRID_COLUMNS)}>
+    <div className={cn("grid gap-4 border-b border-moon-200/20 py-3.5 last:border-b-0 xl:items-start xl:gap-x-4", TOKEN_GRID_COLUMNS)}>
       <InlineMeta label="名称" value={token.name} strong />
       <InlineMeta label="Token" value={displayToken || "--"} mono muted={!visible} wrap />
       <InlineMeta label="创建时间" value={shortDate(token.created_at)} />
-      <InlineMeta label="最后使用" value={relativeTime(token.last_used_at)} />
       <InlineMeta label="状态" value={<StatusBadge ok={token.enabled}>{token.enabled ? "Enabled" : "Disabled"}</StatusBadge>} />
       <InlineMeta label="归属" value={ownerLabel} />
-      <div className="flex flex-wrap items-center justify-start gap-1 xl:justify-end xl:self-start">
-        <Button variant="ghost" size="sm" className="rounded-full px-2 text-moon-500" onClick={onCopy}>
+      <div className="flex flex-wrap items-center justify-start gap-1.5 xl:self-start">
+        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onCopy}>
           <Copy className="size-3.5" />
           Copy
         </Button>
-        <Button variant="ghost" size="sm" className="rounded-full px-2 text-moon-500" onClick={onReveal}>
+        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onReveal}>
           {visible ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
           Reveal
-        </Button>
-        <Button variant="ghost" size="sm" className="rounded-full px-2 text-moon-500" onClick={onEdit}>
-          <PencilLine className="size-3.5" />
-          Edit name
-        </Button>
-        <Button variant="ghost" size="sm" className="rounded-full px-2 text-moon-500" onClick={onToggleEnabled}>
-          {token.enabled ? "Disable" : "Enable"}
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" className="rounded-full text-moon-500" />}>
             <MoreHorizontal className="size-4" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuItem onClick={onEdit}>
+              <PencilLine className="size-4" />
+              Edit name
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onToggleEnabled}>
+              <CircleDot className="size-4" />
+              {token.enabled ? "Disable" : "Enable"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onClick={onRegenerate}>
               <WandSparkles className="size-4" />
               Regenerate
