@@ -81,7 +81,7 @@ func (r *Registry) MaskConfig(typ string, raw json.RawMessage) (map[string]any, 
 	}
 	driver, ok := r.Get(typ)
 	if !ok {
-		return cfg, nil
+		return nil, fmt.Errorf("unknown notification channel type: %s", typ)
 	}
 	for _, key := range driver.SecretFields() {
 		if value, ok := cfg[key]; ok && strings.TrimSpace(fmt.Sprint(value)) != "" {
@@ -98,12 +98,13 @@ func (r *Registry) MergeConfig(typ string, existingRaw json.RawMessage, incoming
 			return nil, err
 		}
 	}
-	driver, _ := r.Get(typ)
+	driver, ok := r.Get(typ)
+	if !ok {
+		return nil, fmt.Errorf("unknown notification channel type: %s", typ)
+	}
 	secretFields := map[string]struct{}{}
-	if driver != nil {
-		for _, key := range driver.SecretFields() {
-			secretFields[key] = struct{}{}
-		}
+	for _, key := range driver.SecretFields() {
+		secretFields[key] = struct{}{}
 	}
 
 	for key, value := range incoming {
@@ -118,10 +119,8 @@ func (r *Registry) MergeConfig(typ string, existingRaw json.RawMessage, incoming
 	if err != nil {
 		return nil, err
 	}
-	if driver != nil {
-		if err := driver.ValidateConfig(encoded); err != nil {
-			return nil, err
-		}
+	if err := driver.ValidateConfig(encoded); err != nil {
+		return nil, err
 	}
 	return encoded, nil
 }

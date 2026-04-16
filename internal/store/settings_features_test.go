@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -88,5 +89,166 @@ func TestPruneRequestLogsDeletesOnlyExpiredRows(t *testing.T) {
 	}
 	if summary.TotalLogs != 1 {
 		t.Fatalf("expected 1 remaining log, got %d", summary.TotalLogs)
+	}
+}
+
+func TestGetDataRetentionSummaryIncludesNotificationCounts(t *testing.T) {
+	st := newTestStore(t)
+
+	channelID, err := st.CreateNotificationChannel(&NotificationChannel{
+		Name:          "Ops",
+		Type:          "generic_webhook",
+		Enabled:       true,
+		Config:        json.RawMessage(`{"schema":1,"url":"https://example.com/hook"}`),
+		Subscriptions: []NotificationSubscription{{Event: "*"}},
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if _, err := st.CreateNotificationDelivery(&NotificationDelivery{
+		ChannelID:      channelID,
+		ChannelName:    "Ops",
+		ChannelType:    "generic_webhook",
+		Event:          "test",
+		Severity:       "info",
+		Title:          "t",
+		PayloadSummary: "b",
+		Status:         "success",
+		Attempt:        1,
+		TriggeredBy:    "test",
+	}); err != nil {
+		t.Fatalf("create delivery: %v", err)
+	}
+	if _, err := st.InsertNotificationOutbox(&NotificationOutbox{
+		ChannelID: channelID,
+		Event:     "account_error",
+		Severity:  "critical",
+		Payload:   `{"event":"account_error"}`,
+		Status:    "pending",
+	}); err != nil {
+		t.Fatalf("create outbox: %v", err)
+	}
+
+	summary, err := st.GetDataRetentionSummary(30)
+	if err != nil {
+		t.Fatalf("get summary: %v", err)
+	}
+	if summary.TotalNotificationDeliveries != 1 {
+		t.Fatalf("expected 1 notification delivery, got %d", summary.TotalNotificationDeliveries)
+	}
+	if summary.TotalNotificationOutbox != 1 {
+		t.Fatalf("expected 1 outbox row, got %d", summary.TotalNotificationOutbox)
+	}
+}
+
+func TestPruneNotificationHistoryRetentionZeroKeepsOutbox(t *testing.T) {
+	st := newTestStore(t)
+
+	channelID, err := st.CreateNotificationChannel(&NotificationChannel{
+		Name:          "Ops",
+		Type:          "generic_webhook",
+		Enabled:       true,
+		Config:        json.RawMessage(`{"schema":1,"url":"https://example.com/hook"}`),
+		Subscriptions: []NotificationSubscription{{Event: "*"}},
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if _, err := st.InsertNotificationOutbox(&NotificationOutbox{
+		ChannelID:     channelID,
+		Event:         "account_error",
+		Severity:      "critical",
+		Payload:       `{"event":"account_error"}`,
+		DedupKey:      "dedup",
+		Status:        "retrying",
+		Attempt:       3,
+		NextAttemptAt: time.Now().UTC().Add(-8 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
+	}); err != nil {
+		t.Fatalf("create outbox: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE notification_outbox SET created_at = ?`, time.Now().UTC().Add(-10*24*time.Hour).Format("2006-01-02 15:04:05")); err != nil {
+		t.Fatalf("age outbox: %v", err)
+	}
+
+	deletedDeliveries, deletedOutbox, err := st.PruneNotificationHistory(0)
+	if err != nil {
+		t.Fatalf("prune notification history: %v", err)
+	}
+	if deletedDeliveries != 0 || deletedOutbox != 0 {
+		t.Fatalf("expected no deletions, got deliveries=%d outbox=%d", deletedDeliveries, deletedOutbox)
+	}
+
+	items, err := st.ListDueNotificationOutbox(10)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected outbox row to remain, got %d", len(items))
+	}
+}
+
+func TestDeleteNotificationChannelKeepsDeliveryHistory(t *testing.T) {
+	st := newTestStore(t)
+
+	channelID, err := st.CreateNotificationChannel(&NotificationChannel{
+		Name:          "Ops",
+		Type:          "generic_webhook",
+		Enabled:       true,
+		Config:        json.RawMessage(`{"schema":1,"url":"https://example.com/hook"}`),
+		Subscriptions: []NotificationSubscription{{Event: "*"}},
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if _, err := st.CreateNotificationDelivery(&NotificationDelivery{
+		ChannelID:      channelID,
+		ChannelName:    "Ops",
+		ChannelType:    "generic_webhook",
+		Event:          "test",
+		Severity:       "info",
+		Title:          "hello",
+		PayloadSummary: "world",
+		Status:         "success",
+		Attempt:        1,
+		TriggeredBy:    "test",
+	}); err != nil {
+		t.Fatalf("create delivery: %v", err)
+	}
+	if _, err := st.InsertNotificationOutbox(&NotificationOutbox{
+		ChannelID: channelID,
+		Event:     "test",
+		Severity:  "info",
+		Payload:   `{"event":"test"}`,
+		Status:    "pending",
+	}); err != nil {
+		t.Fatalf("create outbox: %v", err)
+	}
+
+	if err := st.DeleteNotificationChannel(channelID); err != nil {
+		t.Fatalf("delete channel: %v", err)
+	}
+
+	deliveries, err := st.ListNotificationDeliveries(NotificationDeliveryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list deliveries: %v", err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("expected delivery history to remain, got %d", len(deliveries))
+	}
+	outbox, err := st.ListDueNotificationOutbox(10)
+	if err != nil {
+		t.Fatalf("list outbox: %v", err)
+	}
+	if len(outbox) != 0 {
+		t.Fatalf("expected outbox to be cleared, got %d rows", len(outbox))
+	}
+}
+
+func TestValidateNotificationDeliveryCursorRejectsRFC3339(t *testing.T) {
+	if err := ValidateNotificationDeliveryCursor("2026-04-16T00:00:00Z"); err == nil {
+		t.Fatalf("expected RFC3339 cursor to be rejected")
+	}
+	if err := ValidateNotificationDeliveryCursor("2026-04-16 00:00:00"); err != nil {
+		t.Fatalf("expected sqlite timestamp cursor to pass, got %v", err)
 	}
 }

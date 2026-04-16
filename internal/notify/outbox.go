@@ -46,17 +46,23 @@ func (o *Outbox) processDue(ctx context.Context) {
 		slog.Error("list due notification outbox", "err", err)
 		return
 	}
+	channelIDs := make([]int64, 0, len(items))
 	for _, item := range items {
-		ch, err := o.store.GetNotificationChannel(item.ChannelID)
-		if err != nil {
-			slog.Error("load notification channel", "channel_id", item.ChannelID, "err", err)
-			continue
-		}
-		if ch == nil {
+		channelIDs = append(channelIDs, item.ChannelID)
+	}
+	channelsByID, err := o.store.ListNotificationChannelsByIDs(channelIDs)
+	if err != nil {
+		slog.Error("load due notification channels", "err", err)
+		return
+	}
+	for _, item := range items {
+		ch, ok := channelsByID[item.ChannelID]
+		if !ok {
 			_ = o.store.DeleteNotificationOutbox(item.ID)
 			continue
 		}
-		if err := o.AttemptOne(ctx, item, *ch, true); err != nil {
+		if err := o.AttemptOne(ctx, item, ch, true); err != nil {
+			slog.Error("retry notification outbox attempt failed", "outbox_id", item.ID, "channel_id", item.ChannelID, "err", err)
 			continue
 		}
 	}
@@ -92,7 +98,7 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 	if err != nil {
 		return o.fail(item, channel, result, err.Error(), retrying)
 	}
-	_, err = o.store.CreateNotificationDelivery(&store.NotificationDelivery{
+	err = o.store.RecordNotificationAttemptSuccess(item.ID, &store.NotificationDelivery{
 		ChannelID:       channel.ID,
 		ChannelName:     channel.Name,
 		ChannelType:     channel.Type,
@@ -111,25 +117,31 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 	if err != nil {
 		return err
 	}
-	return o.store.DeleteNotificationOutbox(item.ID)
+	return nil
 }
 
 func (o *Outbox) fail(item store.NotificationOutbox, channel store.NotificationChannel, result Result, message string, retrying bool) error {
-	n, _ := decodeNotificationPayload(item.Payload)
-	rendered, _ := RenderNotification(n, channel.TitleTemplate, channel.BodyTemplate)
+	title := item.Event
+	payloadSummary := truncateString(item.Payload, 1024)
+	if n, err := decodeNotificationPayload(item.Payload); err == nil {
+		if rendered, renderErr := RenderNotification(n, channel.TitleTemplate, channel.BodyTemplate); renderErr == nil {
+			title = rendered.Title
+			payloadSummary = truncateString(rendered.Body, 1024)
+		}
+	}
 	attempt := item.Attempt + 1
 	status := "failed"
 	if attempt > len(retrySchedule) {
 		status = "dropped"
 	}
-	if _, err := o.store.CreateNotificationDelivery(&store.NotificationDelivery{
+	delivery := &store.NotificationDelivery{
 		ChannelID:       channel.ID,
 		ChannelName:     channel.Name,
 		ChannelType:     channel.Type,
 		Event:           item.Event,
 		Severity:        item.Severity,
-		Title:           rendered.Title,
-		PayloadSummary:  truncateString(rendered.Body, 1024),
+		Title:           title,
+		PayloadSummary:  payloadSummary,
 		Status:          status,
 		UpstreamCode:    result.UpstreamCode,
 		UpstreamMessage: firstNonEmpty(result.UpstreamMessage, message),
@@ -137,15 +149,13 @@ func (o *Outbox) fail(item store.NotificationOutbox, channel store.NotificationC
 		Attempt:         attempt,
 		DedupKey:        item.DedupKey,
 		TriggeredBy:     "system",
-	}); err != nil {
-		return err
 	}
 
 	if attempt > len(retrySchedule) {
-		return o.store.MarkNotificationOutboxDropped(item.ID, attempt, firstNonEmpty(result.UpstreamMessage, message))
+		return o.store.RecordNotificationAttemptDropped(item.ID, delivery, attempt, firstNonEmpty(result.UpstreamMessage, message))
 	}
 	nextAttemptAt := time.Now().UTC().Add(retrySchedule[attempt-1]).Format("2006-01-02 15:04:05")
-	return o.store.UpdateNotificationOutboxRetry(item.ID, attempt, nextAttemptAt, firstNonEmpty(result.UpstreamMessage, message))
+	return o.store.RecordNotificationAttemptRetry(item.ID, delivery, attempt, nextAttemptAt, firstNonEmpty(result.UpstreamMessage, message))
 }
 
 func (o *Outbox) channelMutex(channelID int64) *sync.Mutex {

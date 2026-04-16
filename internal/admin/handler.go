@@ -118,6 +118,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("POST /admin/api/notifications/channels", h.createNotificationChannel)
 	handle("GET /admin/api/notifications/channels/{id}", h.getNotificationChannel)
 	handle("PUT /admin/api/notifications/channels/{id}", h.updateNotificationChannel)
+	handle("POST /admin/api/notifications/channels/{id}/enabled", h.setNotificationChannelEnabled)
 	handle("DELETE /admin/api/notifications/channels/{id}", h.deleteNotificationChannel)
 	handle("POST /admin/api/notifications/channels/{id}/test", h.testNotificationChannel)
 	handle("POST /admin/api/notifications/preview", h.previewNotifications)
@@ -1119,6 +1120,8 @@ func (h *Handler) pruneDataRetention(w http.ResponseWriter, r *http.Request) {
 		"total_logs":                      summary.TotalLogs,
 		"oldest_log_at":                   summary.OldestLogAt,
 		"newest_log_at":                   summary.NewestLogAt,
+		"total_notification_deliveries":   summary.TotalNotificationDeliveries,
+		"total_notification_outbox":       summary.TotalNotificationOutbox,
 	})
 }
 
@@ -1279,6 +1282,7 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 		cpaServices[i].APIKeyMasked = maskKey(cpaServices[i].APIKey)
 		cpaServices[i].APIKeySet = cpaServices[i].APIKey != ""
 		cpaServices[i].APIKey = ""
+		cpaServices[i].ManagementKey = ""
 	}
 
 	webutil.WriteData(w, 200, map[string]any{
@@ -1419,6 +1423,7 @@ func (h *Handler) getCpaService(w http.ResponseWriter, r *http.Request) {
 	svc.APIKeyMasked = maskKey(svc.APIKey)
 	svc.APIKeySet = svc.APIKey != ""
 	svc.APIKey = ""
+	svc.ManagementKey = ""
 	webutil.WriteData(w, 200, svc)
 }
 
@@ -1451,10 +1456,11 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 
 	if existing != nil {
 		svc := &store.CpaService{
-			Label:   req.Label,
-			BaseURL: strings.TrimRight(req.BaseURL, "/"),
-			APIKey:  req.APIKey,
-			Enabled: enabled,
+			Label:         req.Label,
+			BaseURL:       strings.TrimRight(req.BaseURL, "/"),
+			APIKey:        req.APIKey,
+			ManagementKey: existing.ManagementKey,
+			Enabled:       enabled,
 		}
 		if req.APIKey == "" {
 			svc.APIKey = existing.APIKey
@@ -1468,6 +1474,7 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 		svc.APIKeyMasked = maskKey(svc.APIKey)
 		svc.APIKeySet = svc.APIKey != ""
 		svc.APIKey = ""
+		svc.ManagementKey = ""
 		webutil.WriteData(w, 200, svc)
 	} else {
 		svc := &store.CpaService{
@@ -1490,6 +1497,7 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 		svc.APIKeyMasked = maskKey(svc.APIKey)
 		svc.APIKeySet = svc.APIKey != ""
 		svc.APIKey = ""
+		svc.ManagementKey = ""
 		webutil.WriteData(w, 201, svc)
 	}
 }

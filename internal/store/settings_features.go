@@ -170,6 +170,12 @@ func (s *Store) GetDataRetentionSummary(retentionDays int) (*DataRetentionSummar
 	if newest.Valid {
 		summary.NewestLogAt = &newest.String
 	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM notification_deliveries`).Scan(&summary.TotalNotificationDeliveries); err != nil {
+		return nil, err
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM notification_outbox`).Scan(&summary.TotalNotificationOutbox); err != nil {
+		return nil, err
+	}
 	return &summary, nil
 }
 

@@ -266,6 +266,8 @@ export interface DataRetentionSummary {
   total_logs: number;
   oldest_log_at: string | null;
   newest_log_at: string | null;
+  total_notification_deliveries: number;
+  total_notification_outbox: number;
 }
 
 export interface CpaService {
@@ -274,7 +276,6 @@ export interface CpaService {
   base_url: string;
   api_key_set: boolean;
   api_key_masked: string;
-  management_key?: string;
   enabled: boolean;
   status: "unknown" | "healthy" | "error";
   last_checked_at: string | null;

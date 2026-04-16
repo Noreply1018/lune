@@ -10,6 +10,7 @@ import { compact, latency, pct, relativeTime, shortDate, tokenCount } from "@/li
 import type {
   NotificationChannel,
   NotificationDelivery,
+  NotificationEventType,
   Overview,
   Pool,
   RequestLog,
@@ -343,6 +344,7 @@ export default function ActivityPage() {
   const [filterModel, setFilterModel] = useState("all");
   const [expandedRowId, setExpandedRowId] = useState<number | null>(null);
   const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
+  const [notificationEventTypes, setNotificationEventTypes] = useState<NotificationEventType[]>([]);
   const [notificationDeliveries, setNotificationDeliveries] = useState<NotificationDelivery[]>([]);
   const [notificationFilterChannel, setNotificationFilterChannel] = useState("all");
   const [notificationFilterEvent, setNotificationFilterEvent] = useState("all");
@@ -351,6 +353,7 @@ export default function ActivityPage() {
   const [notificationExpandedId, setNotificationExpandedId] = useState<number | null>(null);
   const [notificationLoadingMore, setNotificationLoadingMore] = useState(false);
   const [notificationHasMore, setNotificationHasMore] = useState(false);
+  const [notificationError, setNotificationError] = useState<string | null>(null);
   const loadRequestIdRef = useRef(0);
   const notificationRequestIdRef = useRef(0);
 
@@ -358,20 +361,23 @@ export default function ActivityPage() {
     const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     setError(null);
-    loadNotificationDeliveries(true);
+    setNotificationError(null);
+    void loadNotificationDeliveries(true);
     Promise.all([
       api.get<Overview>("/overview"),
       api.get<Pool[]>("/pools"),
       api.get<NotificationChannel[]>("/notifications/channels"),
+      api.get<NotificationEventType[]>("/notifications/event-types"),
       loadUsageBundle(range),
     ])
-      .then(([overviewData, poolData, channelData, usageData]) => {
+      .then(([overviewData, poolData, channelData, eventTypeData, usageData]) => {
         if (requestId !== loadRequestIdRef.current) {
           return;
         }
         setOverview(overviewData);
         setPools(poolData ?? []);
         setNotificationChannels(channelData ?? []);
+        setNotificationEventTypes(eventTypeData ?? []);
         setUsage(usageData);
         setLastUpdated(new Date().toISOString());
       })
@@ -415,6 +421,7 @@ export default function ActivityPage() {
     }
     if (reset) {
       setNotificationLoadingMore(false);
+      setNotificationError(null);
     } else {
       setNotificationLoadingMore(true);
     }
@@ -432,7 +439,7 @@ export default function ActivityPage() {
         if (requestId !== notificationRequestIdRef.current) {
           return;
         }
-        setError(err instanceof Error ? err.message : "通知历史加载失败");
+        setNotificationError(err instanceof Error ? err.message : "通知历史加载失败");
       })
       .finally(() => {
         if (requestId === notificationRequestIdRef.current) {
@@ -467,9 +474,10 @@ export default function ActivityPage() {
     return Array.from(values).sort();
   }, [usage]);
 
-  const notificationEvents = useMemo(() => {
-    return Array.from(new Set(notificationDeliveries.map((item) => item.event))).sort();
-  }, [notificationDeliveries]);
+  const notificationEvents = useMemo(
+    () => notificationEventTypes.map((item) => item.event),
+    [notificationEventTypes],
+  );
 
   const filteredLogs = useMemo(() => {
     const logs = usage?.logs ?? [];
@@ -870,6 +878,10 @@ export default function ActivityPage() {
             <option value="test">test</option>
           </select>
         </div>
+
+        {notificationError ? (
+          <p className="mt-4 text-sm text-status-red">{notificationError}</p>
+        ) : null}
 
         <div className="mt-4 overflow-x-auto rounded-[1.45rem] border border-moon-200/60">
           <table className="min-w-full text-left text-sm">

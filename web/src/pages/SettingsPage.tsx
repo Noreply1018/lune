@@ -107,6 +107,7 @@ type NotificationChannelDraft = {
   type: NotificationChannel["type"];
   enabled: boolean;
   config: Record<string, string>;
+  preserved_secrets: Record<string, boolean>;
   subscriptions: NotificationSubscription[];
   title_template: string;
   body_template: string;
@@ -121,6 +122,7 @@ type NotificationChannelField = {
 };
 
 const DEFAULT_SUBSCRIPTION: NotificationSubscription = { event: "*" };
+const SECRET_PLACEHOLDER = "***";
 
 const CHANNEL_TYPE_META: Record<
   NotificationChannel["type"],
@@ -260,7 +262,9 @@ export default function SettingsPage() {
   );
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [eventTypes, setEventTypes] = useState<NotificationEventType[]>([]);
-  const [previewLoading, setPreviewLoading] = useState(false);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [notificationsError, setNotificationsError] = useState<string | null>(null);
+  const [previewRunning, setPreviewRunning] = useState(false);
   const [channelDialogOpen, setChannelDialogOpen] = useState(false);
   const [channelDraft, setChannelDraft] = useState<NotificationChannelDraft>(
     emptyChannelDraft("generic_webhook"),
@@ -694,7 +698,7 @@ export default function SettingsPage() {
 
   async function reloadNotifications(silent = false) {
     if (!silent) {
-      setPreviewLoading(true);
+      setNotificationsLoading(true);
     }
     try {
       const [channelData, eventTypeData] = await Promise.all([
@@ -715,15 +719,19 @@ export default function SettingsPage() {
           };
         });
       }
+      setNotificationsError(null);
+    } catch (err) {
+      setNotificationsError(err instanceof Error ? err.message : "通知渠道加载失败");
+      throw err;
     } finally {
       if (!silent) {
-        setPreviewLoading(false);
+        setNotificationsLoading(false);
       }
     }
   }
 
   async function runNotificationPreview() {
-    setPreviewLoading(true);
+    setPreviewRunning(true);
     try {
       const items = await api.post<NotificationPreviewItem[]>(
         "/notifications/preview",
@@ -733,7 +741,7 @@ export default function SettingsPage() {
     } catch (err) {
       toast(err instanceof Error ? err.message : "预览失败", "error");
     } finally {
-      setPreviewLoading(false);
+      setPreviewRunning(false);
     }
   }
 
@@ -754,11 +762,12 @@ export default function SettingsPage() {
     }
     setChannelSaving(true);
     try {
+      const config = buildChannelConfig(channelDraft);
       const payload = {
         name: channelDraft.name.trim(),
         type: channelDraft.type,
         enabled: channelDraft.enabled,
-        config: buildChannelConfig(channelDraft),
+        config,
         subscriptions:
           channelDraft.subscriptions.filter((item) => item.event.trim()).length > 0
             ? channelDraft.subscriptions.filter((item) => item.event.trim())
@@ -813,15 +822,7 @@ export default function SettingsPage() {
       ),
     );
     try {
-      await api.put(`/notifications/channels/${channel.id}`, {
-        name: channel.name,
-        type: channel.type,
-        enabled,
-        config: channel.config,
-        subscriptions: channel.subscriptions,
-        title_template: channel.title_template,
-        body_template: channel.body_template,
-      });
+      await api.post(`/notifications/channels/${channel.id}/enabled`, { enabled });
       toast(enabled ? "渠道已启用" : "渠道已停用");
       await reloadNotifications(true);
     } catch (err) {
@@ -1117,9 +1118,9 @@ export default function SettingsPage() {
                     variant="outline"
                     className="rounded-full"
                     onClick={() => void runNotificationPreview()}
-                    disabled={previewLoading}
+                    disabled={previewRunning}
                   >
-                    {previewLoading ? (
+                    {previewRunning ? (
                       <RefreshCw className="size-4 animate-spin" />
                     ) : (
                       <CircleDot className="size-4" />
@@ -1205,12 +1206,12 @@ export default function SettingsPage() {
                 size="sm"
                 className="rounded-full"
                 onClick={() => void reloadNotifications()}
-                disabled={previewLoading}
+                disabled={notificationsLoading}
               >
                 <RefreshCw
                   className={cn(
                     "size-4",
-                    previewLoading ? "animate-spin" : "",
+                    notificationsLoading ? "animate-spin" : "",
                   )}
                 />
                 Refresh
@@ -1218,7 +1219,11 @@ export default function SettingsPage() {
             </div>
 
             <div className="space-y-3">
-              {channels.length ? (
+              {notificationsError ? (
+                <div className="rounded-[1.2rem] border border-status-red/18 bg-status-red/6 px-4 py-4 text-sm text-status-red">
+                  {notificationsError}
+                </div>
+              ) : channels.length ? (
                 channels.map((channel) => (
                   <div
                     key={channel.id}
@@ -1554,6 +1559,9 @@ export default function SettingsPage() {
                 }
               />
             </div>
+            <p className="text-xs text-moon-350">
+              通知历史 {Number(retentionSummary?.total_notification_deliveries ?? 0).toLocaleString()} 条，队列中 {Number(retentionSummary?.total_notification_outbox ?? 0).toLocaleString()} 条。
+            </p>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm text-moon-450">
                 当前清理规则为 {retentionSummary?.retention_days ?? 0} 天。
@@ -1654,6 +1662,9 @@ export default function SettingsPage() {
                       id: current.id,
                       name: current.name,
                       enabled: current.enabled,
+                      subscriptions: current.subscriptions,
+                      title_template: current.title_template,
+                      body_template: current.body_template,
                     }))
                   }
                 >
@@ -1711,6 +1722,10 @@ export default function SettingsPage() {
                     onChange={(event) =>
                       setChannelDraft((current) => ({
                         ...current,
+                        preserved_secrets: {
+                          ...current.preserved_secrets,
+                          [field.key]: false,
+                        },
                         config: {
                           ...current.config,
                           [field.key]: event.target.value,
@@ -1732,7 +1747,7 @@ export default function SettingsPage() {
                 <div>
                   <p className="text-sm font-medium text-moon-700">Subscriptions</p>
                   <p className="text-xs text-moon-400">
-                    `*` 表示全部事件；可按最低严重级别继续收窄。
+                    <code>*</code> 表示全部事件；可按最低严重级别继续收窄。
                   </p>
                 </div>
                 <Button
@@ -1896,7 +1911,7 @@ export default function SettingsPage() {
         open={Boolean(channelDeleting)}
         onOpenChange={(open) => !open && setChannelDeleting(null)}
         title="删除通知渠道"
-        description={`删除后，${channelDeleting?.name ?? "该渠道"} 的历史投递记录仍会保留，但后续不会再投递。`}
+        description={`删除后，${channelDeleting?.name ?? "该渠道"} 的投递队列会清空，已有历史记录会保留，但后续不会再投递。`}
         onConfirm={confirmDeleteChannel}
       />
 
@@ -2108,6 +2123,7 @@ function emptyChannelDraft(
     type,
     enabled: true,
     config: { ...meta.defaults },
+    preserved_secrets: {},
     subscriptions: [DEFAULT_SUBSCRIPTION],
     title_template: "",
     body_template: "",
@@ -2120,7 +2136,7 @@ function channelToDraft(channel: NotificationChannel): NotificationChannelDraft 
     name: channel.name,
     type: channel.type,
     enabled: channel.enabled,
-    config: configToDraft(channel.type, channel.config),
+    ...configToDraft(channel.type, channel.config),
     subscriptions:
       channel.subscriptions.length > 0 ? channel.subscriptions : [DEFAULT_SUBSCRIPTION],
     title_template: channel.title_template,
@@ -2131,9 +2147,10 @@ function channelToDraft(channel: NotificationChannel): NotificationChannelDraft 
 function configToDraft(
   type: NotificationChannel["type"],
   config: Record<string, unknown>,
-): Record<string, string> {
-  const meta = CHANNEL_TYPE_META[type];
+): Pick<NotificationChannelDraft, "config" | "preserved_secrets"> {
+  const meta = CHANNEL_TYPE_META[type] ?? CHANNEL_TYPE_META.generic_webhook;
   const next = { ...meta.defaults };
+  const preservedSecrets: Record<string, boolean> = {};
   for (const field of meta.fields) {
     if (field.key === "headers_json") {
       const headers = config.headers;
@@ -2150,20 +2167,42 @@ function configToDraft(
       continue;
     }
     const raw = config[field.key];
+    if (field.secret && raw === SECRET_PLACEHOLDER) {
+      next[field.key] = "";
+      preservedSecrets[field.key] = true;
+      continue;
+    }
     next[field.key] = raw == null ? meta.defaults[field.key] ?? "" : String(raw);
   }
-  return next;
+  return { config: next, preserved_secrets: preservedSecrets };
 }
 
 function buildChannelConfig(
   draft: NotificationChannelDraft,
 ): Record<string, unknown> {
   const value = draft.config;
+  const preserveSecret = (key: string, current: string) =>
+    draft.preserved_secrets[key] && current.trim() === "" ? SECRET_PLACEHOLDER : current;
   switch (draft.type) {
     case "generic_webhook": {
-      const headers = value.headers_json.trim()
-        ? (JSON.parse(value.headers_json) as Record<string, string>)
-        : undefined;
+      let headers: Record<string, string> | undefined;
+      if (value.headers_json.trim()) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(value.headers_json);
+        } catch {
+          throw new Error("Headers JSON 必须是合法 JSON 对象");
+        }
+        if (
+          !parsed ||
+          Array.isArray(parsed) ||
+          typeof parsed !== "object" ||
+          Object.values(parsed as Record<string, unknown>).some((item) => typeof item !== "string")
+        ) {
+          throw new Error('Headers JSON 必须是 { "Header": "value" } 形式的字符串对象');
+        }
+        headers = parsed as Record<string, string>;
+      }
       return {
         schema: 1,
         url: value.url.trim(),
@@ -2182,7 +2221,7 @@ function buildChannelConfig(
       return {
         schema: 1,
         webhook_url: value.webhook_url.trim(),
-        secret: value.secret,
+        secret: preserveSecret("secret", value.secret),
         format: value.format.trim() || "post",
       };
     case "email_smtp":
@@ -2191,7 +2230,7 @@ function buildChannelConfig(
         host: value.host.trim(),
         port: Number(value.port || "0"),
         username: value.username,
-        password: value.password,
+        password: preserveSecret("password", value.password),
         from: value.from.trim(),
         to: splitCSV(value.to_csv),
         tls_mode: value.tls_mode.trim() || "starttls",

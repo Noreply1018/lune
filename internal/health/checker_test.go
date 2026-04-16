@@ -88,8 +88,6 @@ func TestSendWebhookNotificationsDedupesWithinBackoffWindow(t *testing.T) {
 	createTestChannel(t, st, server.URL)
 
 	if err := st.UpdateSettings(map[string]string{
-		"webhook_enabled":               syscfg.BoolString(true),
-		"webhook_url":                   server.URL,
 		"notification_error_enabled":    syscfg.BoolString(true),
 		"notification_expiring_enabled": syscfg.BoolString(false),
 	}); err != nil {
@@ -199,8 +197,6 @@ func TestSendWebhookNotificationsRetriesAfterFailure(t *testing.T) {
 	createTestChannel(t, st, server.URL)
 
 	if err := st.UpdateSettings(map[string]string{
-		"webhook_enabled":               syscfg.BoolString(true),
-		"webhook_url":                   server.URL,
 		"notification_error_enabled":    syscfg.BoolString(true),
 		"notification_expiring_enabled": syscfg.BoolString(false),
 	}); err != nil {

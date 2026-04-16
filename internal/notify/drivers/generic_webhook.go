@@ -71,6 +71,9 @@ func (d *GenericWebhookDriver) Send(ctx context.Context, n notify.Notification, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for key, value := range cfg.Headers {
+		if strings.EqualFold(key, "Content-Type") {
+			continue
+		}
 		req.Header.Set(key, value)
 	}
 	start := time.Now()

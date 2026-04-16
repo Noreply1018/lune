@@ -15,6 +15,21 @@ import (
 	"lune/internal/store"
 )
 
+func createNotificationChannelForTest(t *testing.T, st *store.Store) int64 {
+	t.Helper()
+	id, err := st.CreateNotificationChannel(&store.NotificationChannel{
+		Name:          "Ops",
+		Type:          "generic_webhook",
+		Enabled:       true,
+		Config:        json.RawMessage(`{"schema":1,"url":"https://example.com/hook"}`),
+		Subscriptions: []store.NotificationSubscription{{Event: "*"}},
+	})
+	if err != nil {
+		t.Fatalf("create notification channel: %v", err)
+	}
+	return id
+}
+
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.New(filepath.Join(t.TempDir(), "lune-test.db"))
@@ -330,5 +345,245 @@ func TestImportConfigRejectsInvalidSettingValue(t *testing.T) {
 	}
 	if settings["request_timeout"] != "" {
 		t.Fatalf("expected invalid setting import to be rejected")
+	}
+}
+
+func TestPreviewNotificationsAllowsEmptyBody(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/notifications/preview", http.NoBody)
+	rr := httptest.NewRecorder()
+
+	handler.previewNotifications(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data []notify.PreviewItem `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode preview response: %v", err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("expected no preview items without channels, got %d", len(resp.Data))
+	}
+}
+
+func TestTestNotificationChannelReturns404WhenMissing(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/notifications/channels/999/test", http.NoBody)
+	req.SetPathValue("id", "999")
+	rr := httptest.NewRecorder()
+
+	handler.testNotificationChannel(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestDeleteNotificationChannelReturns404WhenMissing(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/notifications/channels/999", http.NoBody)
+	req.SetPathValue("id", "999")
+	rr := httptest.NewRecorder()
+
+	handler.deleteNotificationChannel(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSetNotificationChannelEnabledOnlyUpdatesEnabledField(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	channelID := createNotificationChannelForTest(t, st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("/admin/api/notifications/channels/%d/enabled", channelID),
+		bytes.NewBufferString(`{"enabled":false}`),
+	)
+	req.SetPathValue("id", fmt.Sprintf("%d", channelID))
+	rr := httptest.NewRecorder()
+
+	handler.setNotificationChannelEnabled(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	channel, err := st.GetNotificationChannel(channelID)
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+	if channel == nil {
+		t.Fatalf("expected channel to exist")
+	}
+	if channel.Enabled {
+		t.Fatalf("expected channel to be disabled")
+	}
+	var cfg struct {
+		Schema int    `json:"schema"`
+		URL    string `json:"url"`
+	}
+	if err := json.Unmarshal(channel.Config, &cfg); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if cfg.URL != "https://example.com/hook" {
+		t.Fatalf("expected config URL to remain unchanged, got %q", cfg.URL)
+	}
+}
+
+func TestCreateNotificationChannelRejectsUnknownType(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/notifications/channels", bytes.NewBufferString(`{
+		"name":"Bad",
+		"type":"bogus",
+		"enabled":true,
+		"config":{"password":"secret"}
+	}`))
+	rr := httptest.NewRecorder()
+
+	handler.createNotificationChannel(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestGetCpaServiceDoesNotExposeManagementKey(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       "https://cpa.example.com",
+		APIKey:        "api-key",
+		ManagementKey: "manage-secret",
+		Enabled:       true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/cpa/service", http.NoBody)
+	rr := httptest.NewRecorder()
+	handler.getCpaService(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := resp.Data["management_key"]; ok {
+		t.Fatalf("expected management_key to be omitted from response")
+	}
+}
+
+func TestUpsertCpaServicePreservesManagementKey(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	id, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       "https://cpa.example.com",
+		APIKey:        "api-key",
+		ManagementKey: "manage-secret",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodPut, "/admin/api/cpa/service", bytes.NewBufferString(`{
+		"label":"Updated CPA",
+		"base_url":"https://cpa.example.com/v2",
+		"enabled":true
+	}`))
+	rr := httptest.NewRecorder()
+	handler.upsertCpaService(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	svc, err := st.GetCpaServiceByID(id)
+	if err != nil {
+		t.Fatalf("get cpa service: %v", err)
+	}
+	if svc == nil {
+		t.Fatalf("expected cpa service to exist")
+	}
+	if svc.ManagementKey != "manage-secret" {
+		t.Fatalf("expected management key to be preserved, got %q", svc.ManagementKey)
+	}
+}
+
+func TestExportDoesNotExposeManagementKey(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       "https://cpa.example.com",
+		APIKey:        "api-key",
+		ManagementKey: "manage-secret",
+		Enabled:       true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/export", http.NoBody)
+	rr := httptest.NewRecorder()
+	handler.getExport(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			CpaServices []map[string]any `json:"cpa_services"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode export response: %v", err)
+	}
+	if len(resp.Data.CpaServices) != 1 {
+		t.Fatalf("expected 1 cpa service, got %d", len(resp.Data.CpaServices))
+	}
+	if _, ok := resp.Data.CpaServices[0]["management_key"]; ok {
+		t.Fatalf("expected management_key to be omitted from export")
 	}
 }

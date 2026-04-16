@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -36,8 +37,14 @@ func (d *WeChatWorkBotDriver) ValidateConfig(raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return err
 	}
-	if !strings.Contains(cfg.WebhookURL, "key=") {
-		return fmt.Errorf("webhook_url must contain key=")
+	normalized := strings.TrimSpace(cfg.WebhookURL)
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed == nil {
+		return fmt.Errorf("webhook_url must be a valid WeCom bot webhook URL")
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Host))
+	if parsed.Scheme != "https" || host != "qyapi.weixin.qq.com" || parsed.Path != "/cgi-bin/webhook/send" || strings.TrimSpace(parsed.Query().Get("key")) == "" {
+		return fmt.Errorf("webhook_url must be a valid WeCom bot webhook URL")
 	}
 	return nil
 }
@@ -68,9 +75,26 @@ func (d *WeChatWorkBotDriver) Send(ctx context.Context, n notify.Notification, r
 			"mentioned_mobile_list": cfg.MentionMobileList,
 		}
 	} else {
+		mentions := make([]string, 0, len(cfg.MentionList)+len(cfg.MentionMobileList))
+		for _, item := range cfg.MentionList {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				mentions = append(mentions, "<@"+item+">")
+			}
+		}
+		for _, item := range cfg.MentionMobileList {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				mentions = append(mentions, "<@"+item+">")
+			}
+		}
+		content := fmt.Sprintf("## %s\n\n%s", rendered.Title, rendered.Body)
+		if len(mentions) > 0 {
+			content += "\n\n" + strings.Join(mentions, " ")
+		}
 		payload["msgtype"] = "markdown"
 		payload["markdown"] = map[string]any{
-			"content": fmt.Sprintf("## %s\n\n%s", rendered.Title, rendered.Body),
+			"content": content,
 		}
 	}
 	body, err := json.Marshal(payload)
@@ -103,6 +127,8 @@ func (d *WeChatWorkBotDriver) Send(ctx context.Context, n notify.Notification, r
 		ErrMsg  string `json:"errmsg"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		result.UpstreamCode = "parse_error"
+		result.UpstreamMessage = err.Error()
 		return result, err
 	}
 	result.UpstreamCode = fmt.Sprintf("errcode=%d", parsed.ErrCode)

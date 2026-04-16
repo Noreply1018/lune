@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"lune/internal/store"
@@ -66,10 +68,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, n Notification) error {
 		}
 		id, err := d.store.InsertNotificationOutbox(&item)
 		if err != nil {
+			if strings.Contains(err.Error(), "idx_notification_outbox_active_unique") || strings.Contains(strings.ToLower(err.Error()), "unique") {
+				continue
+			}
 			return err
 		}
 		item.ID = id
 		if err := d.outbox.AttemptOne(ctx, item, ch, false); err != nil {
+			slog.Error("notification outbox immediate attempt failed", "channel_id", ch.ID, "channel_name", ch.Name, "event", n.Event, "err", err)
 			continue
 		}
 	}

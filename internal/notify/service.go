@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ type Service struct {
 	outbox     *Outbox
 	dispatcher *Dispatcher
 }
+
+var ErrNotificationChannelNotFound = errors.New("notification channel not found")
 
 func NewService(st *store.Store) *Service {
 	return NewServiceWithRegistry(st, NewRegistry())
@@ -153,7 +156,7 @@ func (s *Service) SendChannelTest(ctx context.Context, channelID int64, n Notifi
 		return Result{}, err
 	}
 	if channel == nil {
-		return Result{}, fmt.Errorf("notification channel not found")
+		return Result{}, ErrNotificationChannelNotFound
 	}
 	driver, ok := s.registry.Get(channel.Type)
 	if !ok {
@@ -195,7 +198,10 @@ func (s *Service) SendChannelTest(ctx context.Context, channelID int64, n Notifi
 }
 
 func (s *Service) SendLegacyWebhookTest(ctx context.Context, rawURL string, n Notification) (Result, error) {
-	driver := s.registry.MustGet("generic_webhook")
+	driver, ok := s.registry.Get("generic_webhook")
+	if !ok {
+		return Result{}, fmt.Errorf("generic_webhook driver is not registered")
+	}
 	cfg, err := json.Marshal(map[string]any{
 		"schema": 1,
 		"url":    strings.TrimSpace(rawURL),
@@ -252,10 +258,11 @@ func errorString(err error) string {
 }
 
 func truncateString(value string, limit int) string {
-	if limit <= 0 || len(value) <= limit {
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
 		return value
 	}
-	return value[:limit]
+	return string(runes[:limit])
 }
 
 type PreviewItem struct {

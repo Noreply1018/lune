@@ -1,7 +1,10 @@
 package admin
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -33,6 +36,10 @@ type notificationChannelRequest struct {
 	Subscriptions []store.NotificationSubscription `json:"subscriptions"`
 	TitleTemplate string                           `json:"title_template"`
 	BodyTemplate  string                           `json:"body_template"`
+}
+
+type notificationChannelEnabledRequest struct {
+	Enabled bool `json:"enabled"`
 }
 
 func (h *Handler) listNotificationChannels(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +149,11 @@ func (h *Handler) updateNotificationChannel(w http.ResponseWriter, r *http.Reque
 	if len(req.Subscriptions) == 0 {
 		req.Subscriptions = []store.NotificationSubscription{{Event: "*"}}
 	}
-	encodedConfig, err := h.notifier.Registry().MergeConfig(req.Type, existing.Config, req.Config)
+	baseConfig := existing.Config
+	if req.Type != existing.Type {
+		baseConfig = nil
+	}
+	encodedConfig, err := h.notifier.Registry().MergeConfig(req.Type, baseConfig, req.Config)
 	if err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", err.Error())
 		return
@@ -177,10 +188,47 @@ func (h *Handler) deleteNotificationChannel(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err := h.store.DeleteNotificationChannel(id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			webutil.WriteAdminError(w, 404, "not_found", "notification channel not found")
+			return
+		}
 		h.internalError(w, err)
 		return
 	}
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) setNotificationChannelEnabled(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	channel, err := h.store.GetNotificationChannel(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if channel == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "notification channel not found")
+		return
+	}
+	var req notificationChannelEnabledRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	if err := h.store.SetNotificationChannelEnabled(id, req.Enabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			webutil.WriteAdminError(w, 404, "not_found", "notification channel not found")
+			return
+		}
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteData(w, 200, map[string]any{
+		"status":  "ok",
+		"enabled": req.Enabled,
+	})
 }
 
 func (h *Handler) testNotificationChannel(w http.ResponseWriter, r *http.Request) {
@@ -193,10 +241,17 @@ func (h *Handler) testNotificationChannel(w http.ResponseWriter, r *http.Request
 		Severity string `json:"severity"`
 	}
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+			return
+		}
 	}
 	result, err := h.notifier.SendChannelTest(r.Context(), id, h.notifier.BuildTestNotification(req.Event, req.Severity))
 	if err != nil {
+		if errors.Is(err, notify.ErrNotificationChannelNotFound) {
+			webutil.WriteAdminError(w, 404, "not_found", "notification channel not found")
+			return
+		}
 		webutil.WriteAdminError(w, 502, "channel_test_failed", firstNonEmpty(result.UpstreamMessage, err.Error()))
 		return
 	}
@@ -208,7 +263,7 @@ func (h *Handler) previewNotifications(w http.ResponseWriter, r *http.Request) {
 		Event    string `json:"event"`
 		Severity string `json:"severity"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
@@ -242,6 +297,10 @@ func (h *Handler) listNotificationDeliveries(w http.ResponseWriter, r *http.Requ
 		if id, err := strconv.ParseInt(raw, 10, 64); err == nil {
 			filter.BeforeID = id
 		}
+	}
+	if err := store.ValidateNotificationDeliveryCursor(filter.Before); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", err.Error())
+		return
 	}
 	items, err := h.store.ListNotificationDeliveries(filter)
 	if err != nil {

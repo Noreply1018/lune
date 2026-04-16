@@ -37,7 +37,7 @@ func (d *EmailSMTPDriver) ValidateConfig(raw json.RawMessage) error {
 	if strings.TrimSpace(cfg.Host) == "" || cfg.Port <= 0 || strings.TrimSpace(cfg.From) == "" || len(cfg.To) == 0 {
 		return fmt.Errorf("host, port, from and to are required")
 	}
-	switch normalizeTLSMode(cfg.TLSMode) {
+	switch strings.ToLower(strings.TrimSpace(cfg.TLSMode)) {
 	case "starttls", "tls", "none":
 	default:
 		return fmt.Errorf("tls_mode must be starttls, tls, or none")
@@ -46,7 +46,6 @@ func (d *EmailSMTPDriver) ValidateConfig(raw json.RawMessage) error {
 }
 
 func (d *EmailSMTPDriver) Send(ctx context.Context, n notify.Notification, runtime notify.ChannelRuntime) (notify.Result, error) {
-	_ = ctx
 	var cfg struct {
 		Host     string   `json:"host"`
 		Port     int      `json:"port"`
@@ -73,17 +72,15 @@ func (d *EmailSMTPDriver) Send(ctx context.Context, n notify.Notification, runti
 		rendered.Body,
 	}, "\r\n")
 	start := time.Now()
-	err = sendSMTPMail(cfg.Host, cfg.Port, normalizeTLSMode(cfg.TLSMode), auth, cfg.From, cfg.To, []byte(body))
-	result := notify.Result{
-		LatencyMS:    time.Since(start).Milliseconds(),
-		UpstreamCode: "smtp 250",
-	}
+	err = sendSMTPMail(ctx, cfg.Host, cfg.Port, normalizeTLSMode(cfg.TLSMode), auth, cfg.From, cfg.To, []byte(body))
+	result := notify.Result{LatencyMS: time.Since(start).Milliseconds()}
 	if err != nil {
 		result.UpstreamCode = "smtp error"
 		result.UpstreamMessage = err.Error()
 		return result, err
 	}
 	result.OK = true
+	result.UpstreamCode = "smtp accepted"
 	result.UpstreamMessage = "accepted"
 	return result, nil
 }
@@ -108,38 +105,59 @@ func smtpAuth(username, password, host string) smtp.Auth {
 	return smtp.PlainAuth("", username, password, host)
 }
 
-func sendSMTPMail(host string, port int, tlsMode string, auth smtp.Auth, from string, to []string, body []byte) error {
+func sendSMTPMail(ctx context.Context, host string, port int, tlsMode string, auth smtp.Auth, from string, to []string, body []byte) error {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	switch tlsMode {
 	case "none":
-		if auth == nil {
-			return smtp.SendMail(addr, nil, from, to, body)
-		}
-		return sendSMTPWithClient(addr, host, false, false, auth, from, to, body)
+		return sendSMTPWithClient(ctx, addr, host, false, false, auth, from, to, body)
 	case "tls":
-		return sendSMTPWithClient(addr, host, true, false, auth, from, to, body)
+		return sendSMTPWithClient(ctx, addr, host, true, false, auth, from, to, body)
 	default:
-		return sendSMTPWithClient(addr, host, false, true, auth, from, to, body)
+		return sendSMTPWithClient(ctx, addr, host, false, true, auth, from, to, body)
 	}
 }
 
-func sendSMTPWithClient(addr, host string, implicitTLS, useStartTLS bool, auth smtp.Auth, from string, to []string, body []byte) error {
+func sendSMTPWithClient(ctx context.Context, addr, host string, implicitTLS, useStartTLS bool, auth smtp.Auth, from string, to []string, body []byte) error {
 	var (
 		conn net.Conn
 		err  error
 	)
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	if implicitTLS {
-		conn, err = tls.Dial("tcp", addr, &tls.Config{
+		rawConn, dialErr := dialer.DialContext(ctx, "tcp", addr)
+		if dialErr != nil {
+			return dialErr
+		}
+		tlsConn := tls.Client(rawConn, &tls.Config{
 			ServerName: host,
 			MinVersion: tls.VersionTLS12,
 		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = rawConn.Close()
+			return err
+		}
+		conn = tlsConn
 	} else {
-		conn, err = net.DialTimeout("tcp", addr, 10*time.Second)
+		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return err
+		}
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-stop:
+		}
+	}()
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
@@ -148,13 +166,14 @@ func sendSMTPWithClient(addr, host string, implicitTLS, useStartTLS bool, auth s
 	defer client.Close()
 
 	if !implicitTLS && useStartTLS {
-		if ok, _ := client.Extension("STARTTLS"); ok {
-			if err := client.StartTLS(&tls.Config{
-				ServerName: host,
-				MinVersion: tls.VersionTLS12,
-			}); err != nil {
-				return err
-			}
+		if ok, _ := client.Extension("STARTTLS"); !ok {
+			return fmt.Errorf("server does not support STARTTLS")
+		}
+		if err := client.StartTLS(&tls.Config{
+			ServerName: host,
+			MinVersion: tls.VersionTLS12,
+		}); err != nil {
+			return err
 		}
 	}
 	if auth != nil {

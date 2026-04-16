@@ -190,10 +190,12 @@ type SystemNotification struct {
 }
 
 type DataRetentionSummary struct {
-	RetentionDays int     `json:"retention_days"`
-	TotalLogs     int64   `json:"total_logs"`
-	OldestLogAt   *string `json:"oldest_log_at"`
-	NewestLogAt   *string `json:"newest_log_at"`
+	RetentionDays               int     `json:"retention_days"`
+	TotalLogs                   int64   `json:"total_logs"`
+	OldestLogAt                 *string `json:"oldest_log_at"`
+	NewestLogAt                 *string `json:"newest_log_at"`
+	TotalNotificationDeliveries int64   `json:"total_notification_deliveries"`
+	TotalNotificationOutbox     int64   `json:"total_notification_outbox"`
 }
 
 // LatencyBucket holds percentile latencies for a single time bucket.

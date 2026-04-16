@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,7 +20,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 5
+const v3SchemaVersion = 6
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -143,7 +144,7 @@ CREATE TABLE IF NOT EXISTS notification_channels (
 
 CREATE TABLE IF NOT EXISTS notification_outbox (
     id               INTEGER PRIMARY KEY,
-    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
+    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id),
     event            TEXT NOT NULL,
     severity         TEXT NOT NULL,
     payload          TEXT NOT NULL,
@@ -158,7 +159,7 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
 
 CREATE TABLE IF NOT EXISTS notification_deliveries (
     id                INTEGER PRIMARY KEY,
-    channel_id        INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
+    channel_id        INTEGER NOT NULL,
     channel_name      TEXT NOT NULL DEFAULT '',
     channel_type      TEXT NOT NULL DEFAULT '',
     event             TEXT NOT NULL,
@@ -176,8 +177,10 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending ON notification_outbox(status, next_attempt_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_active_unique ON notification_outbox(channel_id, dedup_key) WHERE status IN ('pending', 'retrying');
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_recent ON notification_deliveries(channel_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_deliveries(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_name_unique ON notification_channels(name);
 `
 
 func New(dbPath string) (*Store, error) {
@@ -222,10 +225,13 @@ func (s *Store) migrateV3(dbPath string) error {
 		return nil // already at v3
 	}
 
-	if ver == 4 {
-		slog.Info("migrating schema v4 -> v5")
+	if ver == 3 || ver == 4 || ver == 5 {
+		slog.Info("migrating schema to v6", "from_version", ver)
 		if err := s.createNotificationSchema(); err != nil {
 			return fmt.Errorf("create notification schema: %w", err)
+		}
+		if err := s.migrateNotificationForeignKeys(); err != nil {
+			return fmt.Errorf("migrate notification foreign keys: %w", err)
 		}
 		if err := s.migrateLegacyWebhookChannel(); err != nil {
 			return fmt.Errorf("migrate legacy webhook channel: %w", err)
@@ -303,7 +309,7 @@ CREATE TABLE IF NOT EXISTS notification_channels (
 
 CREATE TABLE IF NOT EXISTS notification_outbox (
     id               INTEGER PRIMARY KEY,
-    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
+    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id),
     event            TEXT NOT NULL,
     severity         TEXT NOT NULL,
     payload          TEXT NOT NULL,
@@ -318,7 +324,7 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
 
 CREATE TABLE IF NOT EXISTS notification_deliveries (
     id                INTEGER PRIMARY KEY,
-    channel_id        INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
+    channel_id        INTEGER NOT NULL,
     channel_name      TEXT NOT NULL DEFAULT '',
     channel_type      TEXT NOT NULL DEFAULT '',
     event             TEXT NOT NULL,
@@ -336,10 +342,95 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending ON notification_outbox(status, next_attempt_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_active_unique ON notification_outbox(channel_id, dedup_key) WHERE status IN ('pending', 'retrying');
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_recent ON notification_deliveries(channel_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_deliveries(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_name_unique ON notification_channels(name);
 `)
 	return err
+}
+
+func (s *Store) migrateNotificationForeignKeys() error {
+	outboxExists, err := s.tableExists("notification_outbox")
+	if err != nil {
+		return err
+	}
+	deliveriesExists, err := s.tableExists("notification_deliveries")
+	if err != nil {
+		return err
+	}
+	if !outboxExists && !deliveriesExists {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer rollbackNotificationTx(tx)
+
+	if outboxExists {
+		if _, err := tx.Exec(`
+CREATE TABLE notification_outbox_new (
+    id               INTEGER PRIMARY KEY,
+    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id),
+    event            TEXT NOT NULL,
+    severity         TEXT NOT NULL,
+    payload          TEXT NOT NULL,
+    dedup_key        TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    attempt          INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    last_error       TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO notification_outbox_new (id, channel_id, event, severity, payload, dedup_key, status, attempt, next_attempt_at, last_error, created_at, updated_at)
+SELECT id, channel_id, event, severity, payload, dedup_key, status, attempt, next_attempt_at, last_error, created_at, updated_at FROM notification_outbox;
+DROP TABLE notification_outbox;
+ALTER TABLE notification_outbox_new RENAME TO notification_outbox;
+`); err != nil {
+			return err
+		}
+	}
+	if deliveriesExists {
+		if _, err := tx.Exec(`
+CREATE TABLE notification_deliveries_new (
+    id                INTEGER PRIMARY KEY,
+    channel_id        INTEGER NOT NULL,
+    channel_name      TEXT NOT NULL DEFAULT '',
+    channel_type      TEXT NOT NULL DEFAULT '',
+    event             TEXT NOT NULL,
+    severity          TEXT NOT NULL,
+    title             TEXT NOT NULL DEFAULT '',
+    payload_summary   TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL,
+    upstream_code     TEXT NOT NULL DEFAULT '',
+    upstream_message  TEXT NOT NULL DEFAULT '',
+    latency_ms        INTEGER NOT NULL DEFAULT 0,
+    attempt           INTEGER NOT NULL DEFAULT 1,
+    dedup_key         TEXT NOT NULL DEFAULT '',
+    triggered_by      TEXT NOT NULL DEFAULT 'system',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO notification_deliveries_new (id, channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by, created_at)
+SELECT id, channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by, created_at FROM notification_deliveries;
+DROP TABLE notification_deliveries;
+ALTER TABLE notification_deliveries_new RENAME TO notification_deliveries;
+`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending ON notification_outbox(status, next_attempt_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_active_unique ON notification_outbox(channel_id, dedup_key) WHERE status IN ('pending', 'retrying');
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_recent ON notification_deliveries(channel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_deliveries(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_name_unique ON notification_channels(name);
+`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) migrateLegacyWebhookChannel() error {
@@ -371,12 +462,20 @@ func (s *Store) migrateLegacyWebhookChannel() error {
 		enabled = 1
 	}
 
+	cfg, err := json.Marshal(map[string]any{
+		"schema": 1,
+		"url":    webhookURL,
+	})
+	if err != nil {
+		return err
+	}
+
 	_, err = s.db.Exec(
 		`INSERT INTO notification_channels (name, type, enabled, config, subscriptions) VALUES (?, ?, ?, ?, ?)`,
 		"Legacy Webhook",
 		"generic_webhook",
 		enabled,
-		fmt.Sprintf(`{"schema":1,"url":%q}`, webhookURL),
+		string(cfg),
 		`[{"event":"*"}]`,
 	)
 	if err != nil {
@@ -389,6 +488,7 @@ type cpaServiceBackup struct {
 	Label         string
 	BaseURL       string
 	APIKey        string
+	ManagementKey string
 	Enabled       int
 	Status        string
 	LastCheckedAt *string
@@ -405,7 +505,15 @@ func (s *Store) backupCpaServices() ([]cpaServiceBackup, error) {
 		return nil, nil // table doesn't exist, nothing to backup
 	}
 
-	rows, err := s.db.Query(`SELECT label, base_url, api_key, enabled, status, last_checked_at, last_error, created_at, updated_at FROM cpa_services`)
+	hasManagementKey, err := s.hasColumn("cpa_services", "management_key")
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT label, base_url, api_key, '' AS management_key, enabled, status, last_checked_at, last_error, created_at, updated_at FROM cpa_services`
+	if hasManagementKey {
+		query = `SELECT label, base_url, api_key, management_key, enabled, status, last_checked_at, last_error, created_at, updated_at FROM cpa_services`
+	}
+	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +522,7 @@ func (s *Store) backupCpaServices() ([]cpaServiceBackup, error) {
 	var data []cpaServiceBackup
 	for rows.Next() {
 		var d cpaServiceBackup
-		if err := rows.Scan(&d.Label, &d.BaseURL, &d.APIKey, &d.Enabled, &d.Status, &d.LastCheckedAt, &d.LastError, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.Label, &d.BaseURL, &d.APIKey, &d.ManagementKey, &d.Enabled, &d.Status, &d.LastCheckedAt, &d.LastError, &d.CreatedAt, &d.UpdatedAt); err != nil {
 			continue
 		}
 		data = append(data, d)
@@ -422,15 +530,53 @@ func (s *Store) backupCpaServices() ([]cpaServiceBackup, error) {
 	return data, rows.Err()
 }
 
+func (s *Store) hasColumn(table, column string) (bool, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(name, column) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func (s *Store) tableExists(name string) (bool, error) {
+	var tableName string
+	err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name = ?`, name).Scan(&tableName)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return tableName != "", nil
+}
+
 func (s *Store) restoreCpaServices(data []cpaServiceBackup) error {
-	stmt, err := s.db.Prepare(`INSERT INTO cpa_services (label, base_url, api_key, enabled, status, last_checked_at, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := s.db.Prepare(`INSERT INTO cpa_services (label, base_url, api_key, management_key, enabled, status, last_checked_at, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, d := range data {
-		if _, err := stmt.Exec(d.Label, d.BaseURL, d.APIKey, d.Enabled, d.Status, d.LastCheckedAt, d.LastError, d.CreatedAt, d.UpdatedAt); err != nil {
+		if _, err := stmt.Exec(d.Label, d.BaseURL, d.APIKey, d.ManagementKey, d.Enabled, d.Status, d.LastCheckedAt, d.LastError, d.CreatedAt, d.UpdatedAt); err != nil {
 			return err
 		}
 	}

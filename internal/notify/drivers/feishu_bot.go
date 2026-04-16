@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -39,8 +40,14 @@ func (d *FeishuBotDriver) ValidateConfig(raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.WebhookURL)), "http") {
-		return fmt.Errorf("webhook_url is required")
+	normalized := strings.TrimSpace(cfg.WebhookURL)
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed == nil {
+		return fmt.Errorf("webhook_url must be a valid Feishu bot webhook URL")
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Host))
+	if parsed.Scheme != "https" || (host != "open.feishu.cn" && host != "open.larksuite.com") {
+		return fmt.Errorf("webhook_url must be a valid Feishu bot webhook URL")
 	}
 	return nil
 }
@@ -115,6 +122,8 @@ func (d *FeishuBotDriver) Send(ctx context.Context, n notify.Notification, runti
 		Msg  string `json:"msg"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		result.UpstreamCode = "parse_error"
+		result.UpstreamMessage = err.Error()
 		return result, err
 	}
 	result.UpstreamCode = fmt.Sprintf("code=%d", parsed.Code)
@@ -127,7 +136,7 @@ func (d *FeishuBotDriver) Send(ctx context.Context, n notify.Notification, runti
 }
 
 func signFeishu(timestamp, secret string) string {
-	mac := hmac.New(sha256.New, []byte(timestamp+"\n"+secret))
-	mac.Write([]byte{})
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp + "\n" + secret))
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }

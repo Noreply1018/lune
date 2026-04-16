@@ -199,17 +199,46 @@ func (s *Store) UpdateNotificationChannel(id int64, ch *NotificationChannel) err
 }
 
 func (s *Store) DeleteNotificationChannel(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM notification_channels WHERE id = ?`, id)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer rollbackNotificationTx(tx)
+
+	if _, err := tx.Exec(`DELETE FROM notification_outbox WHERE channel_id = ?`, id); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`DELETE FROM notification_channels WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SetNotificationChannelEnabled(id int64, enabled bool) error {
-	_, err := s.db.Exec(
+	res, err := s.db.Exec(
 		`UPDATE notification_channels SET enabled = ?, updated_at = datetime('now') WHERE id = ?`,
 		boolToInt(enabled),
 		id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) InsertNotificationOutbox(item *NotificationOutbox) (int64, error) {
@@ -276,6 +305,50 @@ func (s *Store) ListDueNotificationOutbox(limit int) ([]NotificationOutbox, erro
 	return items, nil
 }
 
+func (s *Store) ListNotificationChannelsByIDs(ids []int64) (map[int64]NotificationChannel, error) {
+	if len(ids) == 0 {
+		return map[int64]NotificationChannel{}, nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	args := make([]any, 0, len(ids))
+	placeholders := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		args = append(args, id)
+		placeholders = append(placeholders, "?")
+	}
+	if len(args) == 0 {
+		return map[int64]NotificationChannel{}, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT id, name, type, enabled, config, subscriptions, title_template, body_template, created_at, updated_at,
+			NULL, NULL, NULL
+		FROM notification_channels
+		WHERE id IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int64]NotificationChannel, len(args))
+	for rows.Next() {
+		ch, err := scanNotificationChannel(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[ch.ID] = *ch
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) UpdateNotificationOutboxRetry(id int64, attempt int, nextAttemptAt, lastError string) error {
 	_, err := s.db.Exec(
 		`UPDATE notification_outbox
@@ -327,6 +400,85 @@ func (s *Store) CreateNotificationDelivery(item *NotificationDelivery) (int64, e
 	return res.LastInsertId()
 }
 
+func (s *Store) RecordNotificationAttemptRetry(outboxID int64, delivery *NotificationDelivery, attempt int, nextAttemptAt, lastError string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer rollbackNotificationTx(tx)
+
+	if _, err := tx.Exec(
+		`INSERT INTO notification_deliveries
+		 (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		delivery.ChannelID, delivery.ChannelName, delivery.ChannelType, delivery.Event, delivery.Severity,
+		delivery.Title, delivery.PayloadSummary, delivery.Status, delivery.UpstreamCode, delivery.UpstreamMessage,
+		delivery.LatencyMS, delivery.Attempt, delivery.DedupKey, delivery.TriggeredBy,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE notification_outbox
+		 SET status = 'retrying', attempt = ?, next_attempt_at = ?, last_error = ?, updated_at = datetime('now')
+		 WHERE id = ?`,
+		attempt, nextAttemptAt, lastError, outboxID,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) RecordNotificationAttemptDropped(outboxID int64, delivery *NotificationDelivery, attempt int, lastError string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer rollbackNotificationTx(tx)
+
+	if _, err := tx.Exec(
+		`INSERT INTO notification_deliveries
+		 (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		delivery.ChannelID, delivery.ChannelName, delivery.ChannelType, delivery.Event, delivery.Severity,
+		delivery.Title, delivery.PayloadSummary, delivery.Status, delivery.UpstreamCode, delivery.UpstreamMessage,
+		delivery.LatencyMS, delivery.Attempt, delivery.DedupKey, delivery.TriggeredBy,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE notification_outbox
+		 SET status = 'dropped', attempt = ?, last_error = ?, updated_at = datetime('now')
+		 WHERE id = ?`,
+		attempt, lastError, outboxID,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) RecordNotificationAttemptSuccess(outboxID int64, delivery *NotificationDelivery) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer rollbackNotificationTx(tx)
+
+	if _, err := tx.Exec(
+		`INSERT INTO notification_deliveries
+		 (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		delivery.ChannelID, delivery.ChannelName, delivery.ChannelType, delivery.Event, delivery.Severity,
+		delivery.Title, delivery.PayloadSummary, delivery.Status, delivery.UpstreamCode, delivery.UpstreamMessage,
+		delivery.LatencyMS, delivery.Attempt, delivery.DedupKey, delivery.TriggeredBy,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM notification_outbox WHERE id = ?`, outboxID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) HasRecentNotificationDelivery(channelID int64, dedupKey string, since time.Time) (bool, error) {
 	var count int
 	err := s.db.QueryRow(
@@ -371,6 +523,9 @@ func (s *Store) ListNotificationDeliveries(filter NotificationDeliveryFilter) ([
 		args = append(args, filter.TriggeredBy)
 	}
 	if filter.Before != "" {
+		if err := ValidateNotificationDeliveryCursor(filter.Before); err != nil {
+			return nil, err
+		}
 		if filter.BeforeID > 0 {
 			query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
 			args = append(args, filter.Before, filter.Before, filter.BeforeID)
@@ -410,6 +565,9 @@ func (s *Store) ListNotificationDeliveries(filter NotificationDeliveryFilter) ([
 }
 
 func (s *Store) PruneNotificationHistory(retentionDays int) (int64, int64, error) {
+	if retentionDays <= 0 {
+		return 0, 0, nil
+	}
 	safetyDays := retentionDays
 	if safetyDays < 7 {
 		safetyDays = 7
@@ -417,16 +575,13 @@ func (s *Store) PruneNotificationHistory(retentionDays int) (int64, int64, error
 	deliveryCutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format("2006-01-02 15:04:05")
 	outboxCutoff := time.Now().UTC().AddDate(0, 0, -safetyDays).Format("2006-01-02 15:04:05")
 
-	var deletedDeliveries int64
-	if retentionDays > 0 {
-		res, err := s.db.Exec(`DELETE FROM notification_deliveries WHERE created_at < ?`, deliveryCutoff)
-		if err != nil {
-			return 0, 0, err
-		}
-		deletedDeliveries, _ = res.RowsAffected()
+	res, err := s.db.Exec(`DELETE FROM notification_deliveries WHERE created_at < ?`, deliveryCutoff)
+	if err != nil {
+		return 0, 0, err
 	}
+	deletedDeliveries, _ := res.RowsAffected()
 
-	res, err := s.db.Exec(`DELETE FROM notification_outbox WHERE created_at < ?`, outboxCutoff)
+	res, err = s.db.Exec(`DELETE FROM notification_outbox WHERE status = 'dropped' AND created_at < ?`, outboxCutoff)
 	if err != nil {
 		return deletedDeliveries, 0, err
 	}
@@ -498,10 +653,24 @@ func rawJSONOrDefault(raw json.RawMessage, fallback string) string {
 
 func marshalJSONOrDefault(v any, fallback string) string {
 	body, err := json.Marshal(v)
-	if err != nil || len(body) == 0 {
+	if err != nil || len(body) == 0 || string(body) == "null" {
 		return fallback
 	}
 	return string(body)
+}
+
+func ValidateNotificationDeliveryCursor(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if _, err := time.Parse("2006-01-02 15:04:05", value); err == nil {
+		return nil
+	}
+	return fmt.Errorf("invalid before cursor")
+}
+
+func rollbackNotificationTx(tx *sql.Tx) {
+	_ = tx.Rollback()
 }
 
 func nullOrString(value, fallback string) string {
