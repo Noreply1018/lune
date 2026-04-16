@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { relativeTime, shortDate } from "@/lib/fmt";
+import { maskToken } from "@/lib/lune";
 import type { AccessToken, CpaService, Pool, RevealedAccessToken, SystemSettings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +44,8 @@ const INITIAL_TOKEN_DRAFT: TokenDraft = {
   scope: "global",
   poolId: "",
 };
+
+const TOKEN_GRID_COLUMNS = "xl:grid-cols-[minmax(0,1fr)_minmax(0,4.4fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,0.7fr)_minmax(0,0.75fr)_minmax(0,1.2fr)]";
 
 export default function SettingsPage() {
   const [service, setService] = useState<CpaService | null>(null);
@@ -117,12 +120,14 @@ export default function SettingsPage() {
       toast(field === "health_check_interval" ? "维护项已更新" : "网关设置已更新");
     } catch (err) {
       toast(err instanceof Error ? err.message : "保存设置失败", "error");
-      if (settings) {
-        setGatewayForm({
-          request_timeout: settings.request_timeout,
-          max_retry_attempts: settings.max_retry_attempts,
-        });
-        setSystemForm({ health_check_interval: settings.health_check_interval });
+      if (settings && field === "health_check_interval") {
+        setSystemForm((current) => ({ ...current, health_check_interval: settings.health_check_interval }));
+      }
+      if (settings && field !== "health_check_interval") {
+        setGatewayForm((current) => ({
+          ...current,
+          [field]: settings[field],
+        }));
       }
     } finally {
       setSavingField(null);
@@ -171,11 +176,13 @@ export default function SettingsPage() {
   }
 
   async function toggleEnabled(token: AccessToken) {
+    const nextEnabled = !token.enabled;
+    setTokens((current) => current.map((item) => (item.id === token.id ? { ...item, enabled: nextEnabled } : item)));
     try {
       await api.post(`/tokens/${token.id}/${token.enabled ? "disable" : "enable"}`);
-      toast(token.enabled ? "Token 已停用" : "Token 已启用");
-      load();
+      toast(nextEnabled ? "Token 已启用" : "Token 已停用");
     } catch (err) {
+      setTokens((current) => current.map((item) => (item.id === token.id ? { ...item, enabled: token.enabled } : item)));
       toast(err instanceof Error ? err.message : "更新 Token 状态失败", "error");
     }
   }
@@ -196,12 +203,22 @@ export default function SettingsPage() {
         pool_id: poolId,
         enabled: true,
       });
+      const now = new Date().toISOString();
+      const createdToken: AccessToken = {
+        ...created,
+        token_masked: maskToken(created.token),
+        pool_label: created.pool_id != null ? poolNameMap[created.pool_id] : undefined,
+        is_global: created.pool_id == null,
+        created_at: now,
+        updated_at: now,
+        last_used_at: null,
+      };
+      setTokens((current) => [createdToken, ...current]);
       setCreateOpen(false);
       setCreateDraft(INITIAL_TOKEN_DRAFT);
       setRevealedTokens((current) => ({ ...current, [created.id]: created.token }));
-      setVisibleTokenIds((current) => [...current, created.id]);
+      setVisibleTokenIds((current) => Array.from(new Set([...current, created.id])));
       toast("Token 已创建");
-      load();
     } catch (err) {
       toast(err instanceof Error ? err.message : "创建 Token 失败", "error");
     }
@@ -216,6 +233,10 @@ export default function SettingsPage() {
       toast("名称不能为空", "error");
       return;
     }
+
+    const previousName = editingToken.name;
+    setTokens((current) => current.map((token) => (token.id === editingToken.id ? { ...token, name } : token)));
+
     try {
       await api.put(`/tokens/${editingToken.id}`, {
         name,
@@ -225,8 +246,8 @@ export default function SettingsPage() {
       toast("名称已更新");
       setEditingToken(null);
       setEditingName("");
-      load();
     } catch (err) {
+      setTokens((current) => current.map((token) => (token.id === editingToken.id ? { ...token, name: previousName } : token)));
       toast(err instanceof Error ? err.message : "更新名称失败", "error");
     }
   }
@@ -239,9 +260,19 @@ export default function SettingsPage() {
       const revealed = await api.post<RevealedAccessToken>(`/tokens/${regenerateToken.id}/regenerate`, {});
       setRevealedTokens((current) => ({ ...current, [revealed.id]: revealed.token }));
       setVisibleTokenIds((current) => Array.from(new Set([...current, revealed.id])));
+      setTokens((current) =>
+        current.map((token) =>
+          token.id === revealed.id
+            ? {
+                ...token,
+                token_masked: maskToken(revealed.token),
+                updated_at: new Date().toISOString(),
+              }
+            : token,
+        ),
+      );
       toast("Token 已重新生成");
       setRegenerateToken(null);
-      load();
     } catch (err) {
       toast(err instanceof Error ? err.message : "重新生成失败", "error");
     }
@@ -251,28 +282,40 @@ export default function SettingsPage() {
     if (!deleteToken) {
       return;
     }
+    const removed = deleteToken;
+    setTokens((current) => current.filter((token) => token.id !== removed.id));
+    setVisibleTokenIds((current) => current.filter((id) => id !== removed.id));
+    setRevealedTokens((current) => {
+      const next = { ...current };
+      delete next[removed.id];
+      return next;
+    });
     try {
-      await api.delete(`/tokens/${deleteToken.id}`);
-      setVisibleTokenIds((current) => current.filter((id) => id !== deleteToken.id));
-      setRevealedTokens((current) => {
-        const next = { ...current };
-        delete next[deleteToken.id];
-        return next;
-      });
+      await api.delete(`/tokens/${removed.id}`);
       toast("Token 已删除");
       setDeleteToken(null);
-      load();
     } catch (err) {
+      setTokens((current) => {
+        const existingIndex = current.findIndex((token) => token.id === removed.id);
+        if (existingIndex >= 0) {
+          return current;
+        }
+        return [removed, ...current];
+      });
       toast(err instanceof Error ? err.message : "删除 Token 失败", "error");
     }
   }
 
   async function testService() {
+    if (!service) {
+      return;
+    }
     setTestingService(true);
     try {
       const result = await api.post<{ reachable: boolean; latency_ms: number; error: string }>("/cpa/service/test", {});
       toast(result.reachable ? `连接正常 ${result.latency_ms}ms` : result.error || "连接失败", result.reachable ? "success" : "error");
-      load();
+      const serviceData = await api.get<CpaService | null>("/cpa/service");
+      setService(serviceData);
     } catch (err) {
       toast(err instanceof Error ? err.message : "测试失败", "error");
     } finally {
@@ -285,11 +328,11 @@ export default function SettingsPage() {
       <div className="space-y-10">
         <Skeleton className="h-32 rounded-[2rem]" />
         <div className="grid gap-6 lg:grid-cols-2">
-          <Skeleton className="h-48 rounded-[1.8rem]" />
-          <Skeleton className="h-48 rounded-[1.8rem]" />
+          <Skeleton className="h-44 rounded-[1.8rem]" />
+          <Skeleton className="h-44 rounded-[1.8rem]" />
         </div>
         <Skeleton className="h-[28rem] rounded-[1.8rem]" />
-        <Skeleton className="h-44 rounded-[1.8rem]" />
+        <Skeleton className="h-40 rounded-[1.8rem]" />
       </div>
     );
   }
@@ -300,15 +343,12 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-12 pb-8">
-      <PageHeader
-        title="Settings"
-        description="管理网关行为、访问凭证与系统连接。"
-      />
+      <PageHeader title="Settings" description="管理网关行为、访问凭证与系统连接。" />
 
-      <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-start">
-        <div className="surface-section px-5 py-5 sm:px-6">
+      <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-stretch">
+        <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
           <SectionHeading title="Gateway Behavior" description="控制请求超时与重试行为。" />
-          <div className="mt-4 divide-y divide-moon-200/35">
+          <div className="mt-4 flex-1 divide-y divide-moon-200/30">
             <SettingsNumericRow
               label="Request Timeout"
               value={gatewayForm.request_timeout}
@@ -322,6 +362,7 @@ export default function SettingsPage() {
             <SettingsNumericRow
               label="Max Retry Attempts"
               value={gatewayForm.max_retry_attempts}
+              suffix="次"
               min={1}
               saving={savingField === "max_retry_attempts"}
               onChange={(value) => setGatewayForm((current) => ({ ...current, max_retry_attempts: value }))}
@@ -331,33 +372,28 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <div className="surface-section px-5 py-5 sm:px-6">
-          <SectionHeading title="CPA Service" description="查看当前 CPA 通道状态。" />
-          <div className="mt-4 space-y-4">
+        <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
+          <SectionHeading
+            title="CPA Service"
+            description="查看当前 CPA 通道状态。"
+            action={service ? (
+              <Button variant="outline" size="sm" className="rounded-full" onClick={testService} disabled={testingService}>
+                {testingService ? <RefreshCw className="size-4 animate-spin" /> : <CircleDot className="size-4" />}
+                Test Connection
+              </Button>
+            ) : undefined}
+          />
+          <div className="mt-4 flex flex-1 flex-col gap-4">
             {service ? (
-              <>
-                <div className="grid gap-4 border-b border-moon-200/35 pb-4 sm:grid-cols-2">
-                  <InfoBlock label="Status" value={<StatusBadge ok={service.status === "healthy"}>{service.status === "healthy" ? "Healthy" : "Error"}</StatusBadge>} />
-                  <InfoBlock label="Label" value={service.label || "--"} />
-                  <InfoBlock label="Base URL" value={service.base_url || "--"} />
-                  <InfoBlock label="Last Checked" value={service.last_checked_at ? shortDate(service.last_checked_at) : "尚未检查"} />
-                </div>
-                <div className="flex justify-start">
-                  <Button variant="outline" size="sm" className="rounded-full" onClick={testService} disabled={testingService}>
-                    {testingService ? <RefreshCw className="size-4 animate-spin" /> : <CircleDot className="size-4" />}
-                    Test Connection
-                  </Button>
-                </div>
-              </>
+              <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+                <InfoBlock label="Status" value={<StatusBadge ok={service.status === "healthy"}>{service.status === "healthy" ? "Healthy" : "Error"}</StatusBadge>} />
+                <InfoBlock label="Label" value={service.label || "--"} />
+                <InfoBlock label="Base URL" value={service.base_url || "--"} />
+                <InfoBlock label="Last Checked" value={service.last_checked_at ? shortDate(service.last_checked_at) : "尚未检查"} />
+              </div>
             ) : (
-              <div className="flex flex-col gap-4 rounded-[1.35rem] border border-dashed border-moon-200/60 px-4 py-4 text-sm text-moon-500">
+              <div className="flex h-full flex-col gap-3 rounded-[1.35rem] border border-dashed border-moon-200/55 px-4 py-4 text-sm text-moon-500">
                 <p>请通过环境变量完成 CPA 配置</p>
-                <div>
-                  <Button variant="outline" size="sm" className="rounded-full" onClick={testService} disabled={testingService}>
-                    {testingService ? <RefreshCw className="size-4 animate-spin" /> : <CircleDot className="size-4" />}
-                    Test Connection
-                  </Button>
-                </div>
               </div>
             )}
           </div>
@@ -395,7 +431,7 @@ export default function SettingsPage() {
           />
 
           <div className="space-y-6">
-            <div className="border-t border-moon-200/35 pt-6">
+            <div className="border-t border-moon-200/30 pt-6">
               <p className="text-[11px] font-medium tracking-[0.18em] text-moon-350">Pool Tokens</p>
             </div>
             {poolGroups.length === 0 ? (
@@ -443,7 +479,7 @@ export default function SettingsPage() {
           </button>
         </div>
         {systemOpen ? (
-          <div className="mt-5 space-y-5 border-t border-moon-200/35 pt-5">
+          <div className="mt-5 space-y-5 border-t border-moon-200/30 pt-5">
             <SettingsNumericRow
               label="Health Check Interval"
               helper="修改后需重启生效"
@@ -597,7 +633,7 @@ function SettingsNumericRow({
   min?: number;
 }) {
   return (
-    <div className="flex flex-col gap-3 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="space-y-0.5">
         <p className="text-sm font-medium text-moon-800">{label}</p>
         <p className="text-xs text-moon-350">{helper}</p>
@@ -612,8 +648,8 @@ function SettingsNumericRow({
           onBlur={onBlur}
           onKeyDown={onKeyDown}
         />
-        {suffix ? <span className="text-sm text-moon-350">{suffix}</span> : null}
-        {saving ? <RefreshCw className="size-4 animate-spin text-moon-350" /> : null}
+        <span className="w-5 text-sm text-moon-350">{suffix ?? ""}</span>
+        {saving ? <RefreshCw className="size-4 animate-spin text-moon-350" /> : <span className="size-4" />}
       </div>
     </div>
   );
@@ -655,8 +691,8 @@ function TokenGroup({
       {tokens.length === 0 ? (
         <p className="text-sm text-moon-400">{emptyText ?? "当前分组为空。"}</p>
       ) : (
-        <div className="border-y border-moon-200/35">
-          <div className="hidden xl:grid xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1.4fr)_8rem_8rem_7rem_8rem_auto] xl:gap-4 xl:border-b xl:border-moon-200/25 xl:py-2.5">
+        <div className="border-y border-moon-200/30">
+          <div className={cn("hidden border-b border-moon-200/20 py-2.5 xl:grid xl:gap-4", TOKEN_GRID_COLUMNS)}>
             {["名称", "Token", "创建时间", "最后使用", "状态", "归属"].map((label) => (
               <p key={label} className="text-[11px] font-medium tracking-[0.16em] text-moon-300">
                 {label}
@@ -711,27 +747,27 @@ function TokenRow({
   const displayToken = visible ? revealedValue ?? token.token_masked : token.token_masked;
 
   return (
-    <div className="grid gap-4 border-b border-moon-200/25 py-3.5 last:border-b-0 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1.4fr)_8rem_8rem_7rem_8rem_auto] xl:items-center">
+    <div className={cn("grid gap-4 border-b border-moon-200/20 py-3.5 last:border-b-0 xl:items-start xl:gap-4", TOKEN_GRID_COLUMNS)}>
       <InlineMeta label="名称" value={token.name} strong />
-      <InlineMeta label="Token" value={displayToken || "--"} mono muted={!visible} />
+      <InlineMeta label="Token" value={displayToken || "--"} mono muted={!visible} wrap />
       <InlineMeta label="创建时间" value={shortDate(token.created_at)} />
       <InlineMeta label="最后使用" value={relativeTime(token.last_used_at)} />
       <InlineMeta label="状态" value={<StatusBadge ok={token.enabled}>{token.enabled ? "Enabled" : "Disabled"}</StatusBadge>} />
       <InlineMeta label="归属" value={ownerLabel} />
-      <div className="flex flex-wrap items-center justify-start gap-1 xl:justify-end">
-        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onCopy}>
+      <div className="flex flex-wrap items-center justify-start gap-1 xl:justify-end xl:self-start">
+        <Button variant="ghost" size="sm" className="rounded-full px-2 text-moon-500" onClick={onCopy}>
           <Copy className="size-3.5" />
           Copy
         </Button>
-        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onReveal}>
+        <Button variant="ghost" size="sm" className="rounded-full px-2 text-moon-500" onClick={onReveal}>
           {visible ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
           Reveal
         </Button>
-        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onEdit}>
+        <Button variant="ghost" size="sm" className="rounded-full px-2 text-moon-500" onClick={onEdit}>
           <PencilLine className="size-3.5" />
           Edit name
         </Button>
-        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onToggleEnabled}>
+        <Button variant="ghost" size="sm" className="rounded-full px-2 text-moon-500" onClick={onToggleEnabled}>
           {token.enabled ? "Disable" : "Enable"}
         </Button>
         <DropdownMenu>
@@ -760,22 +796,25 @@ function InlineMeta({
   strong,
   mono,
   muted,
+  wrap,
 }: {
   label: string;
   value: string | ReactNode;
   strong?: boolean;
   mono?: boolean;
   muted?: boolean;
+  wrap?: boolean;
 }) {
   return (
-    <div className="space-y-1 xl:space-y-1">
+    <div className="min-w-0 space-y-1">
       <p className="text-[11px] tracking-[0.16em] text-moon-300 xl:hidden">{label}</p>
       <div
         className={cn(
           "text-sm text-moon-500",
           strong && "font-medium text-moon-800",
-          mono && "font-mono text-[13px]",
+          mono && "font-mono text-[13px] leading-5",
           muted && "text-moon-400",
+          wrap ? "min-w-0 whitespace-normal break-all" : "truncate",
         )}
       >
         {value}
