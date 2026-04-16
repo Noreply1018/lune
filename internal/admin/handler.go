@@ -2,8 +2,6 @@ package admin
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -685,12 +683,19 @@ func (h *Handler) listTokens(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
+	pools, err := h.store.ListPools()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	poolLabelByID := make(map[int64]string, len(pools))
+	for _, pool := range pools {
+		poolLabelByID[pool.ID] = pool.Label
+	}
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		if tokens[i].PoolID != nil {
-			if pool, err := h.store.GetPool(*tokens[i].PoolID); err == nil && pool != nil {
-				tokens[i].PoolLabel = pool.Label
-			}
+			tokens[i].PoolLabel = poolLabelByID[*tokens[i].PoolID]
 		}
 		tokens[i].Token = ""
 	}
@@ -706,9 +711,6 @@ func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" {
 		webutil.WriteAdminError(w, 400, "bad_request", "name is required")
 		return
-	}
-	if req.Token == "" {
-		req.Token = generateToken()
 	}
 	id, err := h.store.CreateToken(&req)
 	if err != nil {
@@ -1126,13 +1128,15 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 		h.fillAccountResponse(&accounts[i])
 	}
 	pools, _ := h.store.ListPools()
+	poolLabelByID := make(map[int64]string, len(pools))
+	for _, pool := range pools {
+		poolLabelByID[pool.ID] = pool.Label
+	}
 	tokens, _ := h.store.ListTokens()
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		if tokens[i].PoolID != nil {
-			if pool, err := h.store.GetPool(*tokens[i].PoolID); err == nil && pool != nil {
-				tokens[i].PoolLabel = pool.Label
-			}
+			tokens[i].PoolLabel = poolLabelByID[*tokens[i].PoolID]
 		}
 		tokens[i].Token = ""
 	}
@@ -1154,120 +1158,6 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 		"access_tokens": tokens,
 		"settings":      settings,
 		"cpa_services":  cpaServices,
-	})
-}
-
-func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Settings map[string]string   `json:"settings"`
-		Pools    []store.Pool        `json:"pools"`
-		Tokens   []store.AccessToken `json:"access_tokens"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
-		return
-	}
-
-	existingPools, err := h.store.ListPools()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	poolByLabel := make(map[string]store.Pool, len(existingPools))
-	for _, pool := range existingPools {
-		poolByLabel[pool.Label] = pool
-	}
-
-	poolIDByLabel := make(map[string]int64)
-	createdPools := 0
-	updatedPools := 0
-	for _, pool := range req.Pools {
-		if pool.Label == "" {
-			continue
-		}
-		if existing, ok := poolByLabel[pool.Label]; ok {
-			if err := h.store.UpdatePool(existing.ID, pool.Label, pool.Priority, pool.Enabled); err != nil {
-				h.internalError(w, err)
-				return
-			}
-			poolIDByLabel[pool.Label] = existing.ID
-			updatedPools++
-			continue
-		}
-		id, err := h.store.CreatePool(pool.Label, pool.Priority, pool.Enabled)
-		if err != nil {
-			h.internalError(w, err)
-			return
-		}
-		poolIDByLabel[pool.Label] = id
-		createdPools++
-	}
-
-	existingTokens, err := h.store.ListTokens()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	tokenByName := make(map[string]store.AccessToken, len(existingTokens))
-	for _, token := range existingTokens {
-		tokenByName[token.Name] = token
-	}
-
-	createdTokens := 0
-	updatedTokens := 0
-	for _, token := range req.Tokens {
-		if token.Name == "" {
-			continue
-		}
-		if token.PoolLabel != "" {
-			if mappedID, ok := poolIDByLabel[token.PoolLabel]; ok {
-				token.PoolID = &mappedID
-			}
-		}
-		if existing, ok := tokenByName[token.Name]; ok {
-			if err := h.store.UpdateToken(existing.ID, &store.AccessToken{
-				Name:    token.Name,
-				PoolID:  token.PoolID,
-				Enabled: token.Enabled,
-			}); err != nil {
-				h.internalError(w, err)
-				return
-			}
-			updatedTokens++
-			continue
-		}
-		if _, err := h.store.CreateToken(&store.AccessToken{
-			Name:    token.Name,
-			PoolID:  token.PoolID,
-			Enabled: token.Enabled,
-		}); err != nil {
-			h.internalError(w, err)
-			return
-		}
-		createdTokens++
-	}
-
-	settings := make(map[string]string)
-	for key, value := range req.Settings {
-		switch key {
-		case "health_check_interval", "request_timeout", "max_retry_attempts":
-			settings[key] = value
-		}
-	}
-	if len(settings) > 0 {
-		if err := h.store.UpdateSettings(settings); err != nil {
-			h.internalError(w, err)
-			return
-		}
-	}
-
-	h.cache.Invalidate()
-	webutil.WriteData(w, 200, map[string]any{
-		"created_pools":    createdPools,
-		"updated_pools":    updatedPools,
-		"created_tokens":   createdTokens,
-		"updated_tokens":   updatedTokens,
-		"updated_settings": len(settings),
 	})
 }
 
@@ -1644,12 +1534,6 @@ func (h *Handler) fillAccountResponse(a *store.Account) {
 	}
 }
 
-func generateToken() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return "sk-lune-" + hex.EncodeToString(b)
-}
-
 // --- CPA Login Sessions (Device Code Flow) ---
 
 func (h *Handler) createLoginSession(w http.ResponseWriter, r *http.Request) {
@@ -1831,6 +1715,7 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 		return
 	}
 
+	existingBefore, _ := h.store.FindAccountByCpaKey(svc.ID, accountKey)
 	account, err := h.upsertImportedCpaAccount(svc, accountKey, authFile, "", true, "")
 	if err != nil {
 		h.sessions.UpdateStatus(session.ID, "failed", "import_error", fmt.Sprintf("Failed to create account: %v", err))
@@ -1840,7 +1725,17 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 	// auto-add to the pool specified in session
 	if session.PoolID > 0 {
 		if _, err := h.store.AddPoolMember(session.PoolID, account.ID); err != nil {
-			slog.Error("finalizeLogin: failed to add pool member", "pool_id", session.PoolID, "account_id", account.ID, "err", err)
+			if strings.Contains(err.Error(), "UNIQUE constraint") {
+				slog.Info("finalizeLogin: pool member already exists", "pool_id", session.PoolID, "account_id", account.ID)
+			} else {
+				if existingBefore == nil {
+					if delErr := h.store.DeleteAccount(account.ID); delErr != nil {
+						slog.Error("finalizeLogin: rollback orphan account failed", "account_id", account.ID, "err", delErr)
+					}
+				}
+				h.sessions.UpdateStatus(session.ID, "failed", "pool_attach_error", fmt.Sprintf("Failed to add account to pool: %v", err))
+				return
+			}
 		}
 	}
 

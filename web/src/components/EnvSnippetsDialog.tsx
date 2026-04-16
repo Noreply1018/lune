@@ -54,8 +54,8 @@ resp = client.chat.completions.create(
     model="${safeModel}",
     messages=[{"role": "user", "content": "Hello"}],
 )`,
-    shell: `export OPENAI_BASE_URL=${baseUrl}
-export OPENAI_API_KEY=${token}`,
+    shell: `export OPENAI_BASE_URL="${baseUrl}"
+export OPENAI_API_KEY="${token}"`,
     cursor: `{
   "openai.baseUrl": "${baseUrl}",
   "openai.apiKey": "${token}"
@@ -104,6 +104,7 @@ function InlineCopyAction({
 export default function EnvSnippetsDialog({
   open,
   onOpenChange,
+  title,
   baseUrl,
   token,
   model,
@@ -130,7 +131,7 @@ export default function EnvSnippetsDialog({
         className="max-w-[60rem] rounded-[1.9rem] border border-white/75 bg-[linear-gradient(180deg,rgba(251,250,247,0.96),rgba(246,244,240,0.97))] p-0 shadow-[0_36px_90px_-52px_rgba(33,40,63,0.34)] sm:max-w-[60rem]"
       >
         <DialogHeader className="border-b border-moon-200/55 px-7 py-6">
-          <DialogTitle>Global Env Snippets</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
           <DialogDescription>选择一种方式完成接入。</DialogDescription>
         </DialogHeader>
 

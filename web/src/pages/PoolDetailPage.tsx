@@ -53,9 +53,6 @@ export default function PoolDetailPage() {
     }
     setLoading(true);
     setError(null);
-    setConnectTokenValue(null);
-    setRevealedTokenCache({});
-    setRevealedGlobalToken(null);
     Promise.all([
       api.get<PoolDetailResponse>(`/pools/${poolId}`),
       api.get<Overview>("/overview"),
@@ -82,6 +79,10 @@ export default function PoolDetailPage() {
   const poolModels = ensureArray(detail?.models);
   const statsByAccount = ensureArray(stats?.by_account);
   const primaryPoolTokenId = poolTokens.find((token) => token.enabled)?.id ?? null;
+  const poolTokenCacheKey = useMemo(
+    () => poolTokens.map((token) => `${token.id}:${token.enabled ? 1 : 0}`).join("|"),
+    [poolTokens],
+  );
   const accountRequestMap = useMemo(() => {
     const map = new Map<number, number>();
     statsByAccount.forEach((row) => {
@@ -91,6 +92,15 @@ export default function PoolDetailPage() {
   }, [statsByAccount]);
   const poolToken = connectTokenValue || revealedGlobalToken || "";
   const health = pool ? getPoolHealth(pool) : "degraded";
+
+  useEffect(() => {
+    setConnectTokenValue(null);
+    setRevealedTokenCache({});
+  }, [poolTokenCacheKey]);
+
+  useEffect(() => {
+    setRevealedGlobalToken(null);
+  }, [overview?.global_token_id]);
 
   async function revealPoolToken(tokenId: number): Promise<string> {
     const cached = revealedTokenCache[tokenId];

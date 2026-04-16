@@ -46,6 +46,17 @@ export default function AccountCard({
   const [expanded, setExpanded] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const account = member.account;
+  const health = account ? getAccountHealth(account) : "error";
+  const expiry = getExpiryMeta(account?.cpa_expired_at ?? null);
+  const quota = parseQuotaDisplay(account?.quota_display ?? "");
+  const models = ensureArray(account?.models);
+
+  const toneClass = useMemo(() => {
+    if (!member.enabled) return "border-moon-200/60 bg-moon-100/55";
+    if (!account || health === "error") return "border-status-red/20 bg-red-50/60";
+    if (health === "degraded") return "border-status-yellow/20 bg-amber-50/60";
+    return "border-white/78 bg-white/88";
+  }, [account, health, member.enabled]);
 
   if (!account) {
     return (
@@ -54,18 +65,6 @@ export default function AccountCard({
       </article>
     );
   }
-
-  const health = getAccountHealth(account);
-  const expiry = getExpiryMeta(account.cpa_expired_at ?? null);
-  const quota = parseQuotaDisplay(account.quota_display ?? "");
-  const models = ensureArray(account.models);
-
-  const toneClass = useMemo(() => {
-    if (!member.enabled) return "border-moon-200/60 bg-moon-100/55";
-    if (health === "error") return "border-status-red/20 bg-red-50/60";
-    if (health === "degraded") return "border-status-yellow/20 bg-amber-50/60";
-    return "border-white/78 bg-white/88";
-  }, [health, member.enabled]);
 
   return (
     <article
@@ -78,7 +77,7 @@ export default function AccountCard({
       <div className="flex items-start justify-between gap-3">
         <div className="space-y-3">
           <div className="space-y-1">
-            <p className="eyebrow-label">{getAccessLabel(account!)}</p>
+            <p className="eyebrow-label">{getAccessLabel(account)}</p>
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-lg font-semibold tracking-[-0.03em] text-moon-800">
                 {account.label}

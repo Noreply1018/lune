@@ -18,7 +18,7 @@ func (s *Store) GetOverview() (*Overview, error) {
 			 JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS healthy_account_count
 		FROM pools p`)
 	if err == nil {
 		defer poolRows.Close()
@@ -33,7 +33,7 @@ func (s *Store) GetOverview() (*Overview, error) {
 				continue
 			}
 			o.PoolsTotal++
-			if accountCount > 0 && healthyAccountCount == accountCount {
+			if healthyAccountCount > 0 {
 				o.PoolsHealthy++
 			}
 		}
@@ -74,14 +74,20 @@ func (s *Store) GetOverview() (*Overview, error) {
 
 	// alerts: accounts expiring within 7 days
 	expiringRows, err := s.db.Query(
-		`SELECT id, label, cpa_expired_at FROM accounts WHERE source_kind = 'cpa' AND cpa_expired_at != '' AND cpa_expired_at <= datetime('now', '+7 days')`,
+		`SELECT id, label, cpa_expired_at FROM accounts WHERE source_kind = 'cpa' AND cpa_expired_at != ''`,
 	)
 	if err == nil {
 		defer expiringRows.Close()
+		now := time.Now().UTC()
+		cutoff := now.AddDate(0, 0, 7)
 		for expiringRows.Next() {
 			var id int64
 			var label, expiredAt string
 			if err := expiringRows.Scan(&id, &label, &expiredAt); err != nil {
+				continue
+			}
+			expiry, err := parseCpaExpiry(expiredAt)
+			if err != nil || expiry.Before(now) || expiry.After(cutoff) {
 				continue
 			}
 			o.Alerts = append(o.Alerts, Alert{

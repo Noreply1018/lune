@@ -193,13 +193,22 @@ export default function OverviewPage() {
     () => pools.map((pool) => poolSnapshots[pool.id] ?? derivePoolSnapshot(pool)),
     [pools, poolSnapshots],
   );
+  const activePoolStatsTargets = useMemo(
+    () => orderedPoolSnapshots.filter(
+      (pool) => pool.enabled && pool.health !== "unknown" && pool.health !== "disabled",
+    ),
+    [orderedPoolSnapshots],
+  );
+  const activePoolStatsKey = useMemo(
+    () => activePoolStatsTargets.map((pool) => `${pool.id}:${pool.health}:${pool.enabled ? 1 : 0}`).join("|"),
+    [activePoolStatsTargets],
+  );
   const firstPoolModel = orderedPoolSnapshots.find((pool) => pool.enabled && pool.models.length > 0)?.models[0];
 
   function load() {
     setLoading(true);
     setError(null);
     setPoolActivity({});
-    setRevealedGlobalToken(null);
 
     Promise.all([
       api.get<Overview>("/overview"),
@@ -228,11 +237,8 @@ export default function OverviewPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const activeSnapshots = orderedPoolSnapshots.filter(
-      (pool) => pool.enabled && pool.health !== "unknown" && pool.health !== "disabled",
-    );
 
-    if (activeSnapshots.length === 0) {
+    if (activePoolStatsTargets.length === 0) {
       setPoolActivity({});
       return () => {
         cancelled = true;
@@ -240,7 +246,7 @@ export default function OverviewPage() {
     }
 
     Promise.all(
-      activeSnapshots.map(async (pool) => {
+      activePoolStatsTargets.map(async (pool) => {
         try {
           const stats = await api.get<UsageStats>(`/pools/${pool.id}/stats?window=today`);
           return [pool.id, { status: "ready", requestsToday: stats.total_requests }] as const;
@@ -257,7 +263,7 @@ export default function OverviewPage() {
     return () => {
       cancelled = true;
     };
-  }, [orderedPoolSnapshots]);
+  }, [activePoolStatsKey]);
 
   const baseUrl = getApiBaseUrl();
   const hasGlobalToken = Boolean(overview?.global_token_id);

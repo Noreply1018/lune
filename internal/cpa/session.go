@@ -110,7 +110,7 @@ func (s *SessionStore) CancelSession(id string) error {
 	if !ok {
 		return fmt.Errorf("session not found")
 	}
-	if sess.Status != "pending" {
+	if !isActiveStatus(sess.Status) {
 		return fmt.Errorf("session is not active")
 	}
 	sess.Status = "cancelled"
@@ -192,8 +192,8 @@ func (s *SessionStore) load() {
 		return
 	}
 
-	s.sessions = sessions
 	s.mu.Lock()
+	s.sessions = sessions
 	s.normalizeLocked()
 	s.mu.Unlock()
 }
@@ -225,6 +225,8 @@ func isActiveStatus(status string) bool {
 
 func generateSessionID() string {
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("login_%d", time.Now().UnixNano())
+	}
 	return "login_" + hex.EncodeToString(b)
 }
