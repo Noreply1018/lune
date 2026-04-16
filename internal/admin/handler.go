@@ -18,6 +18,7 @@ import (
 	"lune/internal/health"
 	"lune/internal/store"
 	"lune/internal/syscfg"
+	"lune/internal/webhook"
 	"lune/internal/webutil"
 )
 
@@ -28,9 +29,10 @@ type Handler struct {
 	cpaManagementKey string
 	sessions         *cpa.SessionStore
 	healthChecker    *health.Checker
+	webhookSender    *webhook.Sender
 }
 
-func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker) *Handler {
+func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, webhookSender *webhook.Sender) *Handler {
 	sessionPath := ""
 	if cpaAuthDir != "" {
 		sessionPath = filepath.Join(cpaAuthDir, ".login-sessions.json")
@@ -43,6 +45,7 @@ func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagement
 		cpaManagementKey: cpaManagementKey,
 		sessions:         cpa.NewSessionStore(sessionPath),
 		healthChecker:    hc,
+		webhookSender:    webhookSender,
 	}
 	h.resumeActiveLoginSessions()
 	return h
@@ -108,6 +111,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("GET /admin/api/settings", h.getSettings)
 	handle("PUT /admin/api/settings", h.updateSettings)
 	handle("GET /admin/api/settings/notifications", h.listNotifications)
+	handle("POST /admin/api/settings/webhook/test", h.testWebhook)
 	handle("GET /admin/api/settings/data-retention", h.getDataRetention)
 	handle("POST /admin/api/settings/data-retention/prune", h.pruneDataRetention)
 
@@ -880,6 +884,8 @@ type systemSettingsResponse struct {
 	NotificationErrorEnabled    bool   `json:"notification_error_enabled"`
 	NotificationExpiringEnabled bool   `json:"notification_expiring_enabled"`
 	NotificationExpiringDays    int    `json:"notification_expiring_days"`
+	WebhookEnabled              bool   `json:"webhook_enabled"`
+	WebhookURL                  string `json:"webhook_url"`
 	DataRetentionDays           int    `json:"data_retention_days"`
 }
 
@@ -898,6 +904,8 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		NotificationErrorEnabled:    syscfg.ParseBool(settings["notification_error_enabled"], syscfg.DefaultNotificationErrorEnabled),
 		NotificationExpiringEnabled: syscfg.ParseBool(settings["notification_expiring_enabled"], syscfg.DefaultNotificationExpiringEnabled),
 		NotificationExpiringDays:    syscfg.ParsePositiveInt(settings["notification_expiring_days"], syscfg.DefaultNotificationExpiringDays),
+		WebhookEnabled:              syscfg.ParseBool(settings["webhook_enabled"], syscfg.DefaultWebhookEnabled),
+		WebhookURL:                  settings["webhook_url"],
 		DataRetentionDays:           syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays),
 	}
 	webutil.WriteData(w, 200, resp)
@@ -916,7 +924,7 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s := strings.TrimSpace(string(v))
-		if s == "null" || s == "" {
+		if s == "null" || (s == "" && k != "webhook_url") {
 			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("setting %s cannot be empty", k))
 			return
 		}
@@ -937,7 +945,7 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 
 func normalizeSettingValue(key string, raw json.RawMessage) (string, error) {
 	switch key {
-	case "notification_error_enabled", "notification_expiring_enabled":
+	case "notification_error_enabled", "notification_expiring_enabled", "webhook_enabled":
 		var boolean bool
 		if err := json.Unmarshal(raw, &boolean); err == nil {
 			return syscfg.BoolString(boolean), nil
@@ -950,6 +958,19 @@ func normalizeSettingValue(key string, raw json.RawMessage) (string, error) {
 			}
 		}
 		return "", fmt.Errorf("setting %s must be a boolean", key)
+	case "webhook_url":
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return "", fmt.Errorf("setting %s must be a string", key)
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", nil
+		}
+		if !isWebhookURL(value) {
+			return "", fmt.Errorf("setting %s must start with http:// or https://", key)
+		}
+		return value, nil
 	default:
 		var num float64
 		if err := json.Unmarshal(raw, &num); err != nil {
@@ -983,6 +1004,65 @@ func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
 		notifications = []store.SystemNotification{}
 	}
 	webutil.WriteList(w, notifications, len(notifications))
+}
+
+func (h *Handler) testWebhook(w http.ResponseWriter, r *http.Request) {
+	if h.webhookSender == nil {
+		webutil.WriteAdminError(w, 500, "webhook_unavailable", "webhook sender is not configured")
+		return
+	}
+
+	var req struct {
+		URL string `json:"url"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+			return
+		}
+	}
+
+	webhookURL := strings.TrimSpace(req.URL)
+	if webhookURL == "" {
+		settings, err := h.store.GetSettings()
+		if err != nil {
+			h.internalError(w, err)
+			return
+		}
+		webhookURL = strings.TrimSpace(settings["webhook_url"])
+	}
+	if webhookURL == "" {
+		webutil.WriteAdminError(w, 400, "bad_request", "webhook URL is required")
+		return
+	}
+	if !isWebhookURL(webhookURL) {
+		webutil.WriteAdminError(w, 400, "bad_request", "webhook URL must start with http:// or https://")
+		return
+	}
+
+	payload := webhook.Payload{
+		Event:     "test",
+		Severity:  "warning",
+		Title:     "Lune Webhook Test",
+		Message:   "This is a test notification from Lune.",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	start := time.Now()
+	if err := h.webhookSender.Send(r.Context(), webhookURL, payload); err != nil {
+		webutil.WriteAdminError(w, 502, "webhook_failed", err.Error())
+		return
+	}
+
+	webutil.WriteData(w, 200, map[string]any{
+		"success":    true,
+		"latency_ms": time.Since(start).Milliseconds(),
+	})
+}
+
+func isWebhookURL(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(normalized, "http://") || strings.HasPrefix(normalized, "https://")
 }
 
 func (h *Handler) getDataRetention(w http.ResponseWriter, r *http.Request) {

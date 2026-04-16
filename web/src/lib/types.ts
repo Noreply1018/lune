@@ -160,6 +160,8 @@ export interface SystemSettings {
   notification_error_enabled: boolean;
   notification_expiring_enabled: boolean;
   notification_expiring_days: number;
+  webhook_url: string;
+  webhook_enabled: boolean;
   data_retention_days: number;
 }
 

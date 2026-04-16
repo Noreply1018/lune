@@ -15,6 +15,7 @@ import (
 	"lune/internal/cpa"
 	"lune/internal/store"
 	"lune/internal/syscfg"
+	"lune/internal/webhook"
 )
 
 const (
@@ -23,18 +24,30 @@ const (
 )
 
 type Checker struct {
-	store      *store.Store
-	cache      *store.RoutingCache
-	client     *http.Client
-	cpaAuthDir string
+	store               *store.Store
+	cache               *store.RoutingCache
+	client              *http.Client
+	cpaAuthDir          string
+	webhook             *webhook.Sender
+	lastNotifiedMu      sync.Mutex
+	lastNotified        map[string]time.Time
+	notifying           map[string]bool
+	inFlightSeq         map[string]uint64
+	nextNotifySeq       uint64
+	notificationBackoff time.Duration
 }
 
-func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir string) *Checker {
+func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir string, sender *webhook.Sender) *Checker {
 	return &Checker{
-		store:      st,
-		cache:      cache,
-		client:     &http.Client{Timeout: 15 * time.Second},
-		cpaAuthDir: cpaAuthDir,
+		store:               st,
+		cache:               cache,
+		client:              &http.Client{Timeout: 15 * time.Second},
+		cpaAuthDir:          cpaAuthDir,
+		webhook:             sender,
+		lastNotified:        make(map[string]time.Time),
+		notifying:           make(map[string]bool),
+		inFlightSeq:         make(map[string]uint64),
+		notificationBackoff: time.Hour,
 	}
 }
 
@@ -65,33 +78,32 @@ func (c *Checker) checkAll(ctx context.Context) {
 	}
 
 	accounts := c.cache.GetAccounts()
-	if len(accounts) == 0 {
-		return
-	}
+	if len(accounts) > 0 {
+		// Semaphore-limited concurrency
+		sem := make(chan struct{}, maxConcurrency)
+		var wg sync.WaitGroup
 
-	// Semaphore-limited concurrency
-	sem := make(chan struct{}, maxConcurrency)
-	var wg sync.WaitGroup
-
-	for _, acc := range accounts {
-		if !acc.Enabled {
-			continue
+		for _, acc := range accounts {
+			if !acc.Enabled {
+				continue
+			}
+			wg.Add(1)
+			go func(a store.Account) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				c.checkOne(ctx, a)
+			}(acc)
 		}
-		wg.Add(1)
-		go func(a store.Account) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			c.checkOne(ctx, a)
-		}(acc)
+		wg.Wait()
 	}
-	wg.Wait()
 
 	// sync CPA metadata from auth files
 	c.syncCpaMetadata()
 	c.pruneRequestLogs()
 
 	c.cache.Invalidate()
+	c.sendWebhookNotifications(ctx)
 }
 
 // checkOne probes an account's health and discovers its available models.
@@ -294,5 +306,116 @@ func (c *Checker) pruneRequestLogs() {
 	}
 	if deleted > 0 {
 		slog.Info("pruned request logs", "deleted", deleted, "retention_days", retentionDays)
+	}
+}
+
+func (c *Checker) sendWebhookNotifications(ctx context.Context) {
+	if c.webhook == nil {
+		return
+	}
+
+	webhookEnabled := syscfg.ParseBool(c.cache.GetSetting("webhook_enabled"), syscfg.DefaultWebhookEnabled)
+	webhookURL := strings.TrimSpace(c.cache.GetSetting("webhook_url"))
+	if !webhookEnabled || webhookURL == "" {
+		return
+	}
+
+	notifications, err := c.store.ListSystemNotifications()
+	if err != nil {
+		slog.Error("list system notifications for webhook", "err", err)
+		return
+	}
+
+	now := time.Now().UTC()
+	activeKeys := make(map[string]struct{}, len(notifications))
+
+	c.lastNotifiedMu.Lock()
+	for _, notification := range notifications {
+		key := notificationDedupKey(notification)
+		if key == "" {
+			continue
+		}
+		activeKeys[key] = struct{}{}
+	}
+	for key := range c.lastNotified {
+		if _, ok := activeKeys[key]; !ok {
+			delete(c.lastNotified, key)
+		}
+	}
+	for key := range c.notifying {
+		if _, ok := activeKeys[key]; !ok {
+			delete(c.notifying, key)
+			delete(c.inFlightSeq, key)
+		}
+	}
+	c.lastNotifiedMu.Unlock()
+
+	for _, notification := range notifications {
+		key := notificationDedupKey(notification)
+		if key == "" {
+			continue
+		}
+
+		c.lastNotifiedMu.Lock()
+		lastSentAt, exists := c.lastNotified[key]
+		inFlight := c.notifying[key]
+		var seq uint64
+		if !inFlight && (!exists || now.Sub(lastSentAt) >= c.notificationBackoff) {
+			c.notifying[key] = true
+			c.nextNotifySeq++
+			seq = c.nextNotifySeq
+			c.inFlightSeq[key] = seq
+		}
+		c.lastNotifiedMu.Unlock()
+		if inFlight || (exists && now.Sub(lastSentAt) < c.notificationBackoff) {
+			continue
+		}
+
+		payload := webhook.Payload{
+			Event:     notification.Type,
+			Severity:  notification.Severity,
+			Title:     notification.Title,
+			Message:   notification.Message,
+			Timestamp: now.Format(time.RFC3339),
+		}
+		go c.deliverWebhookNotification(ctx, webhookURL, key, seq, payload)
+	}
+}
+
+func (c *Checker) deliverWebhookNotification(ctx context.Context, webhookURL, key string, seq uint64, payload webhook.Payload) {
+	err := c.webhook.Send(ctx, webhookURL, payload)
+
+	c.lastNotifiedMu.Lock()
+	defer c.lastNotifiedMu.Unlock()
+
+	currentSeq, ok := c.inFlightSeq[key]
+	if !ok || currentSeq != seq {
+		return
+	}
+
+	delete(c.notifying, key)
+	delete(c.inFlightSeq, key)
+	if err != nil {
+		slog.Error("deliver webhook notification", "event", payload.Event, "err", err)
+		return
+	}
+
+	c.lastNotified[key] = time.Now().UTC()
+}
+
+func notificationDedupKey(notification store.SystemNotification) string {
+	switch notification.Type {
+	case "account_error", "account_expiring":
+		if notification.AccountID == nil {
+			return ""
+		}
+		return fmt.Sprintf("%s:%d:%s:%s", notification.Type, *notification.AccountID, notification.Severity, notification.Title)
+	case "cpa_service_error":
+		if notification.ServiceID == nil {
+			return ""
+		}
+		return fmt.Sprintf("%s:%d:%s:%s", notification.Type, *notification.ServiceID, notification.Severity, notification.Title)
+	default:
+		return ""
 	}
 }

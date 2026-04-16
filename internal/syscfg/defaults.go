@@ -9,6 +9,8 @@ const (
 	DefaultNotificationExpiringDays    = 7
 	DefaultNotificationErrorEnabled    = true
 	DefaultNotificationExpiringEnabled = true
+	DefaultWebhookEnabled              = false
+	DefaultWebhookURL                  = ""
 	DefaultDataRetentionDays           = 30
 )
 
@@ -19,6 +21,8 @@ var allowedSettingKeys = map[string]struct{}{
 	"notification_error_enabled":    {},
 	"notification_expiring_enabled": {},
 	"notification_expiring_days":    {},
+	"webhook_enabled":               {},
+	"webhook_url":                   {},
 	"data_retention_days":           {},
 }
 

@@ -19,6 +19,7 @@ import (
 	"lune/internal/health"
 	"lune/internal/httpserver"
 	"lune/internal/store"
+	"lune/internal/webhook"
 
 	"gopkg.in/yaml.v3"
 )
@@ -161,10 +162,12 @@ func (a *App) Run() error {
 	// auto-configure default CPA service if env vars are set
 	a.ensureDefaultCpa()
 
-	// create health checker (needed by admin handler for model discovery)
-	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir)
+	webhookSender := webhook.NewSender()
 
-	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, hc)
+	// create health checker (needed by admin handler for model discovery)
+	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir, webhookSender)
+
+	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, hc, webhookSender)
 
 	// Prefer an explicit IPv4 listener so WSL localhost forwarding can
 	// consistently expose the service to Windows browsers.
