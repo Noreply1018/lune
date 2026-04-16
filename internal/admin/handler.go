@@ -1264,13 +1264,34 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
-	var req store.ConfigImportPayload
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var raw struct {
+		Data *store.ConfigImportPayload `json:"data"`
+		store.ConfigImportPayload
+	}
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
 
-	result, err := h.store.ImportConfig(req)
+	payload := raw.ConfigImportPayload
+	if raw.Data != nil {
+		payload = *raw.Data
+	}
+	validatedSettings := make(map[string]string, len(payload.Settings))
+	for key, value := range payload.Settings {
+		if key == "admin_token" || !syscfg.IsAllowedSettingKey(key) {
+			continue
+		}
+		normalizedValue, err := normalizeImportedSettingValue(key, value)
+		if err != nil {
+			webutil.WriteAdminError(w, 400, "bad_request", err.Error())
+			return
+		}
+		validatedSettings[key] = normalizedValue
+	}
+	payload.Settings = validatedSettings
+
+	result, err := h.store.ImportConfig(payload)
 	if err != nil {
 		webutil.WriteAdminError(w, 400, "import_failed", err.Error())
 		return
@@ -1278,6 +1299,44 @@ func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
 
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, result)
+}
+
+func normalizeImportedSettingValue(key, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	switch key {
+	case "notification_error_enabled", "notification_expiring_enabled", "webhook_enabled":
+		if value == "" {
+			return "", fmt.Errorf("setting %s must be a boolean", key)
+		}
+		if syscfg.ParseBool(value, false) || strings.EqualFold(value, "false") || value == "0" {
+			return syscfg.BoolString(syscfg.ParseBool(value, false)), nil
+		}
+		return "", fmt.Errorf("setting %s must be a boolean", key)
+	case "webhook_url":
+		if value == "" {
+			return "", nil
+		}
+		if !isWebhookURL(value) {
+			return "", fmt.Errorf("setting %s must start with http:// or https://", key)
+		}
+		return value, nil
+	default:
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return "", fmt.Errorf("setting %s must be an integer", key)
+		}
+		switch key {
+		case "health_check_interval", "request_timeout", "max_retry_attempts", "notification_expiring_days":
+			if n <= 0 {
+				return "", fmt.Errorf("setting %s must be greater than 0", key)
+			}
+		case "data_retention_days":
+			if n < 0 {
+				return "", fmt.Errorf("setting %s must be 0 or greater", key)
+			}
+		}
+		return strconv.Itoa(n), nil
+	}
 }
 
 func (h *Handler) getLatencyStats(w http.ResponseWriter, r *http.Request) {

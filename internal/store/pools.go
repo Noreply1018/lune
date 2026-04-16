@@ -78,6 +78,36 @@ func (s *Store) GetPool(id int64) (*Pool, error) {
 	return p, nil
 }
 
+func (s *Store) GetPoolByLabel(label string) (*Pool, error) {
+	row := s.db.QueryRow(`
+		SELECT p.id, p.label, p.priority, p.enabled, p.created_at, p.updated_at,
+			(SELECT COUNT(*)
+			 FROM pool_members pm
+			 JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
+			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS healthy_account_count,
+			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
+		FROM pools p
+		WHERE p.label = ?`, label)
+
+	p, err := scanPoolRowWithCounts(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	models, err := s.GetPoolModels(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	p.Models = models
+	return p, nil
+}
+
 // GetPoolDetail returns a Pool with full members (each with Account) and models list.
 func (s *Store) GetPoolDetail(id int64) (*Pool, []PoolMember, error) {
 	p, err := s.GetPool(id)

@@ -44,6 +44,21 @@ func (s *Store) GetToken(id int64) (*AccessToken, error) {
 	return t, err
 }
 
+func (s *Store) GetTokenByNameAndPool(name string, poolID *int64) (*AccessToken, error) {
+	var row rowScanner
+	if poolID == nil {
+		row = s.db.QueryRow(`SELECT `+tokenColumns+` FROM access_tokens WHERE name = ? AND pool_id IS NULL`, name)
+	} else {
+		row = s.db.QueryRow(`SELECT `+tokenColumns+` FROM access_tokens WHERE name = ? AND pool_id = ?`, name, *poolID)
+	}
+
+	token, err := scanTokenRow(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return token, err
+}
+
 func (s *Store) CreateToken(t *AccessToken) (int64, error) {
 	if t.Token == "" {
 		tok, err := generateToken()

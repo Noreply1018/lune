@@ -169,7 +169,7 @@ export interface ConfigImportResult {
   created_pools: number;
   updated_pools: number;
   created_tokens: number;
-  updated_tokens: number;
+  skipped_tokens: number;
   updated_settings: number;
 }
 

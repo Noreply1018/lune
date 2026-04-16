@@ -1,7 +1,9 @@
 import {
+  useRef,
   useEffect,
   useMemo,
   useState,
+  type ChangeEvent,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -57,7 +59,9 @@ import { shortDate } from "@/lib/fmt";
 import { maskToken } from "@/lib/lune";
 import type {
   AccessToken,
+  ConfigImportResult,
   CpaService,
+  DataRetentionSummary,
   Pool,
   RevealedAccessToken,
   SystemSettings,
@@ -68,6 +72,7 @@ type EditableSettingField =
   | "request_timeout"
   | "max_retry_attempts"
   | "health_check_interval"
+  | "data_retention_days"
   | "notification_expiring_days"
   | "webhook_url";
 
@@ -81,6 +86,28 @@ type TokenDraft = {
   scope: "global" | "pool";
   poolId: string;
 };
+
+type ParsedImportConfig = {
+  pools?: Array<{ label?: string }>;
+  access_tokens?: Array<{ name?: string }>;
+  settings?: Record<string, unknown>;
+};
+
+type ParsedImportEnvelope = ParsedImportConfig & {
+  data?: ParsedImportConfig;
+};
+
+const IMPORTABLE_SETTING_KEYS = new Set([
+  "health_check_interval",
+  "request_timeout",
+  "max_retry_attempts",
+  "notification_error_enabled",
+  "notification_expiring_enabled",
+  "notification_expiring_days",
+  "webhook_url",
+  "webhook_enabled",
+  "data_retention_days",
+]);
 
 const INITIAL_TOKEN_DRAFT: TokenDraft = {
   name: "",
@@ -97,6 +124,8 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [tokens, setTokens] = useState<AccessToken[]>([]);
   const [pools, setPools] = useState<Pool[]>([]);
+  const [retentionSummary, setRetentionSummary] =
+    useState<DataRetentionSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [gatewayForm, setGatewayForm] = useState({
@@ -129,6 +158,21 @@ export default function SettingsPage() {
   const [visibleTokenIds, setVisibleTokenIds] = useState<number[]>([]);
   const [testingService, setTestingService] = useState(false);
   const [systemOpen, setSystemOpen] = useState(false);
+  const [pruning, setPruning] = useState(false);
+  const [importDraft, setImportDraft] = useState<ParsedImportEnvelope | null>(
+    null,
+  );
+  const [importConfirmOpen, setImportConfirmOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function loadRetentionSummary() {
+    const summary = await api.get<DataRetentionSummary>(
+      "/settings/data-retention",
+    );
+    setRetentionSummary(summary);
+    return summary;
+  }
 
   function load() {
     setLoading(true);
@@ -138,6 +182,7 @@ export default function SettingsPage() {
       api.get<SystemSettings>("/settings"),
       api.get<AccessToken[]>("/tokens"),
       api.get<Pool[]>("/pools"),
+      loadRetentionSummary(),
     ])
       .then(([serviceData, settingsData, tokenData, poolData]) => {
         setService(serviceData);
@@ -178,6 +223,19 @@ export default function SettingsPage() {
     () => tokens.filter((token) => token.pool_id != null),
     [tokens],
   );
+  const importPreview = useMemo(() => {
+    if (!importDraft) {
+      return { pools: 0, tokens: 0, settings: 0 };
+    }
+    const source = importDraft.data ?? importDraft;
+    return {
+      pools: source.pools?.length ?? 0,
+      tokens: source.access_tokens?.length ?? 0,
+      settings: Object.keys(source.settings ?? {}).filter((key) =>
+        IMPORTABLE_SETTING_KEYS.has(key),
+      ).length,
+    };
+  }, [importDraft]);
 
   async function saveSetting(
     field: EditableSettingField,
@@ -196,6 +254,9 @@ export default function SettingsPage() {
       setSettings((current) =>
         current ? { ...current, [field]: payloadValue } : current,
       );
+      if (field === "data_retention_days") {
+        await loadRetentionSummary();
+      }
       toast(field === "health_check_interval" ? "维护项已更新" : "设置已更新");
     } catch (err) {
       toast(err instanceof Error ? err.message : "保存设置失败", "error");
@@ -211,6 +272,16 @@ export default function SettingsPage() {
             ...current,
             [field]: prevSettings[field],
           }));
+        }
+        if (field === "data_retention_days") {
+          setSettings((current) =>
+            current
+              ? {
+                  ...current,
+                  data_retention_days: prevSettings.data_retention_days,
+                }
+              : current,
+          );
         }
         if (field === "webhook_url" || field === "notification_expiring_days") {
           setNotificationForm((current) => ({
@@ -505,6 +576,64 @@ export default function SettingsPage() {
       );
     } catch (err) {
       toast(err instanceof Error ? err.message : "Webhook 测试失败", "error");
+    }
+  }
+
+  async function pruneNow() {
+    setPruning(true);
+    try {
+      const result = await api.post<{ deleted_logs: number }>(
+        "/settings/data-retention/prune",
+        {},
+      );
+      await loadRetentionSummary();
+      toast(`已清理 ${result.deleted_logs} 条`);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "清理失败", "error");
+    } finally {
+      setPruning(false);
+    }
+  }
+
+  function triggerImportPicker() {
+    fileInputRef.current?.click();
+  }
+
+  async function handleImportFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(await file.text()) as ParsedImportEnvelope;
+      if (typeof parsed !== "object" || parsed === null) {
+        throw new Error("导入文件格式不正确");
+      }
+      setImportDraft(parsed);
+      setImportConfirmOpen(true);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "读取导入文件失败", "error");
+    }
+  }
+
+  async function confirmImport() {
+    if (!importDraft) {
+      return;
+    }
+    setImporting(true);
+    try {
+      const result = await api.post<ConfigImportResult>("/import", importDraft);
+      setImportConfirmOpen(false);
+      setImportDraft(null);
+      await load();
+      toast(
+        `导入完成：${result.created_pools} 新建 Pool，${result.updated_pools} 更新 Pool，${result.created_tokens} 新建 Token，${result.skipped_tokens} 跳过 Token，${result.updated_settings} 项设置更新`,
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "导入失败", "error");
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -822,7 +951,7 @@ export default function SettingsPage() {
           </button>
         </div>
         {systemOpen ? (
-          <div className="mt-5 space-y-5 border-t border-moon-200/30 pt-5">
+          <div className="mt-5 space-y-8 border-t border-moon-200/30 pt-5">
             <SettingsNumericRow
               label="Health Check Interval"
               helper="修改后需重启生效"
@@ -841,25 +970,121 @@ export default function SettingsPage() {
               }
               onKeyDown={handleSettingKeyDown}
             />
-            <div className="flex flex-wrap gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full"
-                onClick={() => window.open("/admin/api/export", "_blank")}
-              >
-                <Download className="size-4" />
-                Export Configuration
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full"
-                disabled
-              >
-                <Upload className="size-4" />
-                Import Configuration
-              </Button>
+
+            <div className="space-y-5 border-t border-moon-200/30 pt-5">
+              <div className="space-y-1.5">
+                <p className="text-[11px] tracking-[0.18em] text-moon-350">
+                  Data Retention
+                </p>
+                <p className="max-w-2xl text-sm leading-6 text-moon-500">
+                  控制日志清理规则，并查看当前库内日志的总体状态。
+                </p>
+              </div>
+
+              <SettingsNumericRow
+                label="Log Retention Days"
+                helper="实时生效"
+                value={settings?.data_retention_days ?? 0}
+                suffix="天"
+                min={0}
+                saving={savingField === "data_retention_days"}
+                onChange={(value) =>
+                  setSettings((current) =>
+                    current
+                      ? { ...current, data_retention_days: value }
+                      : current,
+                  )
+                }
+                onBlur={() =>
+                  void saveSetting(
+                    "data_retention_days",
+                    settings?.data_retention_days ?? 0,
+                  )
+                }
+                onKeyDown={handleSettingKeyDown}
+              />
+
+              <div className="grid gap-4 border-y border-moon-200/25 py-4 sm:grid-cols-3">
+                <MetricMeta
+                  label="总日志量"
+                  value={`${Number(retentionSummary?.total_logs ?? 0).toLocaleString()} 条`}
+                />
+                <MetricMeta
+                  label="最早记录"
+                  value={
+                    retentionSummary?.oldest_log_at
+                      ? shortDate(retentionSummary.oldest_log_at)
+                      : "暂无"
+                  }
+                />
+                <MetricMeta
+                  label="最近记录"
+                  value={
+                    retentionSummary?.newest_log_at
+                      ? shortDate(retentionSummary.newest_log_at)
+                      : "暂无"
+                  }
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-moon-450">
+                  当前清理规则为 {retentionSummary?.retention_days ?? 0} 天。
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  onClick={() => void pruneNow()}
+                  disabled={
+                    pruning || (retentionSummary?.total_logs ?? 0) === 0
+                  }
+                >
+                  {pruning ? (
+                    <RefreshCw className="size-4 animate-spin" />
+                  ) : null}
+                  Clean Up Now
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-5 border-t border-moon-200/30 pt-5">
+              <div className="space-y-1.5">
+                <p className="text-[11px] tracking-[0.18em] text-moon-350">
+                  Configuration Transfer
+                </p>
+                <p className="max-w-2xl text-sm leading-6 text-moon-500">
+                  导出当前 Pool、Token 与系统设置，或从导出文件恢复这些配置。
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  onClick={() => window.open("/admin/api/export", "_blank")}
+                >
+                  <Download className="size-4" />
+                  Export Configuration
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  onClick={triggerImportPicker}
+                >
+                  <Upload className="size-4" />
+                  Import Configuration
+                </Button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={handleImportFileChange}
+                />
+              </div>
             </div>
           </div>
         ) : null}
@@ -1010,6 +1235,56 @@ export default function SettingsPage() {
         description={`删除后，${deleteToken?.name ?? "该 Token"} 将不再可用。`}
         onConfirm={confirmDeleteToken}
       />
+
+      <Dialog
+        open={importConfirmOpen}
+        onOpenChange={(open) => {
+          setImportConfirmOpen(open);
+          if (!open && !importing) {
+            setImportDraft(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg overflow-hidden rounded-[1.6rem] border border-white/75 bg-white/95 p-0 shadow-[0_26px_70px_-38px_rgba(74,68,108,0.34)]">
+          <DialogHeader className="border-b border-moon-200/55 px-6 py-5 pr-12">
+            <DialogTitle>Import Configuration</DialogTitle>
+            <DialogDescription>
+              即将把导出文件中的 Pool、Token 与设置写入当前环境。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-5 px-6 py-6">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <MetricMeta label="Pools" value={`${importPreview.pools}`} />
+              <MetricMeta label="Tokens" value={`${importPreview.tokens}`} />
+              <MetricMeta
+                label="Settings"
+                value={`${importPreview.settings}`}
+              />
+            </div>
+            <div className="space-y-3 rounded-[1.2rem] border border-moon-200/45 bg-moon-50/55 px-4 py-4 text-sm leading-6 text-moon-550">
+              <p>Token 将自动生成新的密钥值。</p>
+              <p>已存在的 Pool 会更新；已存在的同名 Token 会被跳过。</p>
+              <p>账号、CPA Service 与 admin token 不会导入。</p>
+            </div>
+          </div>
+          <DialogFooter className="border-t border-moon-200/55 bg-white/76 px-6 py-4">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setImportConfirmOpen(false);
+                setImportDraft(null);
+              }}
+              disabled={importing}
+            >
+              取消
+            </Button>
+            <Button onClick={() => void confirmImport()} disabled={importing}>
+              {importing ? <RefreshCw className="size-4 animate-spin" /> : null}
+              Confirm Import
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1095,6 +1370,15 @@ function SettingsToggleRow({
           onCheckedChange={onCheckedChange}
         />
       </div>
+    </div>
+  );
+}
+
+function MetricMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="space-y-1">
+      <p className="text-[11px] tracking-[0.16em] text-moon-300">{label}</p>
+      <p className="text-sm font-medium text-moon-800">{value}</p>
     </div>
   );
 }
@@ -1315,8 +1599,7 @@ function InlineMeta({
   muted?: boolean;
   nowrap?: boolean;
 }) {
-  const title =
-    typeof value === "string" && value !== "--" ? value : undefined;
+  const title = typeof value === "string" && value !== "--" ? value : undefined;
 
   return (
     <div className="min-w-0 space-y-1">

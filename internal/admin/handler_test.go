@@ -202,3 +202,120 @@ func TestListPoolTokensIncludesPoolLabel(t *testing.T) {
 		t.Fatalf("expected token secret to be stripped from list response")
 	}
 }
+
+func TestImportConfigCreatesPoolsSkipsExistingTokensAndIgnoresAdminToken(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	existingPoolID, err := st.CreatePool("Existing Pool", 1, true)
+	if err != nil {
+		t.Fatalf("create existing pool: %v", err)
+	}
+	existingPoolIDCopy := existingPoolID
+	if _, err := st.CreateToken(&store.AccessToken{
+		Name:    "existing-token",
+		PoolID:  &existingPoolIDCopy,
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create existing token: %v", err)
+	}
+
+	handler := NewHandler(st, cache, "", "", nil, webhook.NewSender())
+	body := bytes.NewBufferString(`{
+		"data":{
+			"pools":[
+				{"label":"Existing Pool","priority":3,"enabled":false},
+				{"label":"Imported Pool","priority":5,"enabled":true}
+			],
+			"access_tokens":[
+				{"name":"existing-token","pool_id":1,"pool_label":"Existing Pool","enabled":true},
+				{"name":"imported-token","pool_id":999,"pool_label":"Imported Pool","enabled":true}
+			],
+			"settings":{
+				"request_timeout":"180",
+				"data_retention_days":"14",
+				"admin_token":"masked-value"
+			}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/import", body)
+	rr := httptest.NewRecorder()
+
+	handler.importConfig(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Data store.ConfigImportResult `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.CreatedPools != 1 || resp.Data.UpdatedPools != 1 {
+		t.Fatalf("unexpected pool import result: %+v", resp.Data)
+	}
+	if resp.Data.CreatedTokens != 1 || resp.Data.SkippedTokens != 1 {
+		t.Fatalf("unexpected token import result: %+v", resp.Data)
+	}
+	if resp.Data.UpdatedSettings != 2 {
+		t.Fatalf("expected 2 updated settings, got %+v", resp.Data)
+	}
+
+	importedPool, err := st.GetPoolByLabel("Imported Pool")
+	if err != nil || importedPool == nil {
+		t.Fatalf("expected imported pool, err=%v", err)
+	}
+
+	existingPool, err := st.GetPoolByLabel("Existing Pool")
+	if err != nil || existingPool == nil {
+		t.Fatalf("expected existing pool, err=%v", err)
+	}
+	if existingPool.Priority != 3 || existingPool.Enabled {
+		t.Fatalf("expected existing pool to be updated, got %+v", existingPool)
+	}
+
+	importedToken, err := st.GetTokenByNameAndPool("imported-token", &importedPool.ID)
+	if err != nil || importedToken == nil {
+		t.Fatalf("expected imported token, err=%v", err)
+	}
+
+	settings, err := st.GetSettings()
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if settings["request_timeout"] != "180" || settings["data_retention_days"] != "14" {
+		t.Fatalf("expected imported settings, got %#v", settings)
+	}
+	if settings["admin_token"] != "" {
+		t.Fatalf("expected admin_token to be ignored, got %q", settings["admin_token"])
+	}
+}
+
+func TestImportConfigRejectsInvalidSettingValue(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, webhook.NewSender())
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/admin/api/import",
+		bytes.NewBufferString(`{"data":{"settings":{"request_timeout":"abc"}}}`),
+	)
+	rr := httptest.NewRecorder()
+
+	handler.importConfig(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	settings, err := st.GetSettings()
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if settings["request_timeout"] != "" {
+		t.Fatalf("expected invalid setting import to be rejected")
+	}
+}
