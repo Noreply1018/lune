@@ -13,6 +13,7 @@ import {
   Trash2,
   WandSparkles,
   Download,
+  Upload,
 } from "lucide-react";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import ErrorState from "@/components/ErrorState";
@@ -24,28 +25,12 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { relativeTime, shortDate } from "@/lib/fmt";
-import type {
-  AccessToken,
-  CpaService,
-  DataRetentionSummary,
-  Pool,
-  RevealedAccessToken,
-  SystemNotification,
-  SystemSettings,
-} from "@/lib/types";
+import type { AccessToken, CpaService, Pool, RevealedAccessToken, SystemSettings } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type EditableSettingField =
-  | "request_timeout"
-  | "max_retry_attempts"
-  | "health_check_interval"
-  | "notification_error_enabled"
-  | "notification_expiring_enabled"
-  | "notification_expiring_days"
-  | "data_retention_days";
+type EditableSettingField = "request_timeout" | "max_retry_attempts" | "health_check_interval";
 
 type TokenDraft = {
   name: string;
@@ -62,19 +47,11 @@ const INITIAL_TOKEN_DRAFT: TokenDraft = {
 export default function SettingsPage() {
   const [service, setService] = useState<CpaService | null>(null);
   const [settings, setSettings] = useState<SystemSettings | null>(null);
-  const [notifications, setNotifications] = useState<SystemNotification[]>([]);
-  const [retentionSummary, setRetentionSummary] = useState<DataRetentionSummary | null>(null);
   const [tokens, setTokens] = useState<AccessToken[]>([]);
   const [pools, setPools] = useState<Pool[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [gatewayForm, setGatewayForm] = useState({ request_timeout: 120, max_retry_attempts: 3 });
-  const [notificationForm, setNotificationForm] = useState({
-    notification_error_enabled: true,
-    notification_expiring_enabled: true,
-    notification_expiring_days: 7,
-  });
-  const [retentionForm, setRetentionForm] = useState({ data_retention_days: 30 });
   const [systemForm, setSystemForm] = useState({ health_check_interval: 60 });
   const [savingField, setSavingField] = useState<EditableSettingField | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -86,7 +63,6 @@ export default function SettingsPage() {
   const [revealedTokens, setRevealedTokens] = useState<Record<number, string>>({});
   const [visibleTokenIds, setVisibleTokenIds] = useState<number[]>([]);
   const [testingService, setTestingService] = useState(false);
-  const [pruningRetention, setPruningRetention] = useState(false);
   const [systemOpen, setSystemOpen] = useState(false);
 
   function load() {
@@ -95,29 +71,17 @@ export default function SettingsPage() {
     Promise.all([
       api.get<CpaService | null>("/cpa/service"),
       api.get<SystemSettings>("/settings"),
-      api.get<SystemNotification[]>("/settings/notifications"),
-      api.get<DataRetentionSummary>("/settings/data-retention"),
       api.get<AccessToken[]>("/tokens"),
       api.get<Pool[]>("/pools"),
     ])
-      .then(([serviceData, settingsData, notificationData, retentionData, tokenData, poolData]) => {
+      .then(([serviceData, settingsData, tokenData, poolData]) => {
         setService(serviceData);
         setSettings(settingsData);
-        setNotifications(notificationData ?? []);
-        setRetentionSummary(retentionData);
         setTokens(tokenData ?? []);
         setPools(poolData ?? []);
         setGatewayForm({
           request_timeout: settingsData.request_timeout,
           max_retry_attempts: settingsData.max_retry_attempts,
-        });
-        setNotificationForm({
-          notification_error_enabled: settingsData.notification_error_enabled,
-          notification_expiring_enabled: settingsData.notification_expiring_enabled,
-          notification_expiring_days: settingsData.notification_expiring_days,
-        });
-        setRetentionForm({
-          data_retention_days: settingsData.data_retention_days,
         });
         setSystemForm({
           health_check_interval: settingsData.health_check_interval,
@@ -131,43 +95,26 @@ export default function SettingsPage() {
     load();
   }, []);
 
-  const poolNameMap = useMemo(
-    () => Object.fromEntries(pools.map((pool) => [pool.id, pool.label])),
-    [pools],
-  );
-
-  const globalTokens = useMemo(
-    () => tokens.filter((token) => token.pool_id == null),
-    [tokens],
-  );
-
+  const poolNameMap = useMemo(() => Object.fromEntries(pools.map((pool) => [pool.id, pool.label])), [pools]);
+  const globalTokens = useMemo(() => tokens.filter((token) => token.pool_id == null), [tokens]);
   const poolGroups = useMemo(
-    () => pools
-      .map((pool) => ({
-        pool,
-        tokens: tokens.filter((token) => token.pool_id === pool.id),
-      }))
-      .filter((group) => group.tokens.length > 0),
+    () =>
+      pools
+        .map((pool) => ({
+          pool,
+          tokens: tokens.filter((token) => token.pool_id === pool.id),
+        }))
+        .filter((group) => group.tokens.length > 0),
     [pools, tokens],
   );
 
-  async function saveSetting(field: EditableSettingField, value: number | boolean) {
-    const normalized = typeof value === "number" ? (Number.isFinite(value) ? value : 0) : value;
+  async function saveSetting(field: EditableSettingField, value: number) {
+    const normalized = Number.isFinite(value) ? value : 0;
     setSavingField(field);
     try {
       await api.put("/settings", { [field]: normalized });
       setSettings((current) => (current ? { ...current, [field]: normalized } : current));
-      if (field.startsWith("notification_")) {
-        const latestNotifications = await api.get<SystemNotification[]>("/settings/notifications");
-        setNotifications(latestNotifications ?? []);
-        toast("Notifications 已更新");
-      } else if (field === "data_retention_days") {
-        const latestSummary = await api.get<DataRetentionSummary>("/settings/data-retention");
-        setRetentionSummary(latestSummary);
-        toast("Data Retention 已更新");
-      } else {
-        toast(field === "health_check_interval" ? "维护项已更新" : "Gateway Behavior 已更新");
-      }
+      toast(field === "health_check_interval" ? "维护项已更新" : "网关设置已更新");
     } catch (err) {
       toast(err instanceof Error ? err.message : "保存设置失败", "error");
       if (settings) {
@@ -175,42 +122,10 @@ export default function SettingsPage() {
           request_timeout: settings.request_timeout,
           max_retry_attempts: settings.max_retry_attempts,
         });
-        setNotificationForm({
-          notification_error_enabled: settings.notification_error_enabled,
-          notification_expiring_enabled: settings.notification_expiring_enabled,
-          notification_expiring_days: settings.notification_expiring_days,
-        });
-        setRetentionForm({
-          data_retention_days: settings.data_retention_days,
-        });
         setSystemForm({ health_check_interval: settings.health_check_interval });
       }
     } finally {
       setSavingField(null);
-    }
-  }
-
-  async function pruneRetentionNow() {
-    setPruningRetention(true);
-    try {
-      const result = await api.post<{
-        deleted_logs: number;
-        total_logs: number;
-        oldest_log_at: string | null;
-        newest_log_at: string | null;
-        retention_days: number;
-      }>("/settings/data-retention/prune", {});
-      setRetentionSummary({
-        retention_days: result.retention_days,
-        total_logs: result.total_logs,
-        oldest_log_at: result.oldest_log_at,
-        newest_log_at: result.newest_log_at,
-      });
-      toast(result.deleted_logs > 0 ? `已清理 ${result.deleted_logs} 条请求日志` : "没有需要清理的旧日志");
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "执行数据清理失败", "error");
-    } finally {
-      setPruningRetention(false);
     }
   }
 
@@ -369,7 +284,10 @@ export default function SettingsPage() {
     return (
       <div className="space-y-10">
         <Skeleton className="h-32 rounded-[2rem]" />
-        <Skeleton className="h-36 rounded-[1.8rem]" />
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Skeleton className="h-48 rounded-[1.8rem]" />
+          <Skeleton className="h-48 rounded-[1.8rem]" />
+        </div>
         <Skeleton className="h-[28rem] rounded-[1.8rem]" />
         <Skeleton className="h-44 rounded-[1.8rem]" />
       </div>
@@ -383,46 +301,79 @@ export default function SettingsPage() {
   return (
     <div className="space-y-12 pb-8">
       <PageHeader
-        eyebrow="Settings"
         title="Settings"
-        description="把运行行为与 Token 控制收束到同一条安静工作面里，低频维护项折叠到后面。"
-        actions={
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="size-4" />
-            Create Token
-          </Button>
-        }
+        description="管理网关行为、访问凭证与系统连接。"
       />
 
-      <section className="surface-section px-5 py-5 sm:px-6">
-        <SectionHeading title="Gateway Behavior" description="轻量 runtime settings。" />
-        <div className="mt-6 divide-y divide-moon-200/45">
-          <SettingsNumericRow
-            label="Request Timeout"
-            value={gatewayForm.request_timeout}
-            suffix="秒"
-            min={1}
-            saving={savingField === "request_timeout"}
-            onChange={(value) => setGatewayForm((current) => ({ ...current, request_timeout: value }))}
-            onBlur={() => void saveSetting("request_timeout", gatewayForm.request_timeout)}
-            onKeyDown={handleSettingKeyDown}
-          />
-          <SettingsNumericRow
-            label="Max Retry Attempts"
-            value={gatewayForm.max_retry_attempts}
-            min={1}
-            saving={savingField === "max_retry_attempts"}
-            onChange={(value) => setGatewayForm((current) => ({ ...current, max_retry_attempts: value }))}
-            onBlur={() => void saveSetting("max_retry_attempts", gatewayForm.max_retry_attempts)}
-            onKeyDown={handleSettingKeyDown}
-          />
+      <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-start">
+        <div className="surface-section px-5 py-5 sm:px-6">
+          <SectionHeading title="Gateway Behavior" description="控制请求超时与重试行为。" />
+          <div className="mt-4 divide-y divide-moon-200/35">
+            <SettingsNumericRow
+              label="Request Timeout"
+              value={gatewayForm.request_timeout}
+              suffix="秒"
+              min={1}
+              saving={savingField === "request_timeout"}
+              onChange={(value) => setGatewayForm((current) => ({ ...current, request_timeout: value }))}
+              onBlur={() => void saveSetting("request_timeout", gatewayForm.request_timeout)}
+              onKeyDown={handleSettingKeyDown}
+            />
+            <SettingsNumericRow
+              label="Max Retry Attempts"
+              value={gatewayForm.max_retry_attempts}
+              min={1}
+              saving={savingField === "max_retry_attempts"}
+              onChange={(value) => setGatewayForm((current) => ({ ...current, max_retry_attempts: value }))}
+              onBlur={() => void saveSetting("max_retry_attempts", gatewayForm.max_retry_attempts)}
+              onKeyDown={handleSettingKeyDown}
+            />
+          </div>
+        </div>
+
+        <div className="surface-section px-5 py-5 sm:px-6">
+          <SectionHeading title="CPA Service" description="查看当前 CPA 通道状态。" />
+          <div className="mt-4 space-y-4">
+            {service ? (
+              <>
+                <div className="grid gap-4 border-b border-moon-200/35 pb-4 sm:grid-cols-2">
+                  <InfoBlock label="Status" value={<StatusBadge ok={service.status === "healthy"}>{service.status === "healthy" ? "Healthy" : "Error"}</StatusBadge>} />
+                  <InfoBlock label="Label" value={service.label || "--"} />
+                  <InfoBlock label="Base URL" value={service.base_url || "--"} />
+                  <InfoBlock label="Last Checked" value={service.last_checked_at ? shortDate(service.last_checked_at) : "尚未检查"} />
+                </div>
+                <div className="flex justify-start">
+                  <Button variant="outline" size="sm" className="rounded-full" onClick={testService} disabled={testingService}>
+                    {testingService ? <RefreshCw className="size-4 animate-spin" /> : <CircleDot className="size-4" />}
+                    Test Connection
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col gap-4 rounded-[1.35rem] border border-dashed border-moon-200/60 px-4 py-4 text-sm text-moon-500">
+                <p>请通过环境变量完成 CPA 配置</p>
+                <div>
+                  <Button variant="outline" size="sm" className="rounded-full" onClick={testService} disabled={testingService}>
+                    {testingService ? <RefreshCw className="size-4 animate-spin" /> : <CircleDot className="size-4" />}
+                    Test Connection
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
       <section className="surface-section px-5 py-5 sm:px-6">
         <SectionHeading
           title="Token Management"
-          description="统一管理 Global Tokens 与 Pool Tokens。危险操作收进菜单里，列表只保留必要控制。"
+          description="集中管理全局与 Pool 访问凭证。"
+          action={
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="size-4" />
+              Create Token
+            </Button>
+          }
         />
         <div className="mt-7 space-y-8">
           <TokenGroup
@@ -444,8 +395,8 @@ export default function SettingsPage() {
           />
 
           <div className="space-y-6">
-            <div className="border-t border-moon-200/45 pt-6">
-              <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Pool Tokens</p>
+            <div className="border-t border-moon-200/35 pt-6">
+              <p className="text-[11px] font-medium tracking-[0.18em] text-moon-350">Pool Tokens</p>
             </div>
             {poolGroups.length === 0 ? (
               <p className="text-sm text-moon-400">还没有 Pool Token。</p>
@@ -475,147 +426,24 @@ export default function SettingsPage() {
       </section>
 
       <section className="surface-section px-5 py-5 sm:px-6">
-        <SectionHeading
-          title="Notifications"
-          description="只做站内运维提醒，聚焦 CPA 到期和健康检查失败。"
-        />
-        <div className="mt-6 space-y-5">
-          <div className="divide-y divide-moon-200/45">
-            <SwitchRow
-              label="Account / Service Errors"
-              helper="当账号或 CPA Service 进入 error 状态时出现在这里。"
-              checked={notificationForm.notification_error_enabled}
-              saving={savingField === "notification_error_enabled"}
-              onCheckedChange={(checked) => {
-                setNotificationForm((current) => ({ ...current, notification_error_enabled: checked }));
-                void saveSetting("notification_error_enabled", checked);
-              }}
-            />
-            <SwitchRow
-              label="Expiring CPA Accounts"
-              helper="按到期窗口筛出即将过期的 CPA 账号。"
-              checked={notificationForm.notification_expiring_enabled}
-              saving={savingField === "notification_expiring_enabled"}
-              onCheckedChange={(checked) => {
-                setNotificationForm((current) => ({ ...current, notification_expiring_enabled: checked }));
-                void saveSetting("notification_expiring_enabled", checked);
-              }}
-            />
-            <SettingsNumericRow
-              label="Expiring Window"
-              helper="多少天内到期算作提醒。"
-              value={notificationForm.notification_expiring_days}
-              suffix="天"
-              min={1}
-              saving={savingField === "notification_expiring_days"}
-              onChange={(value) => setNotificationForm((current) => ({ ...current, notification_expiring_days: value }))}
-              onBlur={() => void saveSetting("notification_expiring_days", notificationForm.notification_expiring_days)}
-              onKeyDown={handleSettingKeyDown}
-            />
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-2">
+            <h2 className="text-[1.05rem] font-semibold tracking-[-0.02em] text-moon-800 sm:text-[1.12rem]">
+              System Administration
+            </h2>
+            <p className="text-sm leading-6 text-moon-500">低频维护项默认折叠显示。</p>
           </div>
-
-          <div className="rounded-[1.4rem] border border-moon-200/55 bg-white/66">
-            <div className="flex items-center justify-between gap-3 border-b border-moon-200/45 px-4 py-3">
-              <p className="text-sm font-medium text-moon-800">Current Notifications</p>
-              <p className="text-xs text-moon-400">{notifications.length} items</p>
-            </div>
-            {notifications.length === 0 ? (
-              <p className="px-4 py-4 text-sm text-moon-400">当前没有需要处理的通知。</p>
-            ) : (
-              <div className="divide-y divide-moon-200/40">
-                {notifications.map((notification, index) => (
-                  <NotificationRow key={`${notification.type}-${notification.account_id ?? notification.service_id ?? index}-${notification.expires_at ?? ""}`} notification={notification} />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      <section className="surface-section px-5 py-5 sm:px-6">
-        <SectionHeading
-          title="Data Retention"
-          description="控制 `request_logs` 的保留周期，自动清理和手动清理都只作用于请求日志。"
-        />
-        <div className="mt-6 space-y-5">
-          <SettingsNumericRow
-            label="Request Log Retention"
-            helper="0 表示禁用自动清理。"
-            value={retentionForm.data_retention_days}
-            suffix="天"
-            min={0}
-            saving={savingField === "data_retention_days"}
-            onChange={(value) => setRetentionForm({ data_retention_days: value })}
-            onBlur={() => void saveSetting("data_retention_days", retentionForm.data_retention_days)}
-            onKeyDown={handleSettingKeyDown}
-          />
-
-          <div className="grid gap-4 rounded-[1.4rem] border border-moon-200/55 bg-white/66 px-4 py-4 sm:grid-cols-3">
-            <InfoBlock label="Stored Logs" value={String(retentionSummary?.total_logs ?? 0)} />
-            <InfoBlock label="Oldest Log" value={retentionSummary?.oldest_log_at ? shortDate(retentionSummary.oldest_log_at) : "--"} />
-            <InfoBlock label="Newest Log" value={retentionSummary?.newest_log_at ? shortDate(retentionSummary.newest_log_at) : "--"} />
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.4rem] border border-dashed border-moon-200/65 px-4 py-4">
-            <p className="text-sm text-moon-500">
-              {retentionForm.data_retention_days > 0
-                ? `后台健康检查周期会自动清理 ${retentionForm.data_retention_days} 天前的请求日志。`
-                : "当前已禁用自动清理。"}
-            </p>
-            <Button variant="outline" onClick={pruneRetentionNow} disabled={pruningRetention}>
-              {pruningRetention ? <RefreshCw className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-              Prune Now
-            </Button>
-          </div>
-        </div>
-      </section>
-
-      <section className="surface-section px-5 py-5 sm:px-6">
-        <SectionHeading title="CPA Service" description="只读连接状态，用于判断 CPA 通道当前是否可用。" />
-        <div className="mt-6 space-y-4">
-          {service ? (
-            <>
-              <div className="grid gap-4 border-b border-moon-200/45 pb-4 sm:grid-cols-2 xl:grid-cols-4">
-                <InfoBlock label="Status" value={<StatusBadge ok={service.status === "healthy"}>{service.status === "healthy" ? "Healthy" : "Error"}</StatusBadge>} />
-                <InfoBlock label="Label" value={service.label || "--"} />
-                <InfoBlock label="Base URL" value={service.base_url || "--"} />
-                <InfoBlock label="Last Checked" value={service.last_checked_at ? shortDate(service.last_checked_at) : "尚未检查"} />
-              </div>
-              <div className="flex justify-start">
-                <Button variant="outline" onClick={testService} disabled={testingService}>
-                  {testingService ? <RefreshCw className="size-4 animate-spin" /> : <CircleDot className="size-4" />}
-                  Test Connection
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="flex flex-col gap-4 rounded-[1.4rem] border border-dashed border-moon-200/65 px-4 py-5 text-sm text-moon-500 sm:flex-row sm:items-center sm:justify-between">
-              <p>请通过环境变量完成 CPA 配置</p>
-              <Button variant="outline" onClick={testService} disabled={testingService}>
-                {testingService ? <RefreshCw className="size-4 animate-spin" /> : <CircleDot className="size-4" />}
-                Test Connection
-              </Button>
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="surface-section px-5 py-5 sm:px-6">
-        <button
-          type="button"
-          className="flex w-full items-center justify-between gap-4 text-left"
-          onClick={() => setSystemOpen((current) => !current)}
-        >
-          <SectionHeading
-            title="System Administration"
-            description="低频高级维护项。默认收起，不主动打扰日常操作。"
-          />
-          <span className="flex size-8 items-center justify-center rounded-full border border-moon-200/65 bg-white/60 text-moon-500">
+          <button
+            type="button"
+            className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full text-moon-500 transition-colors hover:bg-white/70 hover:text-moon-700"
+            onClick={() => setSystemOpen((current) => !current)}
+            aria-label={systemOpen ? "收起系统维护项" : "展开系统维护项"}
+          >
             {systemOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-          </span>
-        </button>
+          </button>
+        </div>
         {systemOpen ? (
-          <div className="mt-6 space-y-5 border-t border-moon-200/45 pt-5">
+          <div className="mt-5 space-y-5 border-t border-moon-200/35 pt-5">
             <SettingsNumericRow
               label="Health Check Interval"
               helper="修改后需重启生效"
@@ -628,9 +456,13 @@ export default function SettingsPage() {
               onKeyDown={handleSettingKeyDown}
             />
             <div className="flex flex-wrap gap-3">
-              <Button variant="outline" onClick={() => window.open("/admin/api/export", "_blank") }>
+              <Button variant="outline" size="sm" className="rounded-full" onClick={() => window.open("/admin/api/export", "_blank") }>
                 <Download className="size-4" />
                 Export Configuration
+              </Button>
+              <Button variant="outline" size="sm" className="rounded-full" disabled>
+                <Upload className="size-4" />
+                Import Configuration
               </Button>
             </div>
           </div>
@@ -641,7 +473,7 @@ export default function SettingsPage() {
         <DialogContent className="max-w-md rounded-[1.6rem] border border-white/75 bg-white/95 p-0">
           <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
             <DialogTitle>Create Token</DialogTitle>
-            <DialogDescription>在这里选择归属并创建新的访问凭证。</DialogDescription>
+            <DialogDescription>选择归属并创建新的访问凭证。</DialogDescription>
           </DialogHeader>
           <div className="space-y-5 px-6 py-6">
             <div className="space-y-2">
@@ -710,7 +542,7 @@ export default function SettingsPage() {
         <DialogContent className="max-w-md rounded-[1.6rem] border border-white/75 bg-white/95 p-0">
           <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
             <DialogTitle>Edit Token Name</DialogTitle>
-            <DialogDescription>只更新名称，不改变归属与状态。</DialogDescription>
+            <DialogDescription>只更新名称。</DialogDescription>
           </DialogHeader>
           <div className="px-6 py-6">
             <Input value={editingName} onChange={(event) => setEditingName(event.target.value)} />
@@ -765,10 +597,10 @@ function SettingsNumericRow({
   min?: number;
 }) {
   return (
-    <div className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="space-y-1">
+    <div className="flex flex-col gap-3 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="space-y-0.5">
         <p className="text-sm font-medium text-moon-800">{label}</p>
-        <p className="text-sm text-moon-400">{helper}</p>
+        <p className="text-xs text-moon-350">{helper}</p>
       </div>
       <div className="flex items-center gap-2 self-start sm:self-auto">
         <Input
@@ -780,55 +612,9 @@ function SettingsNumericRow({
           onBlur={onBlur}
           onKeyDown={onKeyDown}
         />
-        {suffix ? <span className="text-sm text-moon-400">{suffix}</span> : null}
-        {saving ? <RefreshCw className="size-4 animate-spin text-moon-400" /> : null}
+        {suffix ? <span className="text-sm text-moon-350">{suffix}</span> : null}
+        {saving ? <RefreshCw className="size-4 animate-spin text-moon-350" /> : null}
       </div>
-    </div>
-  );
-}
-
-function SwitchRow({
-  label,
-  helper,
-  checked,
-  saving,
-  onCheckedChange,
-}: {
-  label: string;
-  helper: string;
-  checked: boolean;
-  saving?: boolean;
-  onCheckedChange: (checked: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4 py-4">
-      <div className="space-y-1">
-        <p className="text-sm font-medium text-moon-800">{label}</p>
-        <p className="text-sm text-moon-400">{helper}</p>
-      </div>
-      <div className="flex items-center gap-2">
-        <Switch checked={checked} onCheckedChange={onCheckedChange} />
-        {saving ? <RefreshCw className="size-4 animate-spin text-moon-400" /> : null}
-      </div>
-    </div>
-  );
-}
-
-function NotificationRow({ notification }: { notification: SystemNotification }) {
-  return (
-    <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:justify-between">
-      <div className="space-y-1.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <StatusBadge ok={notification.severity !== "critical"}>
-            {notification.severity === "critical" ? "Critical" : "Warning"}
-          </StatusBadge>
-          <p className="text-sm font-medium text-moon-800">{notification.title}</p>
-        </div>
-        <p className="text-sm text-moon-500">{notification.message}</p>
-      </div>
-      {notification.expires_at ? (
-        <p className="text-xs text-moon-400">Expires {shortDate(notification.expires_at)}</p>
-      ) : null}
     </div>
   );
 }
@@ -864,19 +650,19 @@ function TokenGroup({
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm font-medium text-moon-800">{title}</p>
-        <p className="text-xs text-moon-400">{tokens.length} tokens</p>
+        <p className="text-xs text-moon-350">{tokens.length} tokens</p>
       </div>
       {tokens.length === 0 ? (
         <p className="text-sm text-moon-400">{emptyText ?? "当前分组为空。"}</p>
       ) : (
-        <div className="border-y border-moon-200/45">
-          <div className="hidden xl:grid xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1.4fr)_8rem_8rem_7rem_8rem_auto] xl:gap-4 xl:border-b xl:border-moon-200/35 xl:py-3">
-            {['Name', 'Token', 'Created', 'Last Used', 'Status', 'Ownership'].map((label) => (
-              <p key={label} className="text-[11px] uppercase tracking-[0.18em] text-moon-400">
+        <div className="border-y border-moon-200/35">
+          <div className="hidden xl:grid xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1.4fr)_8rem_8rem_7rem_8rem_auto] xl:gap-4 xl:border-b xl:border-moon-200/25 xl:py-2.5">
+            {["名称", "Token", "创建时间", "最后使用", "状态", "归属"].map((label) => (
+              <p key={label} className="text-[11px] font-medium tracking-[0.16em] text-moon-300">
                 {label}
               </p>
             ))}
-            <p className="text-right text-[11px] uppercase tracking-[0.18em] text-moon-400">Actions</p>
+            <p className="text-right text-[11px] font-medium tracking-[0.16em] text-moon-300">操作</p>
           </div>
           {tokens.map((token) => (
             <TokenRow
@@ -925,27 +711,27 @@ function TokenRow({
   const displayToken = visible ? revealedValue ?? token.token_masked : token.token_masked;
 
   return (
-    <div className="grid gap-4 border-b border-moon-200/35 py-4 last:border-b-0 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1.4fr)_8rem_8rem_7rem_8rem_auto] xl:items-center">
-      <InlineMeta label="Name" value={token.name} strong />
+    <div className="grid gap-4 border-b border-moon-200/25 py-3.5 last:border-b-0 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1.4fr)_8rem_8rem_7rem_8rem_auto] xl:items-center">
+      <InlineMeta label="名称" value={token.name} strong />
       <InlineMeta label="Token" value={displayToken || "--"} mono muted={!visible} />
-      <InlineMeta label="Created" value={shortDate(token.created_at)} />
-      <InlineMeta label="Last Used" value={relativeTime(token.last_used_at)} />
-      <InlineMeta label="Status" value={<StatusBadge ok={token.enabled}>{token.enabled ? "Enabled" : "Disabled"}</StatusBadge>} />
-      <InlineMeta label="Ownership" value={ownerLabel} />
-      <div className="flex flex-wrap items-center justify-start gap-1.5 xl:justify-end">
-        <Button variant="ghost" size="sm" className="rounded-full text-moon-500" onClick={onCopy}>
+      <InlineMeta label="创建时间" value={shortDate(token.created_at)} />
+      <InlineMeta label="最后使用" value={relativeTime(token.last_used_at)} />
+      <InlineMeta label="状态" value={<StatusBadge ok={token.enabled}>{token.enabled ? "Enabled" : "Disabled"}</StatusBadge>} />
+      <InlineMeta label="归属" value={ownerLabel} />
+      <div className="flex flex-wrap items-center justify-start gap-1 xl:justify-end">
+        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onCopy}>
           <Copy className="size-3.5" />
           Copy
         </Button>
-        <Button variant="ghost" size="sm" className="rounded-full text-moon-500" onClick={onReveal}>
+        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onReveal}>
           {visible ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
           Reveal
         </Button>
-        <Button variant="ghost" size="sm" className="rounded-full text-moon-500" onClick={onEdit}>
+        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onEdit}>
           <PencilLine className="size-3.5" />
           Edit name
         </Button>
-        <Button variant="ghost" size="sm" className="rounded-full text-moon-500" onClick={onToggleEnabled}>
+        <Button variant="ghost" size="sm" className="rounded-full px-2.5 text-moon-500" onClick={onToggleEnabled}>
           {token.enabled ? "Disable" : "Enable"}
         </Button>
         <DropdownMenu>
@@ -982,8 +768,8 @@ function InlineMeta({
   muted?: boolean;
 }) {
   return (
-    <div className="space-y-1.5 xl:space-y-1">
-      <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400 xl:hidden">{label}</p>
+    <div className="space-y-1 xl:space-y-1">
+      <p className="text-[11px] tracking-[0.16em] text-moon-300 xl:hidden">{label}</p>
       <div
         className={cn(
           "text-sm text-moon-500",
@@ -1001,7 +787,7 @@ function InlineMeta({
 function InfoBlock({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="space-y-1.5">
-      <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">{label}</p>
+      <p className="text-[11px] tracking-[0.16em] text-moon-300">{label}</p>
       <div className="text-sm text-moon-700">{value}</div>
     </div>
   );
