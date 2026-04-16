@@ -629,21 +629,17 @@ func (h *Handler) listPoolTokens(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
-	pools, err := h.store.ListPools()
+	pool, err := h.store.GetPool(poolID)
 	if err != nil {
 		h.internalError(w, err)
 		return
-	}
-	poolLabelByID := make(map[int64]string, len(pools))
-	for _, pool := range pools {
-		poolLabelByID[pool.ID] = pool.Label
 	}
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		tokens[i].Token = ""
 		tokens[i].IsGlobal = tokens[i].PoolID == nil
-		if tokens[i].PoolID != nil {
-			tokens[i].PoolLabel = poolLabelByID[*tokens[i].PoolID]
+		if tokens[i].PoolID != nil && pool != nil {
+			tokens[i].PoolLabel = pool.Label
 		}
 	}
 	if tokens == nil {
@@ -932,7 +928,15 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s := strings.TrimSpace(string(v))
-		if s == "null" || (s == "" && k != "webhook_url") {
+		if s == "null" {
+			if k == "webhook_url" {
+				pairs[k] = ""
+				continue
+			}
+			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("setting %s cannot be null", k))
+			return
+		}
+		if s == "" && k != "webhook_url" {
 			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("setting %s cannot be empty", k))
 			return
 		}
@@ -1225,16 +1229,28 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
-	accounts, _ := h.store.ListAccounts()
+	accounts, err := h.store.ListAccounts()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	for i := range accounts {
 		h.fillAccountResponse(&accounts[i])
 	}
-	pools, _ := h.store.ListPools()
+	pools, err := h.store.ListPools()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	poolLabelByID := make(map[int64]string, len(pools))
 	for _, pool := range pools {
 		poolLabelByID[pool.ID] = pool.Label
 	}
-	tokens, _ := h.store.ListTokens()
+	tokens, err := h.store.ListTokens()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		if tokens[i].PoolID != nil {
@@ -1242,11 +1258,19 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 		}
 		tokens[i].Token = ""
 	}
-	settings, _ := h.store.GetSettings()
+	settings, err := h.store.GetSettings()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	if _, ok := settings["admin_token"]; ok {
 		settings["admin_token"] = maskKey(settings["admin_token"])
 	}
-	cpaServices, _ := h.store.ListCpaServices()
+	cpaServices, err := h.store.ListCpaServices()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	for i := range cpaServices {
 		cpaServices[i].APIKeyMasked = maskKey(cpaServices[i].APIKey)
 		cpaServices[i].APIKeySet = cpaServices[i].APIKey != ""

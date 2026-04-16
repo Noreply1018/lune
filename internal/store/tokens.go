@@ -105,11 +105,19 @@ func (s *Store) RegenerateToken(id int64) (*AccessToken, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.db.Exec(
+	res, err := s.db.Exec(
 		`UPDATE access_tokens SET token=?, updated_at=datetime('now') WHERE id=?`,
 		value, id,
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, nil
 	}
 	return s.GetToken(id)
 }

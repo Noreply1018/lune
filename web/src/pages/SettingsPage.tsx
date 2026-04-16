@@ -138,6 +138,7 @@ export default function SettingsPage() {
   const [savingField, setSavingField] = useState<EditableSettingField | null>(
     null,
   );
+  const settingsRef = useRef(settings);
   const [savingToggles, setSavingToggles] = useState<
     Partial<Record<ToggleSettingField, boolean>>
   >({});
@@ -171,10 +172,10 @@ export default function SettingsPage() {
     return summary;
   }
 
-  function load() {
-    setLoading(true);
+  function load(silent = false) {
+    if (!silent) setLoading(true);
     setError(null);
-    Promise.all([
+    return Promise.all([
       api.get<CpaService | null>("/cpa/service"),
       api.get<SystemSettings>("/settings"),
       api.get<AccessToken[]>("/tokens"),
@@ -207,6 +208,10 @@ export default function SettingsPage() {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   const poolNameMap = useMemo(
     () => Object.fromEntries(pools.map((pool) => [pool.id, pool.label])),
@@ -244,7 +249,7 @@ export default function SettingsPage() {
           ? value
           : 0
         : value.trim();
-    const prevSettings = settings;
+    const prevSettings = settingsRef.current;
     setSavingField(field);
     try {
       await api.put("/settings", { [field]: payloadValue });
@@ -503,6 +508,8 @@ export default function SettingsPage() {
       return;
     }
     const removed = deleteToken;
+    const prevVisible = visibleTokenIds.includes(removed.id);
+    const prevRevealed = revealedTokens[removed.id];
     setTokens((current) => current.filter((token) => token.id !== removed.id));
     setVisibleTokenIds((current) => current.filter((id) => id !== removed.id));
     setRevealedTokens((current) => {
@@ -524,6 +531,17 @@ export default function SettingsPage() {
         }
         return [removed, ...current];
       });
+      if (prevVisible) {
+        setVisibleTokenIds((current) =>
+          current.includes(removed.id) ? current : [...current, removed.id],
+        );
+      }
+      if (prevRevealed !== undefined) {
+        setRevealedTokens((current) => ({
+          ...current,
+          [removed.id]: prevRevealed,
+        }));
+      }
       setDeleteToken(null);
       toast(err instanceof Error ? err.message : "删除 Token 失败", "error");
     }
@@ -623,7 +641,7 @@ export default function SettingsPage() {
       const result = await api.post<ConfigImportResult>("/import", importDraft);
       setImportConfirmOpen(false);
       setImportDraft(null);
-      await load();
+      await load(true);
       toast(
         `导入完成：${result.created_pools} 新建 Pool，${result.updated_pools} 更新 Pool，${result.created_tokens} 新建 Token，${result.skipped_tokens} 跳过 Token，${result.updated_settings} 项设置更新`,
       );
@@ -1006,7 +1024,11 @@ export default function SettingsPage() {
                 size="sm"
                 className="rounded-full"
                 onClick={() => void pruneNow()}
-                disabled={pruning || (retentionSummary?.total_logs ?? 0) === 0}
+                disabled={
+                  pruning ||
+                  (retentionSummary?.total_logs ?? 0) === 0 ||
+                  (settings?.data_retention_days ?? 0) === 0
+                }
               >
                 {pruning ? (
                   <RefreshCw className="size-4 animate-spin" />
