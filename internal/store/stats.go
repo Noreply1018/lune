@@ -39,11 +39,21 @@ func (s *Store) GetOverview() (*Overview, error) {
 		}
 	}
 
-	// accounts total / healthy
-	total, byStatus, err := s.CountAccounts()
+	// accounts total / healthy (enabled accounts only, to match pool totals)
+	rows, err := s.db.Query(`SELECT status, COUNT(*) FROM accounts WHERE enabled = 1 GROUP BY status`)
 	if err == nil {
-		o.AccountsTotal = total
-		o.AccountsHealthy = byStatus["healthy"] + byStatus["degraded"]
+		defer rows.Close()
+		for rows.Next() {
+			var status string
+			var count int
+			if err := rows.Scan(&status, &count); err != nil {
+				continue
+			}
+			o.AccountsTotal += count
+			if status == "healthy" || status == "degraded" {
+				o.AccountsHealthy += count
+			}
+		}
 	}
 
 	// models total (distinct model_id from account_models)

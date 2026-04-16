@@ -87,3 +87,46 @@ func TestGetOverviewCountsPoolHealthyWhenAnyRoutableAccountExists(t *testing.T) 
 		t.Fatalf("expected pool with at least one routable account to count as healthy, got %d", overview.PoolsHealthy)
 	}
 }
+
+func TestGetOverviewCountsOnlyEnabledAccounts(t *testing.T) {
+	st := newTestStore(t)
+
+	enabledID, err := st.CreateAccount(&Account{
+		Label:      "enabled-account",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://example.com/v1",
+		APIKey:     "sk-enabled",
+		Enabled:    true,
+		Status:     "healthy",
+	})
+	if err != nil {
+		t.Fatalf("create enabled account: %v", err)
+	}
+	if err := st.DisableAccount(enabledID); err != nil {
+		t.Fatalf("disable account: %v", err)
+	}
+
+	_, err = st.CreateAccount(&Account{
+		Label:      "active-account",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://example.com/v1",
+		APIKey:     "sk-active",
+		Enabled:    true,
+		Status:     "healthy",
+	})
+	if err != nil {
+		t.Fatalf("create active account: %v", err)
+	}
+
+	overview, err := st.GetOverview()
+	if err != nil {
+		t.Fatalf("get overview: %v", err)
+	}
+
+	if overview.AccountsTotal != 1 {
+		t.Fatalf("expected only enabled accounts to count, got %d", overview.AccountsTotal)
+	}
+	if overview.AccountsHealthy != 1 {
+		t.Fatalf("expected only enabled healthy accounts to count, got %d", overview.AccountsHealthy)
+	}
+}

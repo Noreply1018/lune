@@ -53,7 +53,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import { relativeTime, shortDate } from "@/lib/fmt";
+import { shortDate } from "@/lib/fmt";
 import { maskToken } from "@/lib/lune";
 import type {
   AccessToken,
@@ -89,15 +89,8 @@ const INITIAL_TOKEN_DRAFT: TokenDraft = {
 };
 
 const TOKEN_GRID_COLUMNS =
-  "xl:grid-cols-[minmax(11rem,1.05fr)_minmax(0,4fr)_9rem_8rem_7rem_7.5rem_10rem]";
-const TOKEN_COLUMN_LABELS = [
-  "名称",
-  "Token",
-  "创建时间",
-  "最后使用",
-  "状态",
-  "归属",
-];
+  "xl:grid-cols-[minmax(10rem,1fr)_minmax(0,4.8fr)_9.5rem_6.25rem_6.25rem_11.5rem]";
+const TOKEN_COLUMN_LABELS = ["名称", "Token", "创建时间", "状态", "归属"];
 
 export default function SettingsPage() {
   const [service, setService] = useState<CpaService | null>(null);
@@ -118,9 +111,9 @@ export default function SettingsPage() {
   const [savingField, setSavingField] = useState<EditableSettingField | null>(
     null,
   );
-  const [savingToggle, setSavingToggle] = useState<ToggleSettingField | null>(
-    null,
-  );
+  const [savingToggles, setSavingToggles] = useState<
+    Partial<Record<ToggleSettingField, boolean>>
+  >({});
   const [createOpen, setCreateOpen] = useState(false);
   const [createDraft, setCreateDraft] =
     useState<TokenDraft>(INITIAL_TOKEN_DRAFT);
@@ -136,7 +129,6 @@ export default function SettingsPage() {
   const [visibleTokenIds, setVisibleTokenIds] = useState<number[]>([]);
   const [testingService, setTestingService] = useState(false);
   const [systemOpen, setSystemOpen] = useState(false);
-  const toggleSaving = savingToggle !== null;
 
   function load() {
     setLoading(true);
@@ -182,15 +174,9 @@ export default function SettingsPage() {
     () => tokens.filter((token) => token.pool_id == null),
     [tokens],
   );
-  const poolGroups = useMemo(
-    () =>
-      pools
-        .map((pool) => ({
-          pool,
-          tokens: tokens.filter((token) => token.pool_id === pool.id),
-        }))
-        .filter((group) => group.tokens.length > 0),
-    [pools, tokens],
+  const poolTokens = useMemo(
+    () => tokens.filter((token) => token.pool_id != null),
+    [tokens],
   );
 
   async function saveSetting(
@@ -203,6 +189,7 @@ export default function SettingsPage() {
           ? value
           : 0
         : value.trim();
+    const prevSettings = settings;
     setSavingField(field);
     try {
       await api.put("/settings", { [field]: payloadValue });
@@ -212,23 +199,23 @@ export default function SettingsPage() {
       toast(field === "health_check_interval" ? "维护项已更新" : "设置已更新");
     } catch (err) {
       toast(err instanceof Error ? err.message : "保存设置失败", "error");
-      if (settings) {
+      if (prevSettings) {
         if (field === "health_check_interval") {
           setSystemForm((current) => ({
             ...current,
-            health_check_interval: settings.health_check_interval,
+            health_check_interval: prevSettings.health_check_interval,
           }));
         }
         if (field === "request_timeout" || field === "max_retry_attempts") {
           setGatewayForm((current) => ({
             ...current,
-            [field]: settings[field],
+            [field]: prevSettings[field],
           }));
         }
         if (field === "webhook_url" || field === "notification_expiring_days") {
           setNotificationForm((current) => ({
             ...current,
-            [field]: settings[field],
+            [field]: prevSettings[field],
           }));
         }
       }
@@ -238,7 +225,7 @@ export default function SettingsPage() {
   }
 
   async function saveToggle(field: ToggleSettingField, value: boolean) {
-    setSavingToggle(field);
+    setSavingToggles((current) => ({ ...current, [field]: true }));
     setSettings((current) =>
       current ? { ...current, [field]: value } : current,
     );
@@ -251,7 +238,7 @@ export default function SettingsPage() {
       );
       toast(err instanceof Error ? err.message : "保存设置失败", "error");
     } finally {
-      setSavingToggle(null);
+      setSavingToggles((current) => ({ ...current, [field]: false }));
     }
   }
 
@@ -344,9 +331,10 @@ export default function SettingsPage() {
         enabled: true,
       });
       const now = new Date().toISOString();
+      const { token: revealedTokenValue, ...createdTokenData } = created;
       const createdToken: AccessToken = {
-        ...created,
-        token_masked: maskToken(created.token),
+        ...createdTokenData,
+        token_masked: maskToken(revealedTokenValue),
         pool_label:
           created.pool_id != null ? poolNameMap[created.pool_id] : undefined,
         is_global: created.pool_id == null,
@@ -359,7 +347,7 @@ export default function SettingsPage() {
       setCreateDraft(INITIAL_TOKEN_DRAFT);
       setRevealedTokens((current) => ({
         ...current,
-        [created.id]: created.token,
+        [created.id]: revealedTokenValue,
       }));
       setVisibleTokenIds((current) =>
         Array.from(new Set([...current, created.id])),
@@ -468,6 +456,7 @@ export default function SettingsPage() {
         }
         return [removed, ...current];
       });
+      setDeleteToken(null);
       toast(err instanceof Error ? err.message : "删除 Token 失败", "error");
     }
   }
@@ -644,12 +633,12 @@ export default function SettingsPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  {savingToggle === "webhook_enabled" ? (
+                  {savingToggles.webhook_enabled ? (
                     <RefreshCw className="size-4 animate-spin text-moon-350" />
                   ) : null}
                   <Switch
                     checked={settings?.webhook_enabled ?? false}
-                    disabled={toggleSaving}
+                    disabled={savingToggles.webhook_enabled}
                     onCheckedChange={(checked) =>
                       void saveToggle("webhook_enabled", checked)
                     }
@@ -662,8 +651,8 @@ export default function SettingsPage() {
                   label="Account Health Failure"
                   helper="账号健康检查进入 error 状态时触发。"
                   checked={settings?.notification_error_enabled ?? false}
-                  saving={savingToggle === "notification_error_enabled"}
-                  disabled={toggleSaving}
+                  saving={savingToggles.notification_error_enabled ?? false}
+                  disabled={savingToggles.notification_error_enabled ?? false}
                   onCheckedChange={(checked) =>
                     void saveToggle("notification_error_enabled", checked)
                   }
@@ -672,8 +661,10 @@ export default function SettingsPage() {
                   label="Account Expiring Soon"
                   helper="CPA 账号即将过期或已过期时触发。"
                   checked={settings?.notification_expiring_enabled ?? false}
-                  saving={savingToggle === "notification_expiring_enabled"}
-                  disabled={toggleSaving}
+                  saving={savingToggles.notification_expiring_enabled ?? false}
+                  disabled={
+                    savingToggles.notification_expiring_enabled ?? false
+                  }
                   onCheckedChange={(checked) =>
                     void saveToggle("notification_expiring_enabled", checked)
                   }
@@ -787,39 +778,23 @@ export default function SettingsPage() {
             onRegenerate={setRegenerateToken}
             onDelete={setDeleteToken}
           />
-
-          <div className="space-y-6">
-            <div className="border-t border-moon-200/30 pt-6">
-              <p className="text-[11px] font-medium tracking-[0.18em] text-moon-350">
-                Pool Tokens
-              </p>
-            </div>
-            {poolGroups.length === 0 ? (
-              <div className="border-y border-moon-200/30 py-5">
-                <p className="text-sm text-moon-400">还没有 Pool Token。</p>
-              </div>
-            ) : (
-              poolGroups.map((group) => (
-                <TokenGroup
-                  key={group.pool.id}
-                  title={group.pool.label}
-                  tokens={group.tokens}
-                  poolNameMap={poolNameMap}
-                  revealedTokens={revealedTokens}
-                  visibleTokenIds={visibleTokenIds}
-                  onCopy={copyToken}
-                  onReveal={toggleReveal}
-                  onEdit={(token) => {
-                    setEditingToken(token);
-                    setEditingName(token.name);
-                  }}
-                  onToggleEnabled={toggleEnabled}
-                  onRegenerate={setRegenerateToken}
-                  onDelete={setDeleteToken}
-                />
-              ))
-            )}
-          </div>
+          <TokenGroup
+            title="Pool Tokens"
+            tokens={poolTokens}
+            emptyText="还没有 Pool Token。"
+            poolNameMap={poolNameMap}
+            revealedTokens={revealedTokens}
+            visibleTokenIds={visibleTokenIds}
+            onCopy={copyToken}
+            onReveal={toggleReveal}
+            onEdit={(token) => {
+              setEditingToken(token);
+              setEditingName(token.name);
+            }}
+            onToggleEnabled={toggleEnabled}
+            onRegenerate={setRegenerateToken}
+            onDelete={setDeleteToken}
+          />
         </div>
       </section>
 
@@ -1250,10 +1225,9 @@ function TokenRow({
         value={displayToken || "--"}
         mono
         muted={!visible}
-        wrap
+        nowrap
       />
       <InlineMeta label="创建时间" value={shortDate(token.created_at)} />
-      <InlineMeta label="最后使用" value={relativeTime(token.last_used_at)} />
       <InlineMeta
         label="状态"
         value={
@@ -1263,11 +1237,11 @@ function TokenRow({
         }
       />
       <InlineMeta label="归属" value={ownerLabel} />
-      <div className="flex flex-wrap items-center justify-start gap-1.5 xl:self-start">
+      <div className="flex min-w-0 flex-nowrap items-center justify-start gap-1.5 overflow-hidden xl:self-start">
         <Button
           variant="ghost"
           size="sm"
-          className="rounded-full px-2.5 text-moon-500"
+          className="shrink-0 rounded-full px-2.5 text-moon-500"
           onClick={onCopy}
         >
           <Copy className="size-3.5" />
@@ -1276,7 +1250,7 @@ function TokenRow({
         <Button
           variant="ghost"
           size="sm"
-          className="rounded-full px-2.5 text-moon-500"
+          className="shrink-0 rounded-full px-2.5 text-moon-500"
           onClick={onReveal}
         >
           {visible ? (
@@ -1292,7 +1266,7 @@ function TokenRow({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="rounded-full text-moon-500"
+                className="shrink-0 rounded-full text-moon-500"
               />
             }
           >
@@ -1332,27 +1306,32 @@ function InlineMeta({
   strong,
   mono,
   muted,
-  wrap,
+  nowrap,
 }: {
   label: string;
   value: string | ReactNode;
   strong?: boolean;
   mono?: boolean;
   muted?: boolean;
-  wrap?: boolean;
+  nowrap?: boolean;
 }) {
+  const title =
+    typeof value === "string" && value !== "--" ? value : undefined;
+
   return (
     <div className="min-w-0 space-y-1">
       <p className="text-[11px] tracking-[0.16em] text-moon-300 xl:hidden">
         {label}
       </p>
       <div
+        title={title}
         className={cn(
           "text-sm text-moon-500",
           strong && "font-medium text-moon-800",
           mono && "font-mono text-[13px] leading-5",
           muted && "text-moon-400",
-          wrap ? "min-w-0 whitespace-normal break-all" : "truncate",
+          nowrap && "overflow-hidden text-ellipsis whitespace-nowrap",
+          !nowrap && "truncate",
         )}
       >
         {value}

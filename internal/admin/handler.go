@@ -119,6 +119,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("GET /admin/api/overview", h.getOverview)
 	handle("GET /admin/api/usage", h.getUsage)
 	handle("GET /admin/api/export", h.getExport)
+	handle("POST /admin/api/import", h.importConfig)
 	handle("GET /admin/api/usage/latency", h.getLatencyStats)
 
 	// CPA Service
@@ -628,14 +629,21 @@ func (h *Handler) listPoolTokens(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
+	pools, err := h.store.ListPools()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	poolLabelByID := make(map[int64]string, len(pools))
+	for _, pool := range pools {
+		poolLabelByID[pool.ID] = pool.Label
+	}
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		tokens[i].Token = ""
 		tokens[i].IsGlobal = tokens[i].PoolID == nil
 		if tokens[i].PoolID != nil {
-			if pool, err := h.store.GetPool(*tokens[i].PoolID); err == nil && pool != nil {
-				tokens[i].PoolLabel = pool.Label
-			}
+			tokens[i].PoolLabel = poolLabelByID[*tokens[i].PoolID]
 		}
 	}
 	if tokens == nil {
@@ -1253,6 +1261,23 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 		"settings":      settings,
 		"cpa_services":  cpaServices,
 	})
+}
+
+func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
+	var req store.ConfigImportPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+
+	result, err := h.store.ImportConfig(req)
+	if err != nil {
+		webutil.WriteAdminError(w, 400, "import_failed", err.Error())
+		return
+	}
+
+	h.cache.Invalidate()
+	webutil.WriteData(w, 200, result)
 }
 
 func (h *Handler) getLatencyStats(w http.ResponseWriter, r *http.Request) {
@@ -2189,7 +2214,11 @@ func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request)
 
 		// add to pool
 		if _, err := h.store.AddPoolMember(req.PoolID, accountID); err != nil {
-			slog.Error("batchImportCpaAccounts: failed to add pool member", "pool_id", req.PoolID, "account_id", accountID, "err", err)
+			if delErr := h.store.DeleteAccount(accountID); delErr != nil {
+				slog.Error("batchImportCpaAccounts: rollback orphan account failed", "account_id", accountID, "err", delErr)
+			}
+			errs = append(errs, fmt.Sprintf("%s: failed to add imported account to pool: %v", key, err))
+			continue
 		}
 
 		imported++
