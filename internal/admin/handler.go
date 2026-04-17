@@ -107,17 +107,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("GET /admin/api/settings", h.getSettings)
 	handle("PUT /admin/api/settings", h.updateSettings)
 	handle("GET /admin/api/settings/notifications", h.listNotifications)
-	handle("POST /admin/api/settings/webhook/test", h.testWebhook)
 	handle("GET /admin/api/settings/data-retention", h.getDataRetention)
 	handle("POST /admin/api/settings/data-retention/prune", h.pruneDataRetention)
-	handle("GET /admin/api/notifications/channels", h.listNotificationChannels)
-	handle("POST /admin/api/notifications/channels", h.createNotificationChannel)
-	handle("GET /admin/api/notifications/channels/{id}", h.getNotificationChannel)
-	handle("PUT /admin/api/notifications/channels/{id}", h.updateNotificationChannel)
-	handle("POST /admin/api/notifications/channels/{id}/enabled", h.setNotificationChannelEnabled)
-	handle("DELETE /admin/api/notifications/channels/{id}", h.deleteNotificationChannel)
-	handle("POST /admin/api/notifications/channels/{id}/test", h.testNotificationChannel)
-	handle("POST /admin/api/notifications/preview", h.previewNotifications)
+	handle("GET /admin/api/notifications", h.getNotifications)
+	handle("PUT /admin/api/notifications/settings", h.updateNotificationSettings)
+	handle("PUT /admin/api/notifications/subscriptions/{event}", h.updateNotificationSubscription)
+	handle("POST /admin/api/notifications/test", h.testNotification)
 	handle("GET /admin/api/notifications/deliveries", h.listNotificationDeliveries)
 	handle("GET /admin/api/notifications/event-types", h.listNotificationEventTypes)
 
@@ -852,8 +847,6 @@ type systemSettingsResponse struct {
 	RequestTimeout           int    `json:"request_timeout"`
 	MaxRetryAttempts         int    `json:"max_retry_attempts"`
 	NotificationExpiringDays int    `json:"notification_expiring_days"`
-	WebhookEnabled           bool   `json:"webhook_enabled"`
-	WebhookURL               string `json:"webhook_url"`
 	DataRetentionDays        int    `json:"data_retention_days"`
 }
 
@@ -870,8 +863,6 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		RequestTimeout:           syscfg.ParsePositiveInt(settings["request_timeout"], syscfg.DefaultRequestTimeout),
 		MaxRetryAttempts:         syscfg.ParsePositiveInt(settings["max_retry_attempts"], syscfg.DefaultMaxRetryAttempts),
 		NotificationExpiringDays: syscfg.ParsePositiveInt(settings["notification_expiring_days"], syscfg.DefaultNotificationExpiringDays),
-		WebhookEnabled:           syscfg.ParseBool(settings["webhook_enabled"], syscfg.DefaultWebhookEnabled),
-		WebhookURL:               settings["webhook_url"],
 		DataRetentionDays:        syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays),
 	}
 	webutil.WriteData(w, 200, resp)
@@ -894,14 +885,10 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s := strings.TrimSpace(string(v))
 		if s == "null" {
-			if k == "webhook_url" {
-				pairs[k] = ""
-				continue
-			}
 			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("setting %s cannot be null", k))
 			return
 		}
-		if s == "" && k != "webhook_url" {
+		if s == "" {
 			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("setting %s cannot be empty", k))
 			return
 		}
@@ -921,59 +908,31 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func normalizeSettingValue(key string, raw json.RawMessage) (string, error) {
-	switch key {
-	case "webhook_enabled":
-		var boolean bool
-		if err := json.Unmarshal(raw, &boolean); err == nil {
-			return syscfg.BoolString(boolean), nil
-		}
-
-		var str string
-		if err := json.Unmarshal(raw, &str); err == nil {
-			if syscfg.ParseBool(str, false) || strings.EqualFold(str, "false") || str == "0" {
-				return syscfg.BoolString(syscfg.ParseBool(str, false)), nil
-			}
-		}
-		return "", fmt.Errorf("setting %s must be a boolean", key)
-	case "webhook_url":
-		var value string
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return "", fmt.Errorf("setting %s must be a string", key)
-		}
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return "", nil
-		}
-		if !isWebhookURL(value) {
-			return "", fmt.Errorf("setting %s must start with http:// or https://", key)
-		}
-		return value, nil
-	default:
-		var num float64
-		if err := json.Unmarshal(raw, &num); err != nil {
-			return "", fmt.Errorf("setting %s must be a number", key)
-		}
-		if num != float64(int(num)) {
-			return "", fmt.Errorf("setting %s must be an integer", key)
-		}
-		value := int(num)
-		switch key {
-		case "health_check_interval", "request_timeout", "max_retry_attempts", "notification_expiring_days":
-			if value <= 0 {
-				return "", fmt.Errorf("setting %s must be greater than 0", key)
-			}
-		case "data_retention_days":
-			if value < 0 {
-				return "", fmt.Errorf("setting %s must be 0 or greater", key)
-			}
-		}
-		return strconv.Itoa(value), nil
+	var num float64
+	if err := json.Unmarshal(raw, &num); err != nil {
+		return "", fmt.Errorf("setting %s must be a number", key)
 	}
+	if num != float64(int(num)) {
+		return "", fmt.Errorf("setting %s must be an integer", key)
+	}
+	value := int(num)
+	switch key {
+	case "health_check_interval", "request_timeout", "max_retry_attempts", "notification_expiring_days":
+		if value <= 0 {
+			return "", fmt.Errorf("setting %s must be greater than 0", key)
+		}
+	case "data_retention_days":
+		if value < 0 {
+			return "", fmt.Errorf("setting %s must be 0 or greater", key)
+		}
+	}
+	return strconv.Itoa(value), nil
 }
 
 func isDeprecatedNotificationSetting(key string) bool {
 	switch key {
-	case "notification_error_enabled", "notification_expiring_enabled":
+	case "notification_error_enabled", "notification_expiring_enabled",
+		"webhook_enabled", "webhook_url":
 		return true
 	default:
 		return false
@@ -990,53 +949,6 @@ func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
 		notifications = []store.SystemNotification{}
 	}
 	webutil.WriteList(w, notifications, len(notifications))
-}
-
-func (h *Handler) testWebhook(w http.ResponseWriter, r *http.Request) {
-	if h.notifier == nil {
-		webutil.WriteAdminError(w, 500, "webhook_unavailable", "webhook sender is not configured")
-		return
-	}
-
-	var req struct {
-		URL string `json:"url"`
-	}
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
-			return
-		}
-	}
-
-	webhookURL := strings.TrimSpace(req.URL)
-	if webhookURL == "" {
-		var err error
-		webhookURL, err = h.deprecatedWebhookURL()
-		if err != nil {
-			h.internalError(w, err)
-			return
-		}
-	}
-	if webhookURL == "" {
-		webutil.WriteAdminError(w, 400, "bad_request", "webhook URL is required")
-		return
-	}
-	if !isWebhookURL(webhookURL) {
-		webutil.WriteAdminError(w, 400, "bad_request", "webhook URL must start with http:// or https://")
-		return
-	}
-
-	result, err := h.notifier.SendLegacyWebhookTest(r.Context(), webhookURL, h.notifier.BuildTestNotification("test", "info"))
-	if err != nil {
-		webutil.WriteAdminError(w, 502, "webhook_failed", firstNonEmpty(result.UpstreamMessage, err.Error()))
-		return
-	}
-	webutil.WriteData(w, 200, result)
-}
-
-func isWebhookURL(value string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	return strings.HasPrefix(normalized, "http://") || strings.HasPrefix(normalized, "https://")
 }
 
 func (h *Handler) getDataRetention(w http.ResponseWriter, r *http.Request) {
@@ -1299,40 +1211,21 @@ func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
 
 func normalizeImportedSettingValue(key, value string) (string, error) {
 	value = strings.TrimSpace(value)
-	switch key {
-	case "webhook_enabled":
-		if value == "" {
-			return "", fmt.Errorf("setting %s must be a boolean", key)
-		}
-		if syscfg.ParseBool(value, false) || strings.EqualFold(value, "false") || value == "0" {
-			return syscfg.BoolString(syscfg.ParseBool(value, false)), nil
-		}
-		return "", fmt.Errorf("setting %s must be a boolean", key)
-	case "webhook_url":
-		if value == "" {
-			return "", nil
-		}
-		if !isWebhookURL(value) {
-			return "", fmt.Errorf("setting %s must start with http:// or https://", key)
-		}
-		return value, nil
-	default:
-		n, err := strconv.Atoi(value)
-		if err != nil {
-			return "", fmt.Errorf("setting %s must be an integer", key)
-		}
-		switch key {
-		case "health_check_interval", "request_timeout", "max_retry_attempts", "notification_expiring_days":
-			if n <= 0 {
-				return "", fmt.Errorf("setting %s must be greater than 0", key)
-			}
-		case "data_retention_days":
-			if n < 0 {
-				return "", fmt.Errorf("setting %s must be 0 or greater", key)
-			}
-		}
-		return strconv.Itoa(n), nil
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return "", fmt.Errorf("setting %s must be an integer", key)
 	}
+	switch key {
+	case "health_check_interval", "request_timeout", "max_retry_attempts", "notification_expiring_days":
+		if n <= 0 {
+			return "", fmt.Errorf("setting %s must be greater than 0", key)
+		}
+	case "data_retention_days":
+		if n < 0 {
+			return "", fmt.Errorf("setting %s must be 0 or greater", key)
+		}
+	}
+	return strconv.Itoa(n), nil
 }
 
 func (h *Handler) getLatencyStats(w http.ResponseWriter, r *http.Request) {

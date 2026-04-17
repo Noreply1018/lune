@@ -8,7 +8,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { compact, latency, pct, relativeTime, shortDate, tokenCount } from "@/lib/fmt";
 import type {
-  NotificationChannel,
   NotificationDelivery,
   NotificationEventType,
   Overview,
@@ -33,13 +32,6 @@ type UsageBundle = {
 };
 
 type NotificationStatusFilter = "all" | "success" | "failed" | "dropped" | "test";
-
-function initialNotificationChannelFilter() {
-  if (typeof window === "undefined") {
-    return "all";
-  }
-  return window.location.search ? new URLSearchParams(window.location.search).get("channel_id") || "all" : "all";
-}
 
 type TrendBucket = {
   key: string;
@@ -350,12 +342,8 @@ export default function ActivityPage() {
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterModel, setFilterModel] = useState("all");
   const [expandedRowId, setExpandedRowId] = useState<number | null>(null);
-  const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
   const [notificationEventTypes, setNotificationEventTypes] = useState<NotificationEventType[]>([]);
   const [notificationDeliveries, setNotificationDeliveries] = useState<NotificationDelivery[]>([]);
-  const [notificationFilterChannel, setNotificationFilterChannel] = useState(
-    initialNotificationChannelFilter,
-  );
   const [notificationFilterEvent, setNotificationFilterEvent] = useState("all");
   const [notificationFilterStatus, setNotificationFilterStatus] =
     useState<NotificationStatusFilter>("all");
@@ -375,17 +363,15 @@ export default function ActivityPage() {
     Promise.all([
       api.get<Overview>("/overview"),
       api.get<Pool[]>("/pools"),
-      api.get<NotificationChannel[]>("/notifications/channels"),
       api.get<NotificationEventType[]>("/notifications/event-types"),
       loadUsageBundle(range),
     ])
-      .then(([overviewData, poolData, channelData, eventTypeData, usageData]) => {
+      .then(([overviewData, poolData, eventTypeData, usageData]) => {
         if (requestId !== loadRequestIdRef.current) {
           return;
         }
         setOverview(overviewData);
         setPools(poolData ?? []);
-        setNotificationChannels(channelData ?? []);
         setNotificationEventTypes(eventTypeData ?? []);
         setUsage(usageData);
         setLastUpdated(new Date().toISOString());
@@ -411,9 +397,6 @@ export default function ActivityPage() {
         : null;
     const params = new URLSearchParams();
     params.set("limit", "40");
-    if (notificationFilterChannel !== "all") {
-      params.set("channel_id", notificationFilterChannel);
-    }
     if (notificationFilterEvent !== "all") {
       params.set("event", notificationFilterEvent);
     }
@@ -465,7 +448,7 @@ export default function ActivityPage() {
 
   useEffect(() => {
     loadNotificationDeliveries(true);
-  }, [notificationFilterChannel, notificationFilterEvent, notificationFilterStatus]);
+  }, [notificationFilterEvent, notificationFilterStatus]);
 
   const poolMap = useMemo(
     () => new Map(pools.map((pool) => [pool.id, pool.label])),
@@ -850,18 +833,6 @@ export default function ActivityPage() {
 
         <div className="mt-5 flex flex-wrap gap-3">
           <select
-            value={notificationFilterChannel}
-            onChange={(event) => setNotificationFilterChannel(event.target.value)}
-            className="rounded-full border border-moon-200/70 bg-white/82 px-3 py-2 text-sm text-moon-600"
-          >
-            <option value="all">全部渠道</option>
-            {notificationChannels.map((channel) => (
-              <option key={channel.id} value={String(channel.id)}>
-                {channel.name}
-              </option>
-            ))}
-          </select>
-          <select
             value={notificationFilterEvent}
             onChange={(event) => setNotificationFilterEvent(event.target.value)}
             className="rounded-full border border-moon-200/70 bg-white/82 px-3 py-2 text-sm text-moon-600"
@@ -897,7 +868,6 @@ export default function ActivityPage() {
             <thead className="bg-moon-100/60 text-xs uppercase tracking-[0.16em] text-moon-400">
               <tr>
                 <th className="px-4 py-3">Time</th>
-                <th className="px-4 py-3">Channel</th>
                 <th className="px-4 py-3">Event</th>
                 <th className="px-4 py-3">Severity</th>
                 <th className="px-4 py-3">Status</th>
@@ -924,12 +894,6 @@ export default function ActivityPage() {
                       }
                     >
                       <td className="px-4 py-3 text-moon-400">{shortDate(item.created_at)}</td>
-                      <td className="px-4 py-3">
-                        <div className="space-y-1">
-                          <p className="text-moon-700">{item.channel_name}</p>
-                          <p className="text-xs text-moon-400">{item.channel_type}</p>
-                        </div>
-                      </td>
                       <td className="px-4 py-3 text-moon-500">{item.event}</td>
                       <td className="px-4 py-3 text-moon-500">{item.severity}</td>
                       <td className="px-4 py-3">
@@ -957,7 +921,7 @@ export default function ActivityPage() {
                     </tr>
                     {expanded ? (
                       <tr className="bg-white/80">
-                        <td colSpan={9} className="px-4 py-4">
+                        <td colSpan={8} className="px-4 py-4">
                           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                             <div className="space-y-1">
                               <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">Title</p>
@@ -989,7 +953,7 @@ export default function ActivityPage() {
                 );
               }) : (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-moon-400">
+                  <td colSpan={8} className="px-4 py-12 text-center text-sm text-moon-400">
                     当前筛选下没有可显示的通知投递记录。
                   </td>
                 </tr>

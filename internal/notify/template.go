@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"text/template"
-
-	"lune/internal/store"
 )
 
 type RenderedMessage struct {
@@ -13,35 +11,17 @@ type RenderedMessage struct {
 	Body  string `json:"body"`
 }
 
-var defaultTemplates = map[string]RenderedMessage{
-	"account_expiring": {
-		Title: `Lune · {{ .Title }}`,
-		Body:  `{{ .Message }}`,
-	},
-	"account_error": {
-		Title: `Lune · {{ .Title }}`,
-		Body:  `{{ .Message }}`,
-	},
-	"cpa_service_error": {
-		Title: `Lune · {{ .Title }}`,
-		Body:  `{{ .Message }}`,
-	},
-	"test": {
-		Title: `Lune 测试消息`,
-		Body:  `这是一条用于验证渠道可达性的真实消息，可忽略。`,
-	},
-}
-
+// RenderNotification renders the given title/body Go templates against the
+// notification's fields. Callers pass the per-subscription templates loaded
+// from notification_subscriptions; empty templates fall back to the raw
+// Title/Message on the notification itself so internal callers never produce
+// an empty message.
 func RenderNotification(n Notification, titleTpl, bodyTpl string) (RenderedMessage, error) {
-	base := defaultTemplates[n.Event]
-	if base.Title == "" {
-		base = RenderedMessage{Title: n.Title, Body: n.Message}
-	}
 	if titleTpl == "" {
-		titleTpl = base.Title
+		titleTpl = n.Title
 	}
 	if bodyTpl == "" {
-		bodyTpl = base.Body
+		bodyTpl = n.Message
 	}
 	title, err := renderTemplate(titleTpl, n)
 	if err != nil {
@@ -54,34 +34,16 @@ func RenderNotification(n Notification, titleTpl, bodyTpl string) (RenderedMessa
 	return RenderedMessage{Title: title, Body: body}, nil
 }
 
-func RenderChannelNotification(n Notification, channel store.NotificationChannel) (RenderedMessage, error) {
-	titleTpl, bodyTpl := ResolveChannelTemplates(channel, n.Event)
-	return RenderNotification(n, titleTpl, bodyTpl)
-}
-
-func ResolveChannelTemplates(channel store.NotificationChannel, event string) (string, string) {
-	for _, sub := range channel.Subscriptions {
-		if sub.Event == event {
-			return firstNonEmpty(sub.TitleTemplate, channel.TitleTemplate), firstNonEmpty(sub.BodyTemplate, channel.BodyTemplate)
-		}
-	}
-	for _, sub := range channel.Subscriptions {
-		if sub.Event == "*" {
-			return firstNonEmpty(sub.TitleTemplate, channel.TitleTemplate), firstNonEmpty(sub.BodyTemplate, channel.BodyTemplate)
-		}
-	}
-	return channel.TitleTemplate, channel.BodyTemplate
-}
-
 func renderTemplate(tpl string, n Notification) (string, error) {
 	data := map[string]any{
-		"Event":     n.Event,
-		"Severity":  n.Severity,
-		"Title":     n.Title,
-		"Message":   n.Message,
-		"Timestamp": n.Timestamp,
-		"Vars":      n.Vars,
-		"Source":    n.Source,
+		"Event":       n.Event,
+		"Severity":    n.Severity,
+		"Title":       n.Title,
+		"Message":     n.Message,
+		"Timestamp":   n.Timestamp,
+		"TriggeredAt": n.Timestamp,
+		"Vars":        n.Vars,
+		"Source":      n.Source,
 	}
 	for key, value := range n.Vars {
 		data[key] = value

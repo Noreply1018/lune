@@ -164,10 +164,7 @@ func (a *App) Run() error {
 	a.ensureDefaultCpa()
 
 	registry := notify.NewRegistry(
-		drivers.NewGenericWebhookDriver(),
 		drivers.NewWeChatWorkBotDriver(),
-		drivers.NewFeishuBotDriver(),
-		drivers.NewEmailSMTPDriver(),
 	)
 	notifier := notify.NewServiceWithRegistry(a.store, registry)
 

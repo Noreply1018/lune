@@ -166,58 +166,32 @@ export interface SystemSettings {
   request_timeout: number;
   max_retry_attempts: number;
   notification_expiring_days: number;
-  webhook_url: string;
-  webhook_enabled: boolean;
   data_retention_days: number;
 }
 
 export type NotificationSeverity = "info" | "warning" | "critical";
 
-export type ChannelType =
-  | "generic_webhook"
-  | "wechat_work_bot"
-  | "feishu_bot"
-  | "email_smtp";
+export interface NotificationSettings {
+  enabled: boolean;
+  webhook_url: string;
+  format: "text" | "markdown";
+  mention_mobile_list: string[];
+  created_at?: string;
+  updated_at?: string;
+}
 
 export interface NotificationSubscription {
   event: string;
-  min_severity?: NotificationSeverity;
-  title_template?: string;
-  body_template?: string;
+  subscribed: boolean;
+  title_template: string;
+  body_template: string;
+  updated_at?: string;
 }
 
 export interface NotificationDeliveryMeta {
   status: "success" | "failed" | "dropped";
   created_at: string;
   upstream_code?: string | null;
-}
-
-export interface NotificationChannel {
-  id: number;
-  name: string;
-  type: ChannelType;
-  enabled: boolean;
-  config: Record<string, unknown>;
-  subscriptions: NotificationSubscription[];
-  title_template: string;
-  body_template: string;
-  retry_max_attempts: number;
-  retry_schedule_seconds: number[];
-  created_at: string;
-  updated_at: string;
-  last_delivery?: NotificationDeliveryMeta | null;
-  recent_deliveries?: NotificationDeliveryMeta[];
-}
-
-export interface NotificationPreviewItem {
-  channel_id: number;
-  channel_name: string;
-  channel_type: ChannelType;
-  matched: boolean;
-  rendered_title: string;
-  rendered_body: string;
-  dry_run_ok: boolean;
-  skipped_reason?: string;
 }
 
 export interface NotificationEventType {
@@ -229,11 +203,18 @@ export interface NotificationEventType {
   sample_vars: Record<string, unknown>;
 }
 
+export interface NotificationsOverview {
+  settings: NotificationSettings;
+  subscriptions: NotificationSubscription[];
+  event_types: NotificationEventType[];
+  last_delivery?: NotificationDeliveryMeta | null;
+}
+
 export interface NotificationDelivery {
   id: number;
   channel_id: number;
   channel_name: string;
-  channel_type: ChannelType;
+  channel_type: string;
   event: string;
   severity: NotificationSeverity;
   title: string;

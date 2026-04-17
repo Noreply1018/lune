@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -93,20 +92,10 @@ func TestPruneRequestLogsDeletesOnlyExpiredRows(t *testing.T) {
 func TestGetDataRetentionSummaryIncludesNotificationCounts(t *testing.T) {
 	st := newTestStore(t)
 
-	channelID, err := st.CreateNotificationChannel(&NotificationChannel{
-		Name:          "Ops",
-		Type:          "generic_webhook",
-		Enabled:       true,
-		Config:        json.RawMessage(`{"schema":1,"url":"https://example.com/hook"}`),
-		Subscriptions: []NotificationSubscription{{Event: "*"}},
-	})
-	if err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
 	if _, err := st.CreateNotificationDelivery(&NotificationDelivery{
-		ChannelID:      channelID,
-		ChannelName:    "Ops",
-		ChannelType:    "generic_webhook",
+		ChannelID:      SingletonChannelID,
+		ChannelName:    SingletonChannelName,
+		ChannelType:    SingletonChannelType,
 		Event:          "test",
 		Severity:       "info",
 		Title:          "t",
@@ -118,7 +107,7 @@ func TestGetDataRetentionSummaryIncludesNotificationCounts(t *testing.T) {
 		t.Fatalf("create delivery: %v", err)
 	}
 	if _, err := st.InsertNotificationOutbox(&NotificationOutbox{
-		ChannelID: channelID,
+		ChannelID: SingletonChannelID,
 		Event:     "account_error",
 		Severity:  "critical",
 		Payload:   `{"event":"account_error"}`,
@@ -142,18 +131,8 @@ func TestGetDataRetentionSummaryIncludesNotificationCounts(t *testing.T) {
 func TestPruneNotificationHistoryRetentionZeroKeepsOutbox(t *testing.T) {
 	st := newTestStore(t)
 
-	channelID, err := st.CreateNotificationChannel(&NotificationChannel{
-		Name:          "Ops",
-		Type:          "generic_webhook",
-		Enabled:       true,
-		Config:        json.RawMessage(`{"schema":1,"url":"https://example.com/hook"}`),
-		Subscriptions: []NotificationSubscription{{Event: "*"}},
-	})
-	if err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
 	if _, err := st.InsertNotificationOutbox(&NotificationOutbox{
-		ChannelID:     channelID,
+		ChannelID:     SingletonChannelID,
 		Event:         "account_error",
 		Severity:      "critical",
 		Payload:       `{"event":"account_error"}`,
@@ -164,7 +143,7 @@ func TestPruneNotificationHistoryRetentionZeroKeepsOutbox(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create outbox: %v", err)
 	}
-	if _, err := st.db.Exec(`UPDATE notification_outbox SET created_at = ? WHERE channel_id = ?`, time.Now().UTC().Add(-10*24*time.Hour).Format("2006-01-02 15:04:05"), channelID); err != nil {
+	if _, err := st.db.Exec(`UPDATE notification_outbox SET created_at = ?`, time.Now().UTC().Add(-10*24*time.Hour).Format("2006-01-02 15:04:05")); err != nil {
 		t.Fatalf("age outbox: %v", err)
 	}
 
@@ -182,78 +161,6 @@ func TestPruneNotificationHistoryRetentionZeroKeepsOutbox(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Fatalf("expected outbox row to remain, got %d", len(items))
-	}
-}
-
-func TestDeleteNotificationChannelKeepsDeliveryHistory(t *testing.T) {
-	st := newTestStore(t)
-
-	channelID, err := st.CreateNotificationChannel(&NotificationChannel{
-		Name:          "Ops",
-		Type:          "generic_webhook",
-		Enabled:       true,
-		Config:        json.RawMessage(`{"schema":1,"url":"https://example.com/hook"}`),
-		Subscriptions: []NotificationSubscription{{Event: "*"}},
-	})
-	if err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-	if _, err := st.CreateNotificationDelivery(&NotificationDelivery{
-		ChannelID:      channelID,
-		ChannelName:    "Ops",
-		ChannelType:    "generic_webhook",
-		Event:          "test",
-		Severity:       "info",
-		Title:          "hello",
-		PayloadSummary: "world",
-		Status:         "success",
-		Attempt:        1,
-		TriggeredBy:    "test",
-	}); err != nil {
-		t.Fatalf("create delivery: %v", err)
-	}
-	if _, err := st.InsertNotificationOutbox(&NotificationOutbox{
-		ChannelID: channelID,
-		Event:     "test",
-		Severity:  "info",
-		Payload:   `{"event":"test"}`,
-		Status:    "pending",
-	}); err != nil {
-		t.Fatalf("create outbox: %v", err)
-	}
-
-	if err := st.DeleteNotificationChannel(channelID); err != nil {
-		t.Fatalf("delete channel: %v", err)
-	}
-
-	deliveries, err := st.ListNotificationDeliveries(NotificationDeliveryFilter{Limit: 10})
-	if err != nil {
-		t.Fatalf("list deliveries: %v", err)
-	}
-	// Existing history is preserved, and each pending outbox row at delete
-	// time is recorded as a `dropped` delivery so the timeline explains
-	// why those messages never left.
-	if len(deliveries) != 2 {
-		t.Fatalf("expected 2 deliveries (original + dropped), got %d", len(deliveries))
-	}
-	var droppedCount, successCount int
-	for _, d := range deliveries {
-		switch d.Status {
-		case "dropped":
-			droppedCount++
-		case "success":
-			successCount++
-		}
-	}
-	if droppedCount != 1 || successCount != 1 {
-		t.Fatalf("expected 1 success + 1 dropped, got dropped=%d success=%d", droppedCount, successCount)
-	}
-	outbox, err := st.ListDueNotificationOutbox(10)
-	if err != nil {
-		t.Fatalf("list outbox: %v", err)
-	}
-	if len(outbox) != 0 {
-		t.Fatalf("expected outbox to be cleared, got %d rows", len(outbox))
 	}
 }
 

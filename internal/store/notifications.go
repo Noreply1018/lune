@@ -9,28 +9,38 @@ import (
 	"unicode/utf8"
 )
 
-type NotificationSubscription struct {
-	Event         string `json:"event"`
-	MinSeverity   string `json:"min_severity,omitempty"`
-	TitleTemplate string `json:"title_template,omitempty"`
-	BodyTemplate  string `json:"body_template,omitempty"`
+// SingletonChannelID is the synthetic channel id retained for historical
+// outbox/deliveries rows after the notification schema collapsed to a single
+// WeChat-Work-Bot config.
+const SingletonChannelID int64 = 1
+
+// SingletonChannelName / SingletonChannelType are written verbatim into
+// notification_deliveries so the Activity page continues to show a consistent
+// label without needing a cross-table lookup.
+const (
+	SingletonChannelName = "wechat_work_bot"
+	SingletonChannelType = "wechat_work_bot"
+)
+
+// NotificationSettings is the single row in notification_settings that drives
+// the WeChat Work Bot integration.
+type NotificationSettings struct {
+	Enabled           bool     `json:"enabled"`
+	WebhookURL        string   `json:"webhook_url"`
+	Format            string   `json:"format"`
+	MentionMobileList []string `json:"mention_mobile_list"`
+	CreatedAt         string   `json:"created_at"`
+	UpdatedAt         string   `json:"updated_at"`
 }
 
-type NotificationChannel struct {
-	ID               int64                      `json:"id"`
-	Name             string                     `json:"name"`
-	Type             string                     `json:"type"`
-	Enabled          bool                       `json:"enabled"`
-	Config           json.RawMessage            `json:"config"`
-	Subscriptions    []NotificationSubscription `json:"subscriptions"`
-	TitleTemplate    string                     `json:"title_template"`
-	BodyTemplate     string                     `json:"body_template"`
-	RetryMaxAttempts int                        `json:"retry_max_attempts"`
-	RetrySchedule    []int                      `json:"retry_schedule_seconds"`
-	CreatedAt        string                     `json:"created_at"`
-	UpdatedAt        string                     `json:"updated_at"`
-	LastDelivery     *NotificationDeliveryMeta  `json:"last_delivery,omitempty"`
-	RecentDeliveries []NotificationDeliveryMeta `json:"recent_deliveries,omitempty"`
+// NotificationSubscription captures whether a built-in event is delivered and
+// the per-event title/body templates the admin edited.
+type NotificationSubscription struct {
+	Event         string `json:"event"`
+	Subscribed    bool   `json:"subscribed"`
+	TitleTemplate string `json:"title_template"`
+	BodyTemplate  string `json:"body_template"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type NotificationDeliveryMeta struct {
@@ -73,6 +83,170 @@ type NotificationOutbox struct {
 	UpdatedAt     string
 }
 
+type NotificationDeliveryFilter struct {
+	ChannelID   int64
+	Event       string
+	Status      string
+	TriggeredBy string
+	Limit       int
+	Before      string
+	BeforeID    int64
+}
+
+// GetNotificationSettings returns the singleton settings row. The migration
+// seeds a default row at id=1, so this should always succeed once the store
+// is open.
+func (s *Store) GetNotificationSettings() (NotificationSettings, error) {
+	var (
+		settings    NotificationSettings
+		enabled     int
+		mentionRaw  string
+	)
+	err := s.db.QueryRow(
+		`SELECT enabled, webhook_url, format, mention_mobile_list, created_at, updated_at
+		 FROM notification_settings
+		 WHERE id = ?`,
+		SingletonChannelID,
+	).Scan(
+		&enabled,
+		&settings.WebhookURL,
+		&settings.Format,
+		&mentionRaw,
+		&settings.CreatedAt,
+		&settings.UpdatedAt,
+	)
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	settings.Enabled = enabled != 0
+	settings.MentionMobileList = parseMentionMobileList(mentionRaw)
+	if settings.Format == "" {
+		settings.Format = "markdown"
+	}
+	return settings, nil
+}
+
+// UpdateNotificationSettings upserts the singleton settings row with the
+// supplied values. Callers are expected to validate the fields (URL format,
+// mobile list entries, etc.) before invoking.
+func (s *Store) UpdateNotificationSettings(settings NotificationSettings) error {
+	mentions := settings.MentionMobileList
+	if mentions == nil {
+		mentions = []string{}
+	}
+	mentionJSON, err := json.Marshal(mentions)
+	if err != nil {
+		return fmt.Errorf("marshal mention list: %w", err)
+	}
+	format := settings.Format
+	if format == "" {
+		format = "markdown"
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO notification_settings (id, enabled, webhook_url, format, mention_mobile_list, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		 ON CONFLICT(id) DO UPDATE SET
+		    enabled             = excluded.enabled,
+		    webhook_url         = excluded.webhook_url,
+		    format              = excluded.format,
+		    mention_mobile_list = excluded.mention_mobile_list,
+		    updated_at          = datetime('now')`,
+		SingletonChannelID,
+		boolToInt(settings.Enabled),
+		strings.TrimSpace(settings.WebhookURL),
+		format,
+		string(mentionJSON),
+	)
+	return err
+}
+
+// ListNotificationSubscriptions returns the fixed set of event subscriptions
+// (seeded at migration). The order matches the built-in event list so the UI
+// can rely on a stable ordering.
+func (s *Store) ListNotificationSubscriptions() ([]NotificationSubscription, error) {
+	rows, err := s.db.Query(
+		`SELECT event, subscribed, title_template, body_template, updated_at
+		 FROM notification_subscriptions
+		 ORDER BY event ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []NotificationSubscription
+	for rows.Next() {
+		var (
+			sub        NotificationSubscription
+			subscribed int
+		)
+		if err := rows.Scan(&sub.Event, &subscribed, &sub.TitleTemplate, &sub.BodyTemplate, &sub.UpdatedAt); err != nil {
+			return nil, err
+		}
+		sub.Subscribed = subscribed != 0
+		subs = append(subs, sub)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if subs == nil {
+		subs = []NotificationSubscription{}
+	}
+	return subs, nil
+}
+
+// GetNotificationSubscription returns a single subscription by event name.
+// Returns (nil, nil) when the event is not present.
+func (s *Store) GetNotificationSubscription(event string) (*NotificationSubscription, error) {
+	var (
+		sub        NotificationSubscription
+		subscribed int
+	)
+	err := s.db.QueryRow(
+		`SELECT event, subscribed, title_template, body_template, updated_at
+		 FROM notification_subscriptions
+		 WHERE event = ?`,
+		event,
+	).Scan(&sub.Event, &subscribed, &sub.TitleTemplate, &sub.BodyTemplate, &sub.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sub.Subscribed = subscribed != 0
+	return &sub, nil
+}
+
+// UpdateNotificationSubscription rewrites the subscription row for the given
+// event. Callers must validate that title/body are non-empty after trimming
+// before invoking.
+func (s *Store) UpdateNotificationSubscription(event string, subscribed bool, title, body string) error {
+	res, err := s.db.Exec(
+		`UPDATE notification_subscriptions
+		 SET subscribed     = ?,
+		     title_template = ?,
+		     body_template  = ?,
+		     updated_at     = datetime('now')
+		 WHERE event = ?`,
+		boolToInt(subscribed),
+		title,
+		body,
+		event,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) GetNotificationOutbox(id int64) (*NotificationOutbox, error) {
 	row := s.db.QueryRow(
 		`SELECT id, channel_id, event, severity, payload, dedup_key, status, attempt, next_attempt_at, last_error, created_at, updated_at
@@ -93,262 +267,15 @@ func (s *Store) GetNotificationOutbox(id int64) (*NotificationOutbox, error) {
 	return &item, nil
 }
 
-type NotificationDeliveryFilter struct {
-	ChannelID   int64
-	Event       string
-	Status      string
-	TriggeredBy string
-	Limit       int
-	Before      string
-	BeforeID    int64
-}
-
-func (s *Store) ListNotificationChannels() ([]NotificationChannel, error) {
-	rows, err := s.db.Query(`
-		SELECT c.id, c.name, c.type, c.enabled, c.config, c.subscriptions, c.title_template, c.body_template, c.retry_max_attempts, c.retry_schedule_seconds, c.created_at, c.updated_at,
-			d.status, d.created_at, d.upstream_code
-		FROM notification_channels c
-		LEFT JOIN notification_deliveries d ON d.id = (
-			SELECT id FROM notification_deliveries nd
-			WHERE nd.channel_id = c.id
-			ORDER BY nd.created_at DESC, nd.id DESC
-			LIMIT 1
-		)
-		ORDER BY c.id ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var channels []NotificationChannel
-	for rows.Next() {
-		ch, err := scanNotificationChannel(rows)
-		if err != nil {
-			return nil, err
-		}
-		channels = append(channels, *ch)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := s.attachRecentNotificationDeliveries(channels, 5); err != nil {
-		return nil, err
-	}
-	if channels == nil {
-		channels = []NotificationChannel{}
-	}
-	return channels, nil
-}
-
-func (s *Store) ListEnabledNotificationChannels() ([]NotificationChannel, error) {
-	rows, err := s.db.Query(`
-		SELECT id, name, type, enabled, config, subscriptions, title_template, body_template, retry_max_attempts, retry_schedule_seconds, created_at, updated_at,
-			NULL, NULL, NULL
-		FROM notification_channels
-		WHERE enabled = 1
-		ORDER BY id ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var channels []NotificationChannel
-	for rows.Next() {
-		ch, err := scanNotificationChannel(rows)
-		if err != nil {
-			return nil, err
-		}
-		channels = append(channels, *ch)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if channels == nil {
-		channels = []NotificationChannel{}
-	}
-	return channels, nil
-}
-
-func (s *Store) GetNotificationChannel(id int64) (*NotificationChannel, error) {
-	row := s.db.QueryRow(`
-		SELECT c.id, c.name, c.type, c.enabled, c.config, c.subscriptions, c.title_template, c.body_template, c.retry_max_attempts, c.retry_schedule_seconds, c.created_at, c.updated_at,
-			d.status, d.created_at, d.upstream_code
-		FROM notification_channels c
-		LEFT JOIN notification_deliveries d ON d.id = (
-			SELECT id FROM notification_deliveries nd
-			WHERE nd.channel_id = c.id
-			ORDER BY nd.created_at DESC, nd.id DESC
-			LIMIT 1
-		)
-		WHERE c.id = ?`, id)
-
-	ch, err := scanNotificationChannel(row)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	recent, err := s.listRecentNotificationDeliveryMeta(id, 5)
-	if err != nil {
-		return nil, err
-	}
-	ch.RecentDeliveries = recent
-	return ch, nil
-}
-
-func (s *Store) CreateNotificationChannel(ch *NotificationChannel) (int64, error) {
-	res, err := s.db.Exec(
-		`INSERT INTO notification_channels (name, type, enabled, config, subscriptions, title_template, body_template, retry_max_attempts, retry_schedule_seconds)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		strings.TrimSpace(ch.Name),
-		ch.Type,
-		boolToInt(ch.Enabled),
-		rawJSONOrDefault(ch.Config, `{}`),
-		marshalJSONOrDefault(ch.Subscriptions, `[]`),
-		ch.TitleTemplate,
-		ch.BodyTemplate,
-		intOrDefault(ch.RetryMaxAttempts, 5),
-		marshalJSONOrDefault(normalizeRetrySchedule(ch.RetrySchedule), `[30,120,600,1800,7200]`),
-	)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
-}
-
-func (s *Store) UpdateNotificationChannel(id int64, ch *NotificationChannel) error {
-	_, err := s.db.Exec(
-		`UPDATE notification_channels
-		 SET name = ?, type = ?, enabled = ?, config = ?, subscriptions = ?, title_template = ?, body_template = ?, retry_max_attempts = ?, retry_schedule_seconds = ?, updated_at = datetime('now')
-		 WHERE id = ?`,
-		strings.TrimSpace(ch.Name),
-		ch.Type,
-		boolToInt(ch.Enabled),
-		rawJSONOrDefault(ch.Config, `{}`),
-		marshalJSONOrDefault(ch.Subscriptions, `[]`),
-		ch.TitleTemplate,
-		ch.BodyTemplate,
-		intOrDefault(ch.RetryMaxAttempts, 5),
-		marshalJSONOrDefault(normalizeRetrySchedule(ch.RetrySchedule), `[30,120,600,1800,7200]`),
-		id,
-	)
-	return err
-}
-
-func (s *Store) DeleteNotificationChannel(id int64) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer rollbackNotificationTx(tx)
-
-	var channelName, channelType string
-	if err := tx.QueryRow(`SELECT name, type FROM notification_channels WHERE id = ?`, id).
-		Scan(&channelName, &channelType); err != nil {
-		if err == sql.ErrNoRows {
-			return sql.ErrNoRows
-		}
-		return err
-	}
-
-	pendingRows, err := tx.Query(
-		`SELECT event, severity, payload, dedup_key, attempt
-		 FROM notification_outbox
-		 WHERE channel_id = ? AND status IN ('pending', 'retrying')`,
-		id,
-	)
-	if err != nil {
-		return err
-	}
-	type pending struct {
-		event, severity, payload, dedupKey string
-		attempt                            int
-	}
-	var items []pending
-	for pendingRows.Next() {
-		var p pending
-		if err := pendingRows.Scan(&p.event, &p.severity, &p.payload, &p.dedupKey, &p.attempt); err != nil {
-			pendingRows.Close()
-			return err
-		}
-		items = append(items, p)
-	}
-	pendingRows.Close()
-	if err := pendingRows.Err(); err != nil {
-		return err
-	}
-	for _, p := range items {
-		summary := truncateDeliverySummary(p.payload, 1024)
-		attempt := p.attempt
-		if attempt < 1 {
-			attempt = 1
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO notification_deliveries
-			 (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, 'dropped', '', ?, 0, ?, ?, 'admin')`,
-			id, channelName, channelType, p.event, p.severity, p.event, summary,
-			"channel deleted while pending", attempt, p.dedupKey,
-		); err != nil {
-			return err
-		}
-	}
-
-	if _, err := tx.Exec(`DELETE FROM notification_outbox WHERE channel_id = ?`, id); err != nil {
-		return err
-	}
-	res, err := tx.Exec(`DELETE FROM notification_channels WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return sql.ErrNoRows
-	}
-	return tx.Commit()
-}
-
-func truncateDeliverySummary(payload string, limit int) string {
-	if limit <= 0 || len(payload) <= limit {
-		return payload
-	}
-	// Walk back from the byte budget to the nearest rune boundary so we
-	// never write a partial UTF-8 sequence into the deliveries table.
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(payload[cut]) {
-		cut--
-	}
-	return payload[:cut]
-}
-
-func (s *Store) SetNotificationChannelEnabled(id int64, enabled bool) error {
-	res, err := s.db.Exec(
-		`UPDATE notification_channels SET enabled = ?, updated_at = datetime('now') WHERE id = ?`,
-		boolToInt(enabled),
-		id,
-	)
-	if err != nil {
-		return err
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
 func (s *Store) InsertNotificationOutbox(item *NotificationOutbox) (int64, error) {
+	channelID := item.ChannelID
+	if channelID == 0 {
+		channelID = SingletonChannelID
+	}
 	res, err := s.db.Exec(
 		`INSERT INTO notification_outbox (channel_id, event, severity, payload, dedup_key, status, attempt, next_attempt_at, last_error)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ChannelID,
+		channelID,
 		item.Event,
 		item.Severity,
 		item.Payload,
@@ -364,7 +291,14 @@ func (s *Store) InsertNotificationOutbox(item *NotificationOutbox) (int64, error
 	return res.LastInsertId()
 }
 
+// HasPendingNotificationOutbox checks if an active (pending/retrying) entry
+// with the given dedup key already exists. channelID is accepted for API
+// continuity but is effectively always SingletonChannelID under the new
+// schema.
 func (s *Store) HasPendingNotificationOutbox(channelID int64, dedupKey string) (bool, error) {
+	if channelID == 0 {
+		channelID = SingletonChannelID
+	}
 	var count int
 	err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM notification_outbox WHERE channel_id = ? AND dedup_key = ? AND status IN ('pending', 'retrying')`,
@@ -408,50 +342,6 @@ func (s *Store) ListDueNotificationOutbox(limit int) ([]NotificationOutbox, erro
 	return items, nil
 }
 
-func (s *Store) ListNotificationChannelsByIDs(ids []int64) (map[int64]NotificationChannel, error) {
-	if len(ids) == 0 {
-		return map[int64]NotificationChannel{}, nil
-	}
-	seen := make(map[int64]struct{}, len(ids))
-	args := make([]any, 0, len(ids))
-	placeholders := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if id <= 0 {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		args = append(args, id)
-		placeholders = append(placeholders, "?")
-	}
-	if len(args) == 0 {
-		return map[int64]NotificationChannel{}, nil
-	}
-	rows, err := s.db.Query(
-		`SELECT id, name, type, enabled, config, subscriptions, title_template, body_template, retry_max_attempts, retry_schedule_seconds, created_at, updated_at,
-			NULL, NULL, NULL
-		FROM notification_channels
-		WHERE id IN (`+strings.Join(placeholders, ",")+`)`,
-		args...,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make(map[int64]NotificationChannel, len(args))
-	for rows.Next() {
-		ch, err := scanNotificationChannel(rows)
-		if err != nil {
-			return nil, err
-		}
-		out[ch.ID] = *ch
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) UpdateNotificationOutboxRetry(id int64, attempt int, nextAttemptAt, lastError string) error {
 	_, err := s.db.Exec(
 		`UPDATE notification_outbox
@@ -492,9 +382,9 @@ func (s *Store) CreateNotificationDelivery(item *NotificationDelivery) (int64, e
 		`INSERT INTO notification_deliveries
 		 (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ChannelID,
-		item.ChannelName,
-		item.ChannelType,
+		defaultChannelID(item.ChannelID),
+		defaultString(item.ChannelName, SingletonChannelName),
+		defaultString(item.ChannelType, SingletonChannelType),
 		item.Event,
 		item.Severity,
 		item.Title,
@@ -524,7 +414,10 @@ func (s *Store) RecordNotificationAttemptRetry(outboxID int64, delivery *Notific
 		`INSERT INTO notification_deliveries
 		 (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		delivery.ChannelID, delivery.ChannelName, delivery.ChannelType, delivery.Event, delivery.Severity,
+		defaultChannelID(delivery.ChannelID),
+		defaultString(delivery.ChannelName, SingletonChannelName),
+		defaultString(delivery.ChannelType, SingletonChannelType),
+		delivery.Event, delivery.Severity,
 		delivery.Title, delivery.PayloadSummary, delivery.Status, delivery.UpstreamCode, delivery.UpstreamMessage,
 		delivery.LatencyMS, delivery.Attempt, delivery.DedupKey, delivery.TriggeredBy,
 	); err != nil {
@@ -552,7 +445,10 @@ func (s *Store) RecordNotificationAttemptDropped(outboxID int64, delivery *Notif
 		`INSERT INTO notification_deliveries
 		 (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		delivery.ChannelID, delivery.ChannelName, delivery.ChannelType, delivery.Event, delivery.Severity,
+		defaultChannelID(delivery.ChannelID),
+		defaultString(delivery.ChannelName, SingletonChannelName),
+		defaultString(delivery.ChannelType, SingletonChannelType),
+		delivery.Event, delivery.Severity,
 		delivery.Title, delivery.PayloadSummary, delivery.Status, delivery.UpstreamCode, delivery.UpstreamMessage,
 		delivery.LatencyMS, delivery.Attempt, delivery.DedupKey, delivery.TriggeredBy,
 	); err != nil {
@@ -580,7 +476,10 @@ func (s *Store) RecordNotificationAttemptSuccess(outboxID int64, delivery *Notif
 		`INSERT INTO notification_deliveries
 		 (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		delivery.ChannelID, delivery.ChannelName, delivery.ChannelType, delivery.Event, delivery.Severity,
+		defaultChannelID(delivery.ChannelID),
+		defaultString(delivery.ChannelName, SingletonChannelName),
+		defaultString(delivery.ChannelType, SingletonChannelType),
+		delivery.Event, delivery.Severity,
 		delivery.Title, delivery.PayloadSummary, delivery.Status, delivery.UpstreamCode, delivery.UpstreamMessage,
 		delivery.LatencyMS, delivery.Attempt, delivery.DedupKey, delivery.TriggeredBy,
 	); err != nil {
@@ -601,6 +500,9 @@ func (s *Store) RecordNotificationAttemptSuccess(outboxID int64, delivery *Notif
 }
 
 func (s *Store) HasRecentNotificationDelivery(channelID int64, dedupKey string, since time.Time) (bool, error) {
+	if channelID == 0 {
+		channelID = SingletonChannelID
+	}
 	var count int
 	err := s.db.QueryRow(
 		`SELECT COUNT(*)
@@ -685,173 +587,18 @@ func (s *Store) ListNotificationDeliveries(filter NotificationDeliveryFilter) ([
 	return deliveries, nil
 }
 
-func (s *Store) PruneNotificationHistory(retentionDays int) (int64, int64, error) {
-	if retentionDays <= 0 {
-		return 0, 0, nil
-	}
-	safetyDays := retentionDays
-	if safetyDays < 7 {
-		safetyDays = 7
-	}
-	deliveryCutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format("2006-01-02 15:04:05")
-	outboxCutoff := time.Now().UTC().AddDate(0, 0, -safetyDays).Format("2006-01-02 15:04:05")
-
-	res, err := s.db.Exec(`DELETE FROM notification_deliveries WHERE created_at < ?`, deliveryCutoff)
-	if err != nil {
-		return 0, 0, err
-	}
-	deletedDeliveries, _ := res.RowsAffected()
-
-	res, err = s.db.Exec(`DELETE FROM notification_outbox WHERE status = 'dropped' AND created_at < ?`, outboxCutoff)
-	if err != nil {
-		return deletedDeliveries, 0, err
-	}
-	deletedOutbox, _ := res.RowsAffected()
-	return deletedDeliveries, deletedOutbox, nil
-}
-
-func scanNotificationChannel(scanner interface {
-	Scan(dest ...any) error
-}) (*NotificationChannel, error) {
-	var (
-		ch               NotificationChannel
-		enabled          int
-		configRaw        string
-		subscriptionsRaw string
-		retryMaxAttempts int
-		retryScheduleRaw string
-		lastStatus       sql.NullString
-		lastCreatedAt    sql.NullString
-		lastUpstreamCode sql.NullString
-	)
-
-	if err := scanner.Scan(
-		&ch.ID,
-		&ch.Name,
-		&ch.Type,
-		&enabled,
-		&configRaw,
-		&subscriptionsRaw,
-		&ch.TitleTemplate,
-		&ch.BodyTemplate,
-		&retryMaxAttempts,
-		&retryScheduleRaw,
-		&ch.CreatedAt,
-		&ch.UpdatedAt,
-		&lastStatus,
-		&lastCreatedAt,
-		&lastUpstreamCode,
-	); err != nil {
-		return nil, err
-	}
-	ch.Enabled = enabled != 0
-	ch.Config = json.RawMessage(configRaw)
-	if strings.TrimSpace(subscriptionsRaw) == "" || strings.TrimSpace(subscriptionsRaw) == "null" {
-		ch.Subscriptions = []NotificationSubscription{}
-	} else if err := json.Unmarshal([]byte(subscriptionsRaw), &ch.Subscriptions); err != nil {
-		return nil, fmt.Errorf("decode subscriptions: %w", err)
-	}
-	ch.RetryMaxAttempts = intOrDefault(retryMaxAttempts, 5)
-	if err := json.Unmarshal([]byte(retryScheduleRaw), &ch.RetrySchedule); err != nil {
-		ch.RetrySchedule = []int{30, 120, 600, 1800, 7200}
-	}
-	ch.RetrySchedule = normalizeRetrySchedule(ch.RetrySchedule)
-	if lastStatus.Valid && lastCreatedAt.Valid {
-		meta := &NotificationDeliveryMeta{
-			Status:    lastStatus.String,
-			CreatedAt: lastCreatedAt.String,
-		}
-		if lastUpstreamCode.Valid && strings.TrimSpace(lastUpstreamCode.String) != "" {
-			meta.UpstreamCode = &lastUpstreamCode.String
-		}
-		ch.LastDelivery = meta
-	}
-	return &ch, nil
-}
-
-func boolToInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
-
-func rawJSONOrDefault(raw json.RawMessage, fallback string) string {
-	if len(raw) == 0 {
-		return fallback
-	}
-	return string(raw)
-}
-
-func marshalJSONOrDefault(v any, fallback string) string {
-	body, err := json.Marshal(v)
-	if err != nil || len(body) == 0 || string(body) == "null" {
-		return fallback
-	}
-	return string(body)
-}
-
-func intOrDefault(value, fallback int) int {
-	if value <= 0 {
-		return fallback
-	}
-	return value
-}
-
-func normalizeRetrySchedule(values []int) []int {
-	if len(values) == 0 {
-		return []int{30, 120, 600, 1800, 7200}
-	}
-	out := make([]int, 0, len(values))
-	for _, value := range values {
-		if value <= 0 {
-			// Preserve the admin's attempt count rather than silently dropping
-			// entries; falling through to the 30-second floor keeps the schedule
-			// length aligned with retry_max_attempts so AttemptOne never indexes
-			// past the end of the slice.
-			out = append(out, 30)
-			continue
-		}
-		out = append(out, value)
-	}
-	return out
-}
-
-func ValidateNotificationDeliveryCursor(value string) error {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	if _, err := time.Parse("2006-01-02 15:04:05", value); err == nil {
-		return nil
-	}
-	return fmt.Errorf("invalid before cursor")
-}
-
-func (s *Store) attachRecentNotificationDeliveries(channels []NotificationChannel, limit int) error {
-	for index := range channels {
-		recent, err := s.listRecentNotificationDeliveryMeta(channels[index].ID, limit)
-		if err != nil {
-			return err
-		}
-		channels[index].RecentDeliveries = recent
-	}
-	return nil
-}
-
-func (s *Store) listRecentNotificationDeliveryMeta(channelID int64, limit int) ([]NotificationDeliveryMeta, error) {
-	if channelID <= 0 {
-		return []NotificationDeliveryMeta{}, nil
-	}
+// ListRecentNotificationDeliveryMeta returns the N most-recent deliveries for
+// the singleton channel. The API is kept for admin handlers that surface a
+// quick "last delivery" chip on the settings page.
+func (s *Store) ListRecentNotificationDeliveryMeta(limit int) ([]NotificationDeliveryMeta, error) {
 	if limit <= 0 {
 		limit = 5
 	}
 	rows, err := s.db.Query(
 		`SELECT status, created_at, upstream_code
 		 FROM notification_deliveries
-		 WHERE channel_id = ?
 		 ORDER BY created_at DESC, id DESC
 		 LIMIT ?`,
-		channelID,
 		limit,
 	)
 	if err != nil {
@@ -877,6 +624,96 @@ func (s *Store) listRecentNotificationDeliveryMeta(channelID int64, limit int) (
 		return nil, err
 	}
 	return items, nil
+}
+
+func (s *Store) PruneNotificationHistory(retentionDays int) (int64, int64, error) {
+	if retentionDays <= 0 {
+		return 0, 0, nil
+	}
+	safetyDays := retentionDays
+	if safetyDays < 7 {
+		safetyDays = 7
+	}
+	deliveryCutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format("2006-01-02 15:04:05")
+	outboxCutoff := time.Now().UTC().AddDate(0, 0, -safetyDays).Format("2006-01-02 15:04:05")
+
+	res, err := s.db.Exec(`DELETE FROM notification_deliveries WHERE created_at < ?`, deliveryCutoff)
+	if err != nil {
+		return 0, 0, err
+	}
+	deletedDeliveries, _ := res.RowsAffected()
+
+	res, err = s.db.Exec(`DELETE FROM notification_outbox WHERE status = 'dropped' AND created_at < ?`, outboxCutoff)
+	if err != nil {
+		return deletedDeliveries, 0, err
+	}
+	deletedOutbox, _ := res.RowsAffected()
+	return deletedDeliveries, deletedOutbox, nil
+}
+
+func truncateDeliverySummary(payload string, limit int) string {
+	if limit <= 0 || len(payload) <= limit {
+		return payload
+	}
+	// Walk back from the byte budget to the nearest rune boundary so we
+	// never write a partial UTF-8 sequence into the deliveries table.
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(payload[cut]) {
+		cut--
+	}
+	return payload[:cut]
+}
+
+// TruncateDeliverySummary exposes the internal summary truncator so notify
+// package callers can produce identical summaries.
+func TruncateDeliverySummary(payload string, limit int) string {
+	return truncateDeliverySummary(payload, limit)
+}
+
+func parseMentionMobileList(raw string) []string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return []string{}
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		return []string{}
+	}
+	if out == nil {
+		return []string{}
+	}
+	return out
+}
+
+func defaultChannelID(id int64) int64 {
+	if id == 0 {
+		return SingletonChannelID
+	}
+	return id
+}
+
+func defaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func ValidateNotificationDeliveryCursor(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if _, err := time.Parse("2006-01-02 15:04:05", value); err == nil {
+		return nil
+	}
+	return fmt.Errorf("invalid before cursor")
 }
 
 func rollbackNotificationTx(tx *sql.Tx) {

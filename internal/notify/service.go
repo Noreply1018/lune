@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -21,7 +20,9 @@ type Service struct {
 	dispatcher *Dispatcher
 }
 
-var ErrNotificationChannelNotFound = errors.New("notification channel not found")
+// ErrNotificationDisabled is returned by SendSingletonTest when the admin
+// disabled the top-level switch or left the webhook URL blank.
+var ErrNotificationDisabled = errors.New("notifications are disabled or webhook url is empty")
 
 func NewService(st *store.Store) *Service {
 	return NewServiceWithRegistry(st, NewRegistry())
@@ -50,12 +51,13 @@ func (s *Service) Run(ctx context.Context) {
 	s.outbox.Run(ctx)
 }
 
-func (s *Service) BuildTestNotification(event, severity string) Notification {
-	event = firstNonEmpty(strings.TrimSpace(event), "test")
-	severity = firstNonEmpty(strings.TrimSpace(severity), "info")
+// BuildTestNotification produces the canonical "test" notification used for
+// the Send Test button. Vars match the built-in test event's sample vars so
+// template placeholders resolve sensibly.
+func (s *Service) BuildTestNotification() Notification {
 	return Notification{
-		Event:     event,
-		Severity:  severity,
+		Event:     "test",
+		Severity:  "info",
 		Title:     "Lune 测试消息",
 		Message:   "这是一条用于验证渠道可达性的真实消息，可忽略。",
 		Timestamp: time.Now().UTC(),
@@ -66,161 +68,69 @@ func (s *Service) BuildTestNotification(event, severity string) Notification {
 	}
 }
 
-func (s *Service) BuildPreviewNotification(event, severity string) Notification {
-	event = strings.TrimSpace(event)
-	severity = strings.TrimSpace(severity)
-	if event == "" {
-		event = "account_error"
-	}
-	var sample *EventType
-	for _, item := range EventTypes() {
-		if item.Event == event {
-			copied := item
-			sample = &copied
-			break
-		}
-	}
-	if severity == "" {
-		if sample != nil && sample.DefaultSeverity != "" {
-			severity = sample.DefaultSeverity
-		} else {
-			severity = "info"
-		}
-	}
-	title := "Lune Notification Preview"
-	message := "This is a preview of the rendered notification body."
-	vars := map[string]any{
-		"instance_id": "lune",
-		"admin_url":   "/admin",
-	}
-	if sample != nil {
-		title = sample.Label
-		message = fmt.Sprintf("Preview payload for %s.", sample.Label)
-		for key, value := range sample.SampleVars {
-			vars[key] = value
-		}
-	}
-	return Notification{
-		Event:     event,
-		Severity:  severity,
-		Title:     title,
-		Message:   message,
-		Timestamp: time.Now().UTC(),
-		Vars:      vars,
-	}
-}
-
-func (s *Service) Preview(n Notification) ([]PreviewItem, error) {
-	channels, err := s.store.ListNotificationChannels()
-	if err != nil {
-		return nil, err
-	}
-	items := make([]PreviewItem, 0, len(channels))
-	for _, ch := range channels {
-		rendered, matched, reason, err := s.previewOne(ch, n)
-		if err != nil {
-			return nil, err
-		}
-		item := PreviewItem{
-			ChannelID:     ch.ID,
-			ChannelName:   ch.Name,
-			ChannelType:   ch.Type,
-			Matched:       matched,
-			RenderedTitle: rendered.Title,
-			RenderedBody:  rendered.Body,
-			DryRunOK:      matched,
-			SkippedReason: reason,
-		}
-		items = append(items, item)
-	}
-	return items, nil
-}
-
-func (s *Service) previewOne(ch store.NotificationChannel, n Notification) (RenderedMessage, bool, string, error) {
-	if !ch.Enabled {
-		return RenderedMessage{}, false, "channel_disabled", nil
-	}
-	if !matchSubscriptions(ch.Subscriptions, n.Event, n.Severity) {
-		return RenderedMessage{}, false, "subscription_mismatch", nil
-	}
-	rendered, err := RenderChannelNotification(n, ch)
-	if err != nil {
-		return RenderedMessage{}, false, "", err
-	}
-	return rendered, true, "", nil
-}
-
-func (s *Service) SendChannelTest(ctx context.Context, channelID int64, n Notification) (Result, error) {
-	channel, err := s.store.GetNotificationChannel(channelID)
+// SendSingletonTest sends the given notification through the WeChat-Work
+// driver using the current singleton settings, recording the attempt in
+// notification_deliveries. It does not go through the outbox and does not
+// honour the subscription's subscribed flag.
+func (s *Service) SendSingletonTest(ctx context.Context, n Notification) (Result, error) {
+	settings, err := s.store.GetNotificationSettings()
 	if err != nil {
 		return Result{}, err
 	}
-	if channel == nil {
-		return Result{}, ErrNotificationChannelNotFound
+	if !settings.Enabled || strings.TrimSpace(settings.WebhookURL) == "" {
+		return Result{}, ErrNotificationDisabled
 	}
-	driver, ok := s.registry.Get(channel.Type)
+	sub, err := s.store.GetNotificationSubscription(n.Event)
+	if err != nil {
+		return Result{}, err
+	}
+	// For events that aren't in the built-in list we synthesize a passthrough
+	// subscription so the driver still receives a title/body pair.
+	var effectiveSub store.NotificationSubscription
+	if sub != nil {
+		effectiveSub = *sub
+	} else {
+		effectiveSub = store.NotificationSubscription{
+			Event:         n.Event,
+			Subscribed:    true,
+			TitleTemplate: "{{ .Title }}",
+			BodyTemplate:  "{{ .Message }}",
+		}
+	}
+	rendered, err := RenderNotification(n, effectiveSub.TitleTemplate, effectiveSub.BodyTemplate)
+	if err != nil {
+		return Result{}, err
+	}
+	driver, ok := s.registry.Get(store.SingletonChannelType)
 	if !ok {
-		return Result{}, fmt.Errorf("unsupported channel type: %s", channel.Type)
+		return Result{}, fmt.Errorf("wechat_work_bot driver is not registered")
 	}
-	rendered, renderErr := RenderChannelNotification(n, *channel)
-	if renderErr != nil {
-		return Result{}, renderErr
+	runtime, err := buildChannelRuntime(settings, effectiveSub, "test", &rendered)
+	if err != nil {
+		return Result{}, err
 	}
-	titleTpl, bodyTpl := ResolveChannelTemplates(*channel, n.Event)
-	result, err := driver.Send(ctx, n, ChannelRuntime{
-		ID:        channel.ID,
-		Name:      channel.Name,
-		Type:      channel.Type,
-		Config:    channel.Config,
-		TitleTpl:  titleTpl,
-		BodyTpl:   bodyTpl,
-		Triggered: "test",
-		Rendered:  &rendered,
-	})
+	result, sendErr := driver.Send(ctx, n, runtime)
 	deliveryStatus := "success"
-	if err != nil || !result.OK {
+	if sendErr != nil || !result.OK {
 		deliveryStatus = "failed"
 	}
 	_, _ = s.store.CreateNotificationDelivery(&store.NotificationDelivery{
-		ChannelID:       channel.ID,
-		ChannelName:     channel.Name,
-		ChannelType:     channel.Type,
+		ChannelID:       store.SingletonChannelID,
+		ChannelName:     store.SingletonChannelName,
+		ChannelType:     store.SingletonChannelType,
 		Event:           n.Event,
 		Severity:        n.Severity,
 		Title:           rendered.Title,
 		PayloadSummary:  truncateString(rendered.Body, 1024),
 		Status:          deliveryStatus,
 		UpstreamCode:    result.UpstreamCode,
-		UpstreamMessage: firstNonEmpty(result.UpstreamMessage, errorString(err)),
+		UpstreamMessage: firstNonEmpty(result.UpstreamMessage, errorString(sendErr)),
 		LatencyMS:       result.LatencyMS,
 		Attempt:         1,
 		DedupKey:        "",
 		TriggeredBy:     "test",
 	})
-	return result, err
-}
-
-func (s *Service) SendLegacyWebhookTest(ctx context.Context, rawURL string, n Notification) (Result, error) {
-	driver, ok := s.registry.Get("generic_webhook")
-	if !ok {
-		return Result{}, fmt.Errorf("generic_webhook driver is not registered")
-	}
-	cfg, err := json.Marshal(map[string]any{
-		"schema": 1,
-		"url":    strings.TrimSpace(rawURL),
-	})
-	if err != nil {
-		return Result{}, err
-	}
-	return driver.Send(ctx, n, ChannelRuntime{
-		ID:        0,
-		Name:      "Legacy Webhook",
-		Type:      "generic_webhook",
-		Config:    cfg,
-		TitleTpl:  "",
-		BodyTpl:   "",
-		Triggered: "test",
-	})
+	return result, sendErr
 }
 
 func BuildDedupKey(n Notification) string {
@@ -266,15 +176,4 @@ func truncateString(value string, limit int) string {
 		return value
 	}
 	return string(runes[:limit])
-}
-
-type PreviewItem struct {
-	ChannelID     int64  `json:"channel_id"`
-	ChannelName   string `json:"channel_name"`
-	ChannelType   string `json:"channel_type"`
-	Matched       bool   `json:"matched"`
-	RenderedTitle string `json:"rendered_title"`
-	RenderedBody  string `json:"rendered_body"`
-	DryRunOK      bool   `json:"dry_run_ok"`
-	SkippedReason string `json:"skipped_reason,omitempty"`
 }

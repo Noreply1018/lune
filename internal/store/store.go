@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,7 +19,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 8
+const v3SchemaVersion = 9
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -131,24 +130,27 @@ CREATE TABLE IF NOT EXISTS request_logs (
 CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_request_logs_pool_id ON request_logs(pool_id);
 
-CREATE TABLE IF NOT EXISTS notification_channels (
-    id              INTEGER PRIMARY KEY,
-    name            TEXT NOT NULL,
-    type            TEXT NOT NULL,
-    enabled         INTEGER NOT NULL DEFAULT 1,
-    config          TEXT NOT NULL DEFAULT '{}',
-    subscriptions   TEXT NOT NULL DEFAULT '[]',
-    title_template  TEXT NOT NULL DEFAULT '',
-    body_template   TEXT NOT NULL DEFAULT '',
-    retry_max_attempts INTEGER NOT NULL DEFAULT 5,
-    retry_schedule_seconds TEXT NOT NULL DEFAULT '[30,120,600,1800,7200]',
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+CREATE TABLE IF NOT EXISTS notification_settings (
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled             INTEGER NOT NULL DEFAULT 0,
+    webhook_url         TEXT    NOT NULL DEFAULT '',
+    format              TEXT    NOT NULL DEFAULT 'markdown',
+    mention_mobile_list TEXT    NOT NULL DEFAULT '[]',
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS notification_subscriptions (
+    event           TEXT PRIMARY KEY,
+    subscribed      INTEGER NOT NULL DEFAULT 1,
+    title_template  TEXT    NOT NULL,
+    body_template   TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS notification_outbox (
     id               INTEGER PRIMARY KEY,
-    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id),
+    channel_id       INTEGER NOT NULL DEFAULT 1,
     event            TEXT NOT NULL,
     severity         TEXT NOT NULL,
     payload          TEXT NOT NULL,
@@ -163,9 +165,9 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
 
 CREATE TABLE IF NOT EXISTS notification_deliveries (
     id                INTEGER PRIMARY KEY,
-    channel_id        INTEGER NOT NULL,
-    channel_name      TEXT NOT NULL DEFAULT '',
-    channel_type      TEXT NOT NULL DEFAULT '',
+    channel_id        INTEGER NOT NULL DEFAULT 1,
+    channel_name      TEXT NOT NULL DEFAULT 'wechat_work_bot',
+    channel_type      TEXT NOT NULL DEFAULT 'wechat_work_bot',
     event             TEXT NOT NULL,
     severity          TEXT NOT NULL,
     title             TEXT NOT NULL DEFAULT '',
@@ -181,10 +183,16 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending ON notification_outbox(status, next_attempt_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_active_unique ON notification_outbox(channel_id, dedup_key) WHERE status IN ('pending', 'retrying');
-CREATE INDEX IF NOT EXISTS idx_notification_deliveries_recent ON notification_deliveries(channel_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_active_unique ON notification_outbox(dedup_key) WHERE status IN ('pending', 'retrying');
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_deliveries(created_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_name_unique ON notification_channels(name);
+
+INSERT OR IGNORE INTO notification_settings (id) VALUES (1);
+
+INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, title_template, body_template) VALUES
+    ('account_expiring',  1, 'Lune · {{ .Title }}', '{{ .Message }}'),
+    ('account_error',     1, 'Lune · {{ .Title }}', '{{ .Message }}'),
+    ('cpa_service_error', 1, 'Lune · {{ .Title }}', '{{ .Message }}'),
+    ('test',              1, 'Lune 测试消息',        '这是一条用于验证渠道可达性的真实消息，可忽略。');
 `
 
 func New(dbPath string) (*Store, error) {
@@ -226,44 +234,18 @@ func (s *Store) migrateV3(dbPath string) error {
 	ver := s.schemaVersion()
 
 	if ver >= v3SchemaVersion {
-		return nil // already at v3
+		return nil // already at latest
 	}
 
-	if ver == 7 {
-		slog.Info("migrating schema to v8", "from_version", ver)
-		if err := s.migrateCodexQuotaColumns(); err != nil {
-			return fmt.Errorf("migrate codex quota columns: %w", err)
+	if ver >= 3 && ver <= 8 {
+		slog.Info("migrating schema to v9 (notification singleton)", "from_version", ver)
+		if ver < 8 {
+			if err := s.migrateCodexQuotaColumns(); err != nil {
+				return fmt.Errorf("migrate codex quota columns: %w", err)
+			}
 		}
-		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
-	}
-
-	if ver == 6 {
-		slog.Info("migrating schema to v8", "from_version", ver)
-		if err := s.migrateNotificationRetryConfig(); err != nil {
-			return fmt.Errorf("migrate notification retry config: %w", err)
-		}
-		if err := s.migrateCodexQuotaColumns(); err != nil {
-			return fmt.Errorf("migrate codex quota columns: %w", err)
-		}
-		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
-	}
-
-	if ver == 3 || ver == 4 || ver == 5 {
-		slog.Info("migrating schema to v8", "from_version", ver)
-		if err := s.createNotificationSchema(); err != nil {
-			return fmt.Errorf("create notification schema: %w", err)
-		}
-		if err := s.migrateNotificationForeignKeys(); err != nil {
-			return fmt.Errorf("migrate notification foreign keys: %w", err)
-		}
-		if err := s.migrateNotificationRetryConfig(); err != nil {
-			return fmt.Errorf("migrate notification retry config: %w", err)
-		}
-		if err := s.migrateLegacyWebhookChannel(); err != nil {
-			return fmt.Errorf("migrate legacy webhook channel: %w", err)
-		}
-		if err := s.migrateCodexQuotaColumns(); err != nil {
-			return fmt.Errorf("migrate codex quota columns: %w", err)
+		if err := s.migrateNotificationSingleton(); err != nil {
+			return fmt.Errorf("migrate notification singleton: %w", err)
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
 	}
@@ -321,176 +303,60 @@ func (s *Store) createV3Schema() error {
 	return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
 }
 
-func (s *Store) createNotificationSchema() error {
-	_, err := s.db.Exec(`
-CREATE TABLE IF NOT EXISTS notification_channels (
-    id              INTEGER PRIMARY KEY,
-    name            TEXT NOT NULL,
-    type            TEXT NOT NULL,
-    enabled         INTEGER NOT NULL DEFAULT 1,
-    config          TEXT NOT NULL DEFAULT '{}',
-    subscriptions   TEXT NOT NULL DEFAULT '[]',
-    title_template  TEXT NOT NULL DEFAULT '',
-    body_template   TEXT NOT NULL DEFAULT '',
-    retry_max_attempts INTEGER NOT NULL DEFAULT 5,
-    retry_schedule_seconds TEXT NOT NULL DEFAULT '[30,120,600,1800,7200]',
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS notification_outbox (
-    id               INTEGER PRIMARY KEY,
-    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id),
-    event            TEXT NOT NULL,
-    severity         TEXT NOT NULL,
-    payload          TEXT NOT NULL,
-    dedup_key        TEXT NOT NULL DEFAULT '',
-    status           TEXT NOT NULL DEFAULT 'pending',
-    attempt          INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    last_error       TEXT NOT NULL DEFAULT '',
-    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS notification_deliveries (
-    id                INTEGER PRIMARY KEY,
-    channel_id        INTEGER NOT NULL,
-    channel_name      TEXT NOT NULL DEFAULT '',
-    channel_type      TEXT NOT NULL DEFAULT '',
-    event             TEXT NOT NULL,
-    severity          TEXT NOT NULL,
-    title             TEXT NOT NULL DEFAULT '',
-    payload_summary   TEXT NOT NULL DEFAULT '',
-    status            TEXT NOT NULL,
-    upstream_code     TEXT NOT NULL DEFAULT '',
-    upstream_message  TEXT NOT NULL DEFAULT '',
-    latency_ms        INTEGER NOT NULL DEFAULT 0,
-    attempt           INTEGER NOT NULL DEFAULT 1,
-    dedup_key         TEXT NOT NULL DEFAULT '',
-    triggered_by      TEXT NOT NULL DEFAULT 'system',
-    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending ON notification_outbox(status, next_attempt_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_active_unique ON notification_outbox(channel_id, dedup_key) WHERE status IN ('pending', 'retrying');
-CREATE INDEX IF NOT EXISTS idx_notification_deliveries_recent ON notification_deliveries(channel_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_deliveries(created_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_name_unique ON notification_channels(name);
-`)
-	return err
-}
-
-func (s *Store) migrateNotificationForeignKeys() error {
-	outboxExists, err := s.tableExists("notification_outbox")
-	if err != nil {
-		return err
+// migrateNotificationSingleton collapses the legacy multi-channel notification
+// schema (v3–v8) down to a single WeChat-Work-Bot config. Historical channels,
+// pending outbox entries, and indexes are all dropped; the new singleton tables
+// are created and seeded with the built-in event defaults.
+func (s *Store) migrateNotificationSingleton() error {
+	// Drop obsolete indexes first so they don't collide with the new schema.
+	dropStmts := []string{
+		`DROP INDEX IF EXISTS idx_notification_channels_name_unique`,
+		`DROP INDEX IF EXISTS idx_notification_outbox_active_unique`,
+		`DROP INDEX IF EXISTS idx_notification_deliveries_recent`,
 	}
-	deliveriesExists, err := s.tableExists("notification_deliveries")
-	if err != nil {
-		return err
-	}
-	if !outboxExists && !deliveriesExists {
-		return nil
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer rollbackNotificationTx(tx)
-
-	if outboxExists {
-		if _, err := tx.Exec(`
-CREATE TABLE notification_outbox_new (
-    id               INTEGER PRIMARY KEY,
-    channel_id       INTEGER NOT NULL REFERENCES notification_channels(id),
-    event            TEXT NOT NULL,
-    severity         TEXT NOT NULL,
-    payload          TEXT NOT NULL,
-    dedup_key        TEXT NOT NULL DEFAULT '',
-    status           TEXT NOT NULL DEFAULT 'pending',
-    attempt          INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    last_error       TEXT NOT NULL DEFAULT '',
-    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
-);
-INSERT INTO notification_outbox_new (id, channel_id, event, severity, payload, dedup_key, status, attempt, next_attempt_at, last_error, created_at, updated_at)
-SELECT id, channel_id, event, severity, payload, dedup_key, status, attempt, next_attempt_at, last_error, created_at, updated_at FROM notification_outbox;
-DROP TABLE notification_outbox;
-ALTER TABLE notification_outbox_new RENAME TO notification_outbox;
-`); err != nil {
-			return err
-		}
-	}
-	if deliveriesExists {
-		if _, err := tx.Exec(`
-CREATE TABLE notification_deliveries_new (
-    id                INTEGER PRIMARY KEY,
-    channel_id        INTEGER NOT NULL,
-    channel_name      TEXT NOT NULL DEFAULT '',
-    channel_type      TEXT NOT NULL DEFAULT '',
-    event             TEXT NOT NULL,
-    severity          TEXT NOT NULL,
-    title             TEXT NOT NULL DEFAULT '',
-    payload_summary   TEXT NOT NULL DEFAULT '',
-    status            TEXT NOT NULL,
-    upstream_code     TEXT NOT NULL DEFAULT '',
-    upstream_message  TEXT NOT NULL DEFAULT '',
-    latency_ms        INTEGER NOT NULL DEFAULT 0,
-    attempt           INTEGER NOT NULL DEFAULT 1,
-    dedup_key         TEXT NOT NULL DEFAULT '',
-    triggered_by      TEXT NOT NULL DEFAULT 'system',
-    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
-);
-INSERT INTO notification_deliveries_new (id, channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by, created_at)
-SELECT id, channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by, created_at FROM notification_deliveries;
-DROP TABLE notification_deliveries;
-ALTER TABLE notification_deliveries_new RENAME TO notification_deliveries;
-`); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Exec(`
-CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending ON notification_outbox(status, next_attempt_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_active_unique ON notification_outbox(channel_id, dedup_key) WHERE status IN ('pending', 'retrying');
-CREATE INDEX IF NOT EXISTS idx_notification_deliveries_recent ON notification_deliveries(channel_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_deliveries(created_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_name_unique ON notification_channels(name);
-`); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (s *Store) migrateNotificationRetryConfig() error {
-	hasAttempts, err := s.hasColumn("notification_channels", "retry_max_attempts")
-	if err != nil {
-		return err
-	}
-	if !hasAttempts {
-		if _, err := s.db.Exec(
-			`ALTER TABLE notification_channels ADD COLUMN retry_max_attempts INTEGER NOT NULL DEFAULT 5`,
-		); err != nil {
-			return err
+	for _, stmt := range dropStmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("drop legacy notification index: %w", err)
 		}
 	}
 
-	hasSchedule, err := s.hasColumn("notification_channels", "retry_schedule_seconds")
-	if err != nil {
-		return err
+	// Old outbox rows reference the soon-to-be-dropped channels table via
+	// their foreign key; clear them before dropping channels.
+	if _, err := s.db.Exec(`DELETE FROM notification_outbox`); err != nil {
+		return fmt.Errorf("clear legacy notification outbox: %w", err)
 	}
-	if !hasSchedule {
-		if _, err := s.db.Exec(
-			`ALTER TABLE notification_channels ADD COLUMN retry_schedule_seconds TEXT NOT NULL DEFAULT '[30,120,600,1800,7200]'`,
-		); err != nil {
-			return err
-		}
+
+	if _, err := s.db.Exec(`DROP TABLE IF EXISTS notification_channels`); err != nil {
+		return fmt.Errorf("drop legacy notification_channels: %w", err)
+	}
+
+	// Recreate outbox / deliveries without the FK so channel_id can be a
+	// plain constant "1" going forward. The simplest path is to drop and
+	// re-create both tables since old rows have been cleared.
+	if _, err := s.db.Exec(`DROP TABLE IF EXISTS notification_outbox`); err != nil {
+		return fmt.Errorf("drop legacy notification_outbox: %w", err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE IF EXISTS notification_deliveries`); err != nil {
+		return fmt.Errorf("drop legacy notification_deliveries: %w", err)
+	}
+
+	// Apply the full v3 schema; CREATE TABLE IF NOT EXISTS statements are
+	// no-ops for tables that already exist, and the notification_* tables
+	// we just dropped get recreated with the new singleton shape.
+	if _, err := s.db.Exec(v3Schema); err != nil {
+		return fmt.Errorf("apply v9 notification schema: %w", err)
+	}
+
+	// Clear legacy legacy-webhook flag so the old path cannot reassert itself.
+	if _, err := s.db.Exec(`DELETE FROM system_config WHERE key IN ('webhook_url', 'webhook_enabled', 'notification_legacy_migrated')`); err != nil {
+		return fmt.Errorf("clear legacy webhook settings: %w", err)
 	}
 
 	s.schemaMu.Lock()
-	delete(s.schemaCache, "notification_channels")
+	delete(s.schemaCache, "notification_outbox")
+	delete(s.schemaCache, "notification_deliveries")
+	delete(s.schemaCache, "notification_settings")
+	delete(s.schemaCache, "notification_subscriptions")
 	s.schemaMu.Unlock()
 	return nil
 }
@@ -536,57 +402,6 @@ func (s *Store) migrateCodexQuotaColumns() error {
 	delete(s.schemaCache, "accounts")
 	s.schemaMu.Unlock()
 	return nil
-}
-
-func (s *Store) migrateLegacyWebhookChannel() error {
-	migrated, err := s.GetSetting("notification_legacy_migrated")
-	if err == nil && migrated == "1" {
-		return nil
-	}
-
-	settings, err := s.GetSettings()
-	if err != nil {
-		return err
-	}
-
-	webhookURL := strings.TrimSpace(settings["webhook_url"])
-	if webhookURL == "" {
-		return s.SetSetting("notification_legacy_migrated", "1")
-	}
-
-	var existingCount int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM notification_channels`).Scan(&existingCount); err != nil {
-		return err
-	}
-	if existingCount > 0 {
-		return s.SetSetting("notification_legacy_migrated", "1")
-	}
-
-	enabled := 0
-	if settings["webhook_enabled"] == "1" || strings.EqualFold(settings["webhook_enabled"], "true") {
-		enabled = 1
-	}
-
-	cfg, err := json.Marshal(map[string]any{
-		"schema": 1,
-		"url":    webhookURL,
-	})
-	if err != nil {
-		return err
-	}
-
-	_, err = s.db.Exec(
-		`INSERT INTO notification_channels (name, type, enabled, config, subscriptions) VALUES (?, ?, ?, ?, ?)`,
-		"Legacy Webhook",
-		"generic_webhook",
-		enabled,
-		string(cfg),
-		`[{"event":"*"}]`,
-	)
-	if err != nil {
-		return err
-	}
-	return s.SetSetting("notification_legacy_migrated", "1")
 }
 
 type cpaServiceBackup struct {

@@ -2,7 +2,6 @@ package health
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -29,26 +28,19 @@ func newTestStore(t *testing.T) *store.Store {
 func newTestNotifier(st *store.Store) *notify.Service {
 	return notify.NewServiceWithRegistry(
 		st,
-		notify.NewRegistry(
-			drivers.NewGenericWebhookDriver(),
-			drivers.NewWeChatWorkBotDriver(),
-			drivers.NewFeishuBotDriver(),
-			drivers.NewEmailSMTPDriver(),
-		),
+		notify.NewRegistry(drivers.NewWeChatWorkBotDriver()),
 	)
 }
 
-func createTestChannel(t *testing.T, st *store.Store, url string) {
+func configureWebhook(t *testing.T, st *store.Store, url string) {
 	t.Helper()
-	cfg := json.RawMessage(`{"schema":1,"url":"` + url + `"}`)
-	if _, err := st.CreateNotificationChannel(&store.NotificationChannel{
-		Name:          "Test Webhook",
-		Type:          "generic_webhook",
-		Enabled:       true,
-		Config:        cfg,
-		Subscriptions: []store.NotificationSubscription{{Event: "*"}},
+	if err := st.UpdateNotificationSettings(store.NotificationSettings{
+		Enabled:           true,
+		WebhookURL:        url,
+		Format:            "markdown",
+		MentionMobileList: []string{},
 	}); err != nil {
-		t.Fatalf("create notification channel: %v", err)
+		t.Fatalf("configure webhook: %v", err)
 	}
 }
 
@@ -82,9 +74,10 @@ func TestSendWebhookNotificationsDedupesWithinBackoffWindow(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errcode":0}`))
 	}))
 	defer server.Close()
-	createTestChannel(t, st, server.URL)
+	configureWebhook(t, st, server.URL)
 
 	checker := NewChecker(st, cache, "", "", newTestNotifier(st))
 
@@ -98,13 +91,6 @@ func TestSendWebhookNotificationsDedupesWithinBackoffWindow(t *testing.T) {
 	}
 	if len(notifications) == 0 {
 		t.Fatalf("expected system notifications to be generated")
-	}
-	channels, err := st.ListEnabledNotificationChannels()
-	if err != nil {
-		t.Fatalf("list channels: %v", err)
-	}
-	if len(channels) == 0 {
-		t.Fatalf("expected notification channels to be enabled")
 	}
 
 	checker.dispatchSystemNotifications(context.Background())
@@ -183,9 +169,10 @@ func TestSendWebhookNotificationsRetriesAfterFailure(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errcode":0}`))
 	}))
 	defer server.Close()
-	createTestChannel(t, st, server.URL)
+	configureWebhook(t, st, server.URL)
 
 	checker := NewChecker(st, cache, "", "", newTestNotifier(st))
 	checker.dispatchSystemNotifications(context.Background())
@@ -237,12 +224,13 @@ func TestSendWebhookNotificationsSendsSeverityUpgrade(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errcode":0}`))
 	}))
 	defer server.Close()
-	createTestChannel(t, st, server.URL)
+	configureWebhook(t, st, server.URL)
 
 	if err := st.UpdateSettings(map[string]string{
-		"notification_expiring_days":    "7",
+		"notification_expiring_days": "7",
 	}); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}

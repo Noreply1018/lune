@@ -16,21 +16,6 @@ import (
 	"lune/internal/store"
 )
 
-func createNotificationChannelForTest(t *testing.T, st *store.Store) int64 {
-	t.Helper()
-	id, err := st.CreateNotificationChannel(&store.NotificationChannel{
-		Name:          "Ops",
-		Type:          "generic_webhook",
-		Enabled:       true,
-		Config:        json.RawMessage(`{"schema":1,"url":"https://example.com/hook"}`),
-		Subscriptions: []store.NotificationSubscription{{Event: "*"}},
-	})
-	if err != nil {
-		t.Fatalf("create notification channel: %v", err)
-	}
-	return id
-}
-
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.New(filepath.Join(t.TempDir(), "lune-test.db"))
@@ -46,82 +31,8 @@ func newTestStore(t *testing.T) *store.Store {
 func newTestNotifier(st *store.Store) *notify.Service {
 	return notify.NewServiceWithRegistry(
 		st,
-		notify.NewRegistry(
-			drivers.NewGenericWebhookDriver(),
-			drivers.NewWeChatWorkBotDriver(),
-			drivers.NewFeishuBotDriver(),
-			drivers.NewEmailSMTPDriver(),
-		),
+		notify.NewRegistry(drivers.NewWeChatWorkBotDriver()),
 	)
-}
-
-func TestNormalizeSettingValueWebhookURL(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		raw     string
-		want    string
-		wantErr bool
-	}{
-		{name: "empty allowed", raw: `""`, want: ""},
-		{name: "http allowed", raw: `"http://example.com/hook"`, want: "http://example.com/hook"},
-		{name: "https allowed", raw: `"https://example.com/hook"`, want: "https://example.com/hook"},
-		{name: "invalid scheme rejected", raw: `"ftp://example.com/hook"`, wantErr: true},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			got, err := normalizeSettingValue("webhook_url", json.RawMessage(tc.raw))
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("normalize webhook_url: %v", err)
-			}
-			if got != tc.want {
-				t.Fatalf("expected %q, got %q", tc.want, got)
-			}
-		})
-	}
-}
-
-func TestTestWebhookUsesStoredURL(t *testing.T) {
-	t.Parallel()
-
-	st := newTestStore(t)
-	cache := store.NewRoutingCache(st)
-
-	called := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	if err := st.UpdateSettings(map[string]string{"webhook_url": server.URL}); err != nil {
-		t.Fatalf("seed webhook_url: %v", err)
-	}
-	cache.Invalidate()
-
-	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings/webhook/test", http.NoBody)
-	rr := httptest.NewRecorder()
-
-	handler.testWebhook(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-	if called != 1 {
-		t.Fatalf("expected webhook receiver to be called once, got %d", called)
-	}
 }
 
 func TestBatchImportCpaAccountsRollsBackWhenPoolMembershipFails(t *testing.T) {
@@ -330,7 +241,7 @@ func TestUpdateSettingsRejectsDeprecatedNotificationFlagsOnCleanStore(t *testing
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/admin/api/settings",
-		strings.NewReader(`{"notification_error_enabled":true,"notification_expiring_enabled":true,"notification_expiring_days":5}`),
+		strings.NewReader(`{"notification_error_enabled":true,"notification_expiring_enabled":true,"notification_expiring_days":5,"webhook_enabled":true,"webhook_url":"https://example.com/hook"}`),
 	)
 	rr := httptest.NewRecorder()
 
@@ -346,50 +257,10 @@ func TestUpdateSettingsRejectsDeprecatedNotificationFlagsOnCleanStore(t *testing
 	if settings["notification_expiring_days"] != "5" {
 		t.Fatalf("expected supported setting to persist, got %q", settings["notification_expiring_days"])
 	}
-	if _, ok := settings["notification_error_enabled"]; ok {
-		t.Fatalf("expected deprecated notification_error_enabled to NOT be written, got %q", settings["notification_error_enabled"])
-	}
-	if _, ok := settings["notification_expiring_enabled"]; ok {
-		t.Fatalf("expected deprecated notification_expiring_enabled to NOT be written, got %q", settings["notification_expiring_enabled"])
-	}
-}
-
-func TestUpdateSettingsPreservesPreseededDeprecatedFlags(t *testing.T) {
-	st := newTestStore(t)
-	if err := st.UpdateSettings(map[string]string{
-		"notification_error_enabled":    "true",
-		"notification_expiring_enabled": "true",
-		"notification_expiring_days":    "9",
-	}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
-	cache := store.NewRoutingCache(st)
-	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
-
-	req := httptest.NewRequest(
-		http.MethodPut,
-		"/admin/api/settings",
-		strings.NewReader(`{"notification_error_enabled":false,"notification_expiring_enabled":false,"notification_expiring_days":5}`),
-	)
-	rr := httptest.NewRecorder()
-
-	handler.updateSettings(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-	settings, err := st.GetSettings()
-	if err != nil {
-		t.Fatalf("get settings: %v", err)
-	}
-	if settings["notification_expiring_days"] != "5" {
-		t.Fatalf("expected supported setting to persist, got %q", settings["notification_expiring_days"])
-	}
-	if settings["notification_error_enabled"] != "true" {
-		t.Fatalf("expected pre-seeded deprecated flag to remain untouched, got %q", settings["notification_error_enabled"])
-	}
-	if settings["notification_expiring_enabled"] != "true" {
-		t.Fatalf("expected pre-seeded deprecated flag to remain untouched, got %q", settings["notification_expiring_enabled"])
+	for _, deprecated := range []string{"notification_error_enabled", "notification_expiring_enabled", "webhook_enabled", "webhook_url"} {
+		if v, ok := settings[deprecated]; ok && v != "" {
+			t.Fatalf("expected deprecated %s to NOT be written, got %q", deprecated, v)
+		}
 	}
 }
 
@@ -420,153 +291,154 @@ func TestImportConfigRejectsInvalidSettingValue(t *testing.T) {
 	}
 }
 
-func TestPreviewNotificationsAllowsEmptyBody(t *testing.T) {
+func TestGetNotificationsReturnsSettingsAndSubscriptions(t *testing.T) {
 	t.Parallel()
-
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
 	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/notifications/preview", http.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/notifications", http.NoBody)
 	rr := httptest.NewRecorder()
-
-	handler.previewNotifications(rr, req)
-
+	handler.getNotifications(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
+
 	var resp struct {
-		Data []notify.PreviewItem `json:"data"`
+		Data struct {
+			Settings      store.NotificationSettings       `json:"settings"`
+			Subscriptions []store.NotificationSubscription `json:"subscriptions"`
+			EventTypes    []notify.EventType               `json:"event_types"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode preview response: %v", err)
+		t.Fatalf("decode response: %v", err)
 	}
-	if len(resp.Data) != 0 {
-		t.Fatalf("expected no preview items without channels, got %d", len(resp.Data))
+	if resp.Data.Settings.Enabled {
+		t.Fatalf("expected settings to default to disabled")
 	}
-}
-
-func TestTestNotificationChannelReturns404WhenMissing(t *testing.T) {
-	t.Parallel()
-
-	st := newTestStore(t)
-	cache := store.NewRoutingCache(st)
-	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/notifications/channels/999/test", http.NoBody)
-	req.SetPathValue("id", "999")
-	rr := httptest.NewRecorder()
-
-	handler.testNotificationChannel(rr, req)
-
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", rr.Code, rr.Body.String())
+	if len(resp.Data.Subscriptions) != 4 {
+		t.Fatalf("expected 4 subscriptions, got %d", len(resp.Data.Subscriptions))
+	}
+	if len(resp.Data.EventTypes) != 4 {
+		t.Fatalf("expected 4 event types, got %d", len(resp.Data.EventTypes))
 	}
 }
 
-func TestDeleteNotificationChannelReturns404WhenMissing(t *testing.T) {
+func TestUpdateNotificationSettingsRejectsInvalidWebhook(t *testing.T) {
 	t.Parallel()
-
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
-	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
-
-	req := httptest.NewRequest(http.MethodDelete, "/admin/api/notifications/channels/999", http.NoBody)
-	req.SetPathValue("id", "999")
-	rr := httptest.NewRecorder()
-
-	handler.deleteNotificationChannel(rr, req)
-
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", rr.Code, rr.Body.String())
-	}
-}
-
-func TestSetNotificationChannelEnabledOnlyUpdatesEnabledField(t *testing.T) {
-	t.Parallel()
-
-	st := newTestStore(t)
-	cache := store.NewRoutingCache(st)
-	channelID := createNotificationChannelForTest(t, st)
 	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 
 	req := httptest.NewRequest(
-		http.MethodPost,
-		fmt.Sprintf("/admin/api/notifications/channels/%d/enabled", channelID),
-		bytes.NewBufferString(`{"enabled":false}`),
+		http.MethodPut,
+		"/admin/api/notifications/settings",
+		strings.NewReader(`{"enabled":true,"webhook_url":"ftp://bad","format":"text","mention_mobile_list":[]}`),
 	)
-	req.SetPathValue("id", fmt.Sprintf("%d", channelID))
 	rr := httptest.NewRecorder()
+	handler.updateNotificationSettings(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
 
-	handler.setNotificationChannelEnabled(rr, req)
+func TestUpdateNotificationSettingsRejectsInvalidMobile(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/admin/api/notifications/settings",
+		strings.NewReader(`{"enabled":true,"webhook_url":"https://example.com/hook","format":"text","mention_mobile_list":["12345"]}`),
+	)
+	rr := httptest.NewRecorder()
+	handler.updateNotificationSettings(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateNotificationSettingsPersistsValidPayload(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/admin/api/notifications/settings",
+		strings.NewReader(`{"enabled":true,"webhook_url":"https://example.com/hook","format":"markdown","mention_mobile_list":["13800138000","@all","13800138000"]}`),
+	)
+	rr := httptest.NewRecorder()
+	handler.updateNotificationSettings(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
-	channel, err := st.GetNotificationChannel(channelID)
+
+	stored, err := st.GetNotificationSettings()
 	if err != nil {
-		t.Fatalf("get channel: %v", err)
+		t.Fatalf("load settings: %v", err)
 	}
-	if channel == nil {
-		t.Fatalf("expected channel to exist")
+	if !stored.Enabled || stored.Format != "markdown" {
+		t.Fatalf("settings did not persist: %+v", stored)
 	}
-	if channel.Enabled {
-		t.Fatalf("expected channel to be disabled")
-	}
-	var cfg struct {
-		Schema int    `json:"schema"`
-		URL    string `json:"url"`
-	}
-	if err := json.Unmarshal(channel.Config, &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
-	if cfg.URL != "https://example.com/hook" {
-		t.Fatalf("expected config URL to remain unchanged, got %q", cfg.URL)
+	if len(stored.MentionMobileList) != 2 {
+		t.Fatalf("expected dedup of mentions, got %+v", stored.MentionMobileList)
 	}
 }
 
-func TestCreateNotificationChannelRejectsUnknownType(t *testing.T) {
+func TestUpdateNotificationSubscriptionRejectsUnknownEvent(t *testing.T) {
 	t.Parallel()
-
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
 	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/notifications/channels", bytes.NewBufferString(`{
-		"name":"Bad",
-		"type":"bogus",
-		"enabled":true,
-		"config":{"password":"secret"}
-	}`))
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/admin/api/notifications/subscriptions/bogus",
+		strings.NewReader(`{"subscribed":true,"title_template":"t","body_template":"b"}`),
+	)
+	req.SetPathValue("event", "bogus")
 	rr := httptest.NewRecorder()
+	handler.updateNotificationSubscription(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
 
-	handler.createNotificationChannel(rr, req)
+func TestUpdateNotificationSubscriptionRequiresTemplates(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/admin/api/notifications/subscriptions/account_error",
+		strings.NewReader(`{"subscribed":true,"title_template":"","body_template":""}`),
+	)
+	req.SetPathValue("event", "account_error")
+	rr := httptest.NewRecorder()
+	handler.updateNotificationSubscription(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 
-func TestCreateNotificationChannelRejectsInvalidSubscriptionSeverity(t *testing.T) {
+func TestTestNotificationReturns409WhenDisabled(t *testing.T) {
 	t.Parallel()
-
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
 	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/notifications/channels", bytes.NewBufferString(`{
-		"name":"Ops",
-		"type":"generic_webhook",
-		"enabled":false,
-		"config":{"url":"https://example.com/webhook"},
-		"subscriptions":[{"event":"account_error","min_severity":"fatal"}]
-	}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/notifications/test", http.NoBody)
 	rr := httptest.NewRecorder()
-
-	handler.createNotificationChannel(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	handler.testNotification(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 when notifications are disabled, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 

@@ -1,98 +1,69 @@
 package notify
 
 import (
+	"strings"
 	"testing"
-
-	"lune/internal/store"
+	"time"
 )
 
-func TestRenderChannelNotificationPrefersSubscriptionOverrideThenChannelThenDefault(t *testing.T) {
+func TestRenderNotificationUsesProvidedTemplates(t *testing.T) {
 	n := Notification{
 		Event:    "account_error",
 		Severity: "critical",
 		Title:    "Broken",
 		Message:  "boom",
 	}
-
-	channel := store.NotificationChannel{
-		TitleTemplate: "channel {{ .Title }}",
-		BodyTemplate:  "channel {{ .Message }}",
-		Subscriptions: []store.NotificationSubscription{
-			{Event: "account_error", TitleTemplate: "subscription {{ .Title }}", BodyTemplate: "subscription {{ .Message }}"},
-		},
-	}
-	rendered, err := RenderChannelNotification(n, channel)
+	rendered, err := RenderNotification(n, "t={{ .Title }}", "b={{ .Message }}")
 	if err != nil {
-		t.Fatalf("render with subscription override: %v", err)
+		t.Fatalf("render: %v", err)
 	}
-	if rendered.Title != "subscription Broken" || rendered.Body != "subscription boom" {
-		t.Fatalf("unexpected subscription override render: %+v", rendered)
-	}
-
-	channel.Subscriptions = nil
-	rendered, err = RenderChannelNotification(n, channel)
-	if err != nil {
-		t.Fatalf("render with channel default: %v", err)
-	}
-	if rendered.Title != "channel Broken" || rendered.Body != "channel boom" {
-		t.Fatalf("unexpected channel render: %+v", rendered)
-	}
-
-	channel.TitleTemplate = ""
-	channel.BodyTemplate = ""
-	rendered, err = RenderChannelNotification(n, channel)
-	if err != nil {
-		t.Fatalf("render with built-in default: %v", err)
-	}
-	if rendered.Title != "Lune · Broken" || rendered.Body != "boom" {
-		t.Fatalf("unexpected built-in render: %+v", rendered)
+	if rendered.Title != "t=Broken" || rendered.Body != "b=boom" {
+		t.Fatalf("unexpected render: %+v", rendered)
 	}
 }
 
-func TestRenderChannelNotificationFallsBackToWildcardSubscriptionOverride(t *testing.T) {
+func TestRenderNotificationFallsBackToRawValuesWhenTemplatesEmpty(t *testing.T) {
 	n := Notification{
 		Event:    "account_error",
 		Severity: "critical",
 		Title:    "Broken",
 		Message:  "boom",
 	}
-	channel := store.NotificationChannel{
-		TitleTemplate: "channel {{ .Title }}",
-		BodyTemplate:  "channel {{ .Message }}",
-		Subscriptions: []store.NotificationSubscription{
-			{Event: "*", TitleTemplate: "wild {{ .Title }}", BodyTemplate: "wild {{ .Message }}"},
-		},
-	}
-	rendered, err := RenderChannelNotification(n, channel)
+	rendered, err := RenderNotification(n, "", "")
 	if err != nil {
-		t.Fatalf("render with wildcard override: %v", err)
+		t.Fatalf("render: %v", err)
 	}
-	if rendered.Title != "wild Broken" || rendered.Body != "wild boom" {
-		t.Fatalf("unexpected wildcard render: %+v", rendered)
+	if rendered.Title != "Broken" || rendered.Body != "boom" {
+		t.Fatalf("expected raw fallback, got %+v", rendered)
 	}
 }
 
-func TestRenderChannelNotificationPrefersExactSubscriptionOverWildcard(t *testing.T) {
+func TestRenderNotificationSupportsTriggeredAtAlias(t *testing.T) {
+	ts := time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC)
 	n := Notification{
-		Event:    "account_error",
-		Severity: "critical",
-		Title:    "Broken",
-		Message:  "boom",
+		Event:     "account_error",
+		Severity:  "critical",
+		Title:     "Broken",
+		Message:   "boom",
+		Timestamp: ts,
 	}
-	channel := store.NotificationChannel{
-		TitleTemplate: "channel {{ .Title }}",
-		BodyTemplate:  "channel {{ .Message }}",
-		Subscriptions: []store.NotificationSubscription{
-			{Event: "*", TitleTemplate: "wild {{ .Title }}", BodyTemplate: "wild {{ .Message }}"},
-			{Event: "account_error", TitleTemplate: "exact {{ .Title }}", BodyTemplate: "exact {{ .Message }}"},
-		},
-	}
-
-	rendered, err := RenderChannelNotification(n, channel)
+	rendered, err := RenderNotification(n, "at={{ .TriggeredAt }}", "when={{ .Timestamp }}")
 	if err != nil {
-		t.Fatalf("render with exact + wildcard override: %v", err)
+		t.Fatalf("render: %v", err)
 	}
-	if rendered.Title != "exact Broken" || rendered.Body != "exact boom" {
-		t.Fatalf("expected exact override to win over wildcard, got %+v", rendered)
+	if !strings.HasPrefix(rendered.Title, "at=") || !strings.HasPrefix(rendered.Body, "when=") {
+		t.Fatalf("unexpected prefix in rendered: %+v", rendered)
+	}
+	tAt := strings.TrimPrefix(rendered.Title, "at=")
+	tTs := strings.TrimPrefix(rendered.Body, "when=")
+	if tAt != tTs {
+		t.Fatalf("TriggeredAt and Timestamp should render identically, got at=%q ts=%q", tAt, tTs)
+	}
+}
+
+func TestRenderNotificationPropagatesTemplateError(t *testing.T) {
+	n := Notification{Event: "e", Severity: "s", Title: "t", Message: "m"}
+	if _, err := RenderNotification(n, "{{ .Missing", "x"); err == nil {
+		t.Fatalf("expected parse error")
 	}
 }

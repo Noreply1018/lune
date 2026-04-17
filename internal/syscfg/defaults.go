@@ -3,25 +3,21 @@ package syscfg
 import "strconv"
 
 const (
-	DefaultHealthCheckInterval         = 60
-	DefaultRequestTimeout              = 120
-	DefaultMaxRetryAttempts            = 3
-	DefaultNotificationExpiringDays    = 7
-	DefaultWebhookEnabled              = false
-	DefaultWebhookURL                  = ""
-	DefaultDataRetentionDays           = 30
-	DefaultCodexQuotaFetchInterval     = 1800
+	DefaultHealthCheckInterval      = 60
+	DefaultRequestTimeout           = 120
+	DefaultMaxRetryAttempts         = 3
+	DefaultNotificationExpiringDays = 7
+	DefaultDataRetentionDays        = 30
+	DefaultCodexQuotaFetchInterval  = 1800
 )
 
 var allowedSettingKeys = map[string]struct{}{
-	"health_check_interval":         {},
-	"request_timeout":               {},
-	"max_retry_attempts":            {},
-	"notification_expiring_days":    {},
-	"webhook_enabled":               {},
-	"webhook_url":                   {},
-	"data_retention_days":           {},
-	"codex_quota_fetch_interval":    {},
+	"health_check_interval":      {},
+	"request_timeout":            {},
+	"max_retry_attempts":         {},
+	"notification_expiring_days": {},
+	"data_retention_days":        {},
+	"codex_quota_fetch_interval": {},
 }
 
 func IsAllowedSettingKey(key string) bool {
