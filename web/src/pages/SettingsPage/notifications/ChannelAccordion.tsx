@@ -43,7 +43,7 @@ export default function ChannelAccordion({
   onDelete: (id: number) => void;
   onRefresh: () => Promise<void>;
 }) {
-  const rowRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const previousExpandedId = useRef<number | null>(null);
 
   useEffect(() => {
@@ -55,9 +55,10 @@ export default function ChannelAccordion({
       previousExpandedId.current = expandedId;
       return;
     }
-    rowRefs.current[expandedId]?.scrollIntoView({
+    // Use instant scroll so the page doesn't visibly fight the expand animation.
+    rowRefs.current.get(expandedId)?.scrollIntoView({
       block: "start",
-      behavior: "smooth",
+      behavior: "auto",
     });
     previousExpandedId.current = expandedId;
   }, [expandedId]);
@@ -72,7 +73,11 @@ export default function ChannelAccordion({
           <div
             key={channel.id}
             ref={(node) => {
-              rowRefs.current[channel.id] = node;
+              if (node) {
+                rowRefs.current.set(channel.id, node);
+              } else {
+                rowRefs.current.delete(channel.id);
+              }
             }}
             className="overflow-hidden rounded-[1.5rem] border border-white/75 bg-[linear-gradient(180deg,rgba(255,255,255,0.86),rgba(247,245,250,0.78))] shadow-[0_24px_60px_-48px_rgba(33,40,63,0.3)]"
           >
@@ -85,17 +90,11 @@ export default function ChannelAccordion({
             />
 
             <div
-              className="grid transition-[grid-template-rows] duration-300 ease-out"
+              className="grid transition-[grid-template-rows] duration-200 ease-out"
               style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
             >
               <div className="overflow-hidden">
-                <div
-                  className={`border-t border-moon-200/35 pt-4 transition-[opacity,transform] duration-200 ease-out ${
-                    expanded
-                      ? "translate-y-0 opacity-100 delay-75"
-                      : "translate-y-1 opacity-0"
-                  }`}
-                >
+                <div className="border-t border-moon-200/35 pt-4">
                   {expanded && draft ? (
                     <ChannelDetail
                       draft={draft}

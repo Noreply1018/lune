@@ -322,12 +322,44 @@ func TestImportConfigCreatesPoolsSkipsExistingTokensAndIgnoresAdminToken(t *test
 	}
 }
 
-func TestUpdateSettingsIgnoresDeprecatedNotificationFlags(t *testing.T) {
+func TestUpdateSettingsRejectsDeprecatedNotificationFlagsOnCleanStore(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/admin/api/settings",
+		strings.NewReader(`{"notification_error_enabled":true,"notification_expiring_enabled":true,"notification_expiring_days":5}`),
+	)
+	rr := httptest.NewRecorder()
+
+	handler.updateSettings(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	settings, err := st.GetSettings()
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if settings["notification_expiring_days"] != "5" {
+		t.Fatalf("expected supported setting to persist, got %q", settings["notification_expiring_days"])
+	}
+	if _, ok := settings["notification_error_enabled"]; ok {
+		t.Fatalf("expected deprecated notification_error_enabled to NOT be written, got %q", settings["notification_error_enabled"])
+	}
+	if _, ok := settings["notification_expiring_enabled"]; ok {
+		t.Fatalf("expected deprecated notification_expiring_enabled to NOT be written, got %q", settings["notification_expiring_enabled"])
+	}
+}
+
+func TestUpdateSettingsPreservesPreseededDeprecatedFlags(t *testing.T) {
 	st := newTestStore(t)
 	if err := st.UpdateSettings(map[string]string{
-		"notification_error_enabled":     "true",
-		"notification_expiring_enabled":  "true",
-		"notification_expiring_days":     "9",
+		"notification_error_enabled":    "true",
+		"notification_expiring_enabled": "true",
+		"notification_expiring_days":    "9",
 	}); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
@@ -354,10 +386,10 @@ func TestUpdateSettingsIgnoresDeprecatedNotificationFlags(t *testing.T) {
 		t.Fatalf("expected supported setting to persist, got %q", settings["notification_expiring_days"])
 	}
 	if settings["notification_error_enabled"] != "true" {
-		t.Fatalf("expected deprecated notification_error_enabled to remain untouched, got %q", settings["notification_error_enabled"])
+		t.Fatalf("expected pre-seeded deprecated flag to remain untouched, got %q", settings["notification_error_enabled"])
 	}
 	if settings["notification_expiring_enabled"] != "true" {
-		t.Fatalf("expected deprecated notification_expiring_enabled to remain untouched, got %q", settings["notification_expiring_enabled"])
+		t.Fatalf("expected pre-seeded deprecated flag to remain untouched, got %q", settings["notification_expiring_enabled"])
 	}
 }
 

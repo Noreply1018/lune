@@ -11,14 +11,24 @@ import (
 
 var retrySchedule = []int{30, 120, 600, 1800, 7200}
 
+type itemLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
 type Outbox struct {
 	store    *store.Store
 	registry *Registry
-	itemMu   sync.Map
+	locksMu  sync.Mutex
+	locks    map[int64]*itemLock
 }
 
 func NewOutbox(st *store.Store, registry *Registry) *Outbox {
-	return &Outbox{store: st, registry: registry}
+	return &Outbox{
+		store:    st,
+		registry: registry,
+		locks:    make(map[int64]*itemLock),
+	}
 }
 
 func (o *Outbox) Run(ctx context.Context) {
@@ -53,7 +63,9 @@ func (o *Outbox) processDue(ctx context.Context) {
 		ch, ok := channelsByID[item.ChannelID]
 		if !ok {
 			_ = o.store.DeleteNotificationOutbox(item.ID)
-			o.itemMu.Delete(item.ID)
+			continue
+		}
+		if !ch.Enabled {
 			continue
 		}
 		if err := o.AttemptOne(ctx, item, ch, true); err != nil {
@@ -80,10 +92,8 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 		renderedBody = rendered.Body
 		payloadSummary = truncateString(rendered.Body, 1024)
 	}
-	mu := o.itemMutex(item.ID)
-	mu.Lock()
-	defer o.releaseItemMutex(item.ID)
-	defer mu.Unlock()
+	lk := o.acquireItemLock(item.ID)
+	defer o.releaseItemLock(item.ID, lk)
 	current, err := o.store.GetNotificationOutbox(item.ID)
 	if err != nil {
 		return err
@@ -168,19 +178,27 @@ func (o *Outbox) fail(item store.NotificationOutbox, channel store.NotificationC
 	return o.store.RecordNotificationAttemptRetry(item.ID, delivery, attempt, nextAttemptAt, firstNonEmpty(result.UpstreamMessage, message))
 }
 
-func (o *Outbox) itemMutex(outboxID int64) *sync.Mutex {
-	actual, _ := o.itemMu.LoadOrStore(outboxID, &sync.Mutex{})
-	return actual.(*sync.Mutex)
+func (o *Outbox) acquireItemLock(id int64) *itemLock {
+	o.locksMu.Lock()
+	lk, ok := o.locks[id]
+	if !ok {
+		lk = &itemLock{}
+		o.locks[id] = lk
+	}
+	lk.refs++
+	o.locksMu.Unlock()
+	lk.mu.Lock()
+	return lk
 }
 
-func (o *Outbox) releaseItemMutex(outboxID int64) {
-	current, err := o.store.GetNotificationOutbox(outboxID)
-	if err != nil {
-		return
+func (o *Outbox) releaseItemLock(id int64, lk *itemLock) {
+	lk.mu.Unlock()
+	o.locksMu.Lock()
+	lk.refs--
+	if lk.refs == 0 {
+		delete(o.locks, id)
 	}
-	if current == nil || current.Status == "success" || current.Status == "dropped" {
-		o.itemMu.Delete(outboxID)
-	}
+	o.locksMu.Unlock()
 }
 
 func channelRetryMaxAttempts(channel store.NotificationChannel) int {

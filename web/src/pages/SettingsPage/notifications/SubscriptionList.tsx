@@ -1,6 +1,11 @@
 import { Plus, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 import SubscriptionChip from "./SubscriptionChip";
 import { DEFAULT_SUBSCRIPTION, eventLabel, normalizeSubscriptions } from "./types";
@@ -42,25 +47,41 @@ export default function SubscriptionList({
             以 chip 管理事件、最低严重级别和模板覆盖。允许留空；留空时该 channel 只保留配置，不接收任何事件。
           </p>
         </div>
-        <Button
-          variant="outline"
-          className="rounded-full"
-          onClick={() =>
-            nextAddEvent
-              ? onChange([
-                  ...subscriptions,
-                  {
-                    ...DEFAULT_SUBSCRIPTION,
-                    event: nextAddEvent,
-                  },
-                ])
-              : undefined
-          }
-          disabled={!nextAddEvent}
-        >
-          <Plus className="size-4" />
-          Add Event
-        </Button>
+        {nextAddEvent ? (
+          <Button
+            variant="outline"
+            className="rounded-full"
+            onClick={() =>
+              onChange([
+                ...subscriptions,
+                {
+                  ...DEFAULT_SUBSCRIPTION,
+                  event: nextAddEvent,
+                },
+              ])
+            }
+          >
+            <Plus className="size-4" />
+            Add Event
+          </Button>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="outline"
+                  className="rounded-full"
+                  disabled
+                  aria-label="已为所有事件添加订阅"
+                >
+                  <Plus className="size-4" />
+                  Add Event
+                </Button>
+              }
+            />
+            <TooltipContent>已为所有事件添加订阅</TooltipContent>
+          </Tooltip>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {subscriptions.length ? subscriptions.map((item, index) => (

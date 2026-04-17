@@ -230,8 +230,23 @@ func TestDeleteNotificationChannelKeepsDeliveryHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list deliveries: %v", err)
 	}
-	if len(deliveries) != 1 {
-		t.Fatalf("expected delivery history to remain, got %d", len(deliveries))
+	// Existing history is preserved, and each pending outbox row at delete
+	// time is recorded as a `dropped` delivery so the timeline explains
+	// why those messages never left.
+	if len(deliveries) != 2 {
+		t.Fatalf("expected 2 deliveries (original + dropped), got %d", len(deliveries))
+	}
+	var droppedCount, successCount int
+	for _, d := range deliveries {
+		switch d.Status {
+		case "dropped":
+			droppedCount++
+		case "success":
+			successCount++
+		}
+	}
+	if droppedCount != 1 || successCount != 1 {
+		t.Fatalf("expected 1 success + 1 dropped, got dropped=%d success=%d", droppedCount, successCount)
 	}
 	outbox, err := st.ListDueNotificationOutbox(10)
 	if err != nil {

@@ -118,8 +118,11 @@ func TestAttemptOneDoesNotRetryAfterSuccessfulSendWhenRenderFails(t *testing.T) 
 	if len(deliveries) != 1 || deliveries[0].Status != "success" {
 		t.Fatalf("expected one successful delivery, got %+v", deliveries)
 	}
-	if _, ok := outbox.itemMu.Load(itemID); ok {
-		t.Fatalf("expected item mutex to be released after successful terminal state")
+	outbox.locksMu.Lock()
+	_, stillLocked := outbox.locks[itemID]
+	outbox.locksMu.Unlock()
+	if stillLocked {
+		t.Fatalf("expected item lock to be released after successful terminal state")
 	}
 }
 
@@ -393,7 +396,10 @@ func TestAttemptOneDropsAfterRetryMaxAttempts(t *testing.T) {
 	if len(deliveries) == 0 || deliveries[0].Status != "dropped" {
 		t.Fatalf("expected dropped delivery, got %+v", deliveries)
 	}
-	if _, ok := outbox.itemMu.Load(itemID); ok {
-		t.Fatalf("expected item mutex to be released after dropped terminal state")
+	outbox.locksMu.Lock()
+	_, stillLocked := outbox.locks[itemID]
+	outbox.locksMu.Unlock()
+	if stillLocked {
+		t.Fatalf("expected item lock to be released after dropped terminal state")
 	}
 }

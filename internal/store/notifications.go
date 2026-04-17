@@ -242,6 +242,58 @@ func (s *Store) DeleteNotificationChannel(id int64) error {
 	}
 	defer rollbackNotificationTx(tx)
 
+	var channelName, channelType string
+	if err := tx.QueryRow(`SELECT name, type FROM notification_channels WHERE id = ?`, id).
+		Scan(&channelName, &channelType); err != nil {
+		if err == sql.ErrNoRows {
+			return sql.ErrNoRows
+		}
+		return err
+	}
+
+	pendingRows, err := tx.Query(
+		`SELECT event, severity, payload, dedup_key, attempt
+		 FROM notification_outbox
+		 WHERE channel_id = ? AND status IN ('pending', 'retrying')`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		event, severity, payload, dedupKey string
+		attempt                            int
+	}
+	var items []pending
+	for pendingRows.Next() {
+		var p pending
+		if err := pendingRows.Scan(&p.event, &p.severity, &p.payload, &p.dedupKey, &p.attempt); err != nil {
+			pendingRows.Close()
+			return err
+		}
+		items = append(items, p)
+	}
+	pendingRows.Close()
+	if err := pendingRows.Err(); err != nil {
+		return err
+	}
+	for _, p := range items {
+		summary := truncateDeliverySummary(p.payload, 1024)
+		attempt := p.attempt
+		if attempt < 1 {
+			attempt = 1
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO notification_deliveries
+			 (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, upstream_code, upstream_message, latency_ms, attempt, dedup_key, triggered_by)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 'dropped', '', ?, 0, ?, ?, 'admin')`,
+			id, channelName, channelType, p.event, p.severity, p.event, summary,
+			"channel deleted while pending", attempt, p.dedupKey,
+		); err != nil {
+			return err
+		}
+	}
+
 	if _, err := tx.Exec(`DELETE FROM notification_outbox WHERE channel_id = ?`, id); err != nil {
 		return err
 	}
@@ -257,6 +309,13 @@ func (s *Store) DeleteNotificationChannel(id int64) error {
 		return sql.ErrNoRows
 	}
 	return tx.Commit()
+}
+
+func truncateDeliverySummary(payload string, limit int) string {
+	if limit <= 0 || len(payload) <= limit {
+		return payload
+	}
+	return payload[:limit]
 }
 
 func (s *Store) SetNotificationChannelEnabled(id int64, enabled bool) error {
@@ -738,12 +797,15 @@ func normalizeRetrySchedule(values []int) []int {
 	}
 	out := make([]int, 0, len(values))
 	for _, value := range values {
-		if value > 0 {
-			out = append(out, value)
+		if value <= 0 {
+			// Preserve the admin's attempt count rather than silently dropping
+			// entries; falling through to the 30-second floor keeps the schedule
+			// length aligned with retry_max_attempts so AttemptOne never indexes
+			// past the end of the slice.
+			out = append(out, 30)
+			continue
 		}
-	}
-	if len(out) == 0 {
-		return []int{30, 120, 600, 1800, 7200}
+		out = append(out, value)
 	}
 	return out
 }

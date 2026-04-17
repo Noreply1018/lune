@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { toast } from "@/components/Feedback";
@@ -59,7 +59,6 @@ export default function ChannelDetail({
     () => defaultPreviewSelection(eventTypes),
     [eventTypes],
   );
-  const [dangerOpen, setDangerOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [testConfirmOpen, setTestConfirmOpen] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
@@ -69,25 +68,32 @@ export default function ChannelDetail({
     useState<NotificationSeverity>(previewDefaults.severity);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewResult, setPreviewResult] = useState<PreviewResult | null>(null);
+  const [hasPreviewed, setHasPreviewed] = useState(false);
   const [channelTitleMode, setChannelTitleMode] = useState<"default" | "custom">(
     draft.title_template.trim() ? "custom" : "default",
   );
   const [channelBodyMode, setChannelBodyMode] = useState<"default" | "custom">(
     draft.body_template.trim() ? "custom" : "default",
   );
-
+  // Mode is user-owned after initial seed. Re-seeding only fires when the
+  // expanded channel changes (draft.id), so clicking "使用默认" doesn't snap
+  // back to "custom" just because the parent still holds non-empty text.
+  const lastSeededChannelId = useRef(draft.id);
   useEffect(() => {
+    if (lastSeededChannelId.current === draft.id) {
+      return;
+    }
+    lastSeededChannelId.current = draft.id;
     setChannelTitleMode(draft.title_template.trim() ? "custom" : "default");
-  }, [draft.title_template]);
-
-  useEffect(() => {
     setChannelBodyMode(draft.body_template.trim() ? "custom" : "default");
-  }, [draft.body_template]);
+  }, [draft.id, draft.title_template, draft.body_template]);
 
   useEffect(() => {
     if (!eventTypes.some((item) => item.event === previewEvent)) {
       setPreviewEvent(previewDefaults.event);
       setPreviewSeverity(previewDefaults.severity);
+      setHasPreviewed(false);
+      setPreviewResult(null);
     }
   }, [eventTypes, previewDefaults.event, previewDefaults.severity, previewEvent]);
 
@@ -102,6 +108,16 @@ export default function ChannelDetail({
 
   return (
     <div className="space-y-6 px-4 pt-1 pb-5 sm:px-5">
+      {saveError ? (
+        <div
+          role="alert"
+          aria-live="polite"
+          className="rounded-[1rem] border border-status-red/18 bg-status-red/6 px-4 py-3 text-sm text-status-red"
+        >
+          {saveError}
+        </div>
+      ) : null}
+
       <BasicConfigForm
         draft={draft}
         savingField={savingField}
@@ -195,6 +211,7 @@ export default function ChannelDetail({
           severity={previewSeverity}
           result={previewResult}
           loading={previewLoading}
+          hasPreviewed={hasPreviewed}
           onEventChange={(value) => {
             setPreviewEvent(value);
             const matched = eventTypes.find((item) => item.event === value);
@@ -202,8 +219,14 @@ export default function ChannelDetail({
               (matched?.default_severity as NotificationSeverity | undefined) ??
                 "critical",
             );
+            setHasPreviewed(false);
+            setPreviewResult(null);
           }}
-          onSeverityChange={setPreviewSeverity}
+          onSeverityChange={(value) => {
+            setPreviewSeverity(value);
+            setHasPreviewed(false);
+            setPreviewResult(null);
+          }}
           onRun={async () => {
             setPreviewLoading(true);
             try {
@@ -226,6 +249,7 @@ export default function ChannelDetail({
                     }
                   : null,
               );
+              setHasPreviewed(true);
             } catch (err) {
               toast(err instanceof Error ? err.message : "预览失败", "error");
             } finally {
@@ -235,31 +259,32 @@ export default function ChannelDetail({
         />
       </div>
 
-      {saveError ? (
-        <div className="rounded-[1rem] border border-status-red/18 bg-status-red/6 px-4 py-3 text-sm text-status-red">
-          {saveError}
-        </div>
-      ) : null}
-
       <DangerZone
-        open={dangerOpen}
         error={deleteError}
         deleting={deleting}
-        onOpenChange={setDangerOpen}
         onDeleteRequest={() => setDeleteConfirmOpen(true)}
       />
 
       <ConfirmDialog
         open={testConfirmOpen}
-        onOpenChange={setTestConfirmOpen}
+        onOpenChange={(next) => {
+          // Prevent reopen while a test is in flight — the dialog's confirm
+          // button would otherwise race with the pending request.
+          if (testLoading) {
+            return;
+          }
+          setTestConfirmOpen(next);
+        }}
         title="发送测试消息"
         description="这会向当前 webhook 真实发送一条测试通知，用于确认渠道是否可达。"
         confirmLabel="发送测试"
         variant="default"
         onConfirm={() => {
+          // Flip loading BEFORE closing so `open` props outside (Test button)
+          // don't momentarily believe the dialog is idle + ready to reopen.
+          setTestLoading(true);
+          setTestConfirmOpen(false);
           void (async () => {
-            setTestLoading(true);
-            setTestConfirmOpen(false);
             try {
               const result = await api.post<TestResult>(
                 `/notifications/channels/${draft.id}/test`,

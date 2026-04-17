@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, Plus, RefreshCw } from "lucide-react";
 
 import { toast } from "@/components/Feedback";
@@ -113,7 +113,10 @@ export default function NotificationsSection({
   function beginCreate(type: ChannelType) {
     setCreatorDraft(makeCreatorDraft(type, channels));
     setCreatorError(null);
-    setCreatorOpen(false);
+    // Keep the type picker visible so the user can switch to a different
+    // type after they've opened the create panel. Cancel will just clear
+    // the draft without having to re-open the picker.
+    setCreatorOpen(true);
   }
 
   async function createChannel() {
@@ -187,20 +190,30 @@ export default function NotificationsSection({
   }
 
   async function toggleEnabled(id: number, enabled: boolean) {
-    const previousChannels = channels;
-    const previousDraft = draft;
     setTogglingId(id);
+    // Use functional setters so we don't rely on a stale snapshot if other
+    // fields changed while the toggle request was in flight.
     setChannels((current) =>
       current.map((item) => (item.id === id ? { ...item, enabled } : item)),
     );
-    if (expandedId === id && draft) {
-      setDraft({ ...draft, enabled });
-    }
+    setDraft((current) =>
+      current && current.id === id ? { ...current, enabled } : current,
+    );
     try {
       await api.post(`/notifications/channels/${id}/enabled`, { enabled });
     } catch (err) {
-      setChannels(previousChannels);
-      setDraft(previousDraft);
+      // Only revert the single field we changed, on whatever the current
+      // state happens to be, to avoid clobbering concurrent edits.
+      setChannels((current) =>
+        current.map((item) =>
+          item.id === id ? { ...item, enabled: !enabled } : item,
+        ),
+      );
+      setDraft((current) =>
+        current && current.id === id
+          ? { ...current, enabled: !enabled }
+          : current,
+      );
       toast(err instanceof Error ? err.message : "更新渠道状态失败", "error");
     } finally {
       setTogglingId(null);
@@ -230,8 +243,12 @@ export default function NotificationsSection({
   }
 
   const busy = loading || refreshing || creatingType != null;
-  const channelDrafts = channels.map((item) =>
-    expandedId === item.id && draft ? draft : makeChannelDraft(item),
+  const channelDrafts = useMemo(
+    () =>
+      channels.map((item) =>
+        expandedId === item.id && draft ? draft : makeChannelDraft(item),
+      ),
+    [channels, expandedId, draft],
   );
 
   return (

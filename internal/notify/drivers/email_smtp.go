@@ -68,9 +68,9 @@ func (d *EmailSMTPDriver) Send(ctx context.Context, n notify.Notification, runti
 	}
 	auth := smtpAuth(cfg.Username, cfg.Password, cfg.Host)
 	body := strings.Join([]string{
-		fmt.Sprintf("From: %s", cfg.From),
-		fmt.Sprintf("To: %s", strings.Join(cfg.To, ",")),
-		fmt.Sprintf("Subject: %s", rendered.Title),
+		fmt.Sprintf("From: %s", sanitizeHeader(cfg.From)),
+		fmt.Sprintf("To: %s", sanitizeHeader(strings.Join(cfg.To, ","))),
+		fmt.Sprintf("Subject: %s", sanitizeHeader(rendered.Title)),
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=UTF-8",
 		"",
@@ -88,6 +88,21 @@ func (d *EmailSMTPDriver) Send(ctx context.Context, n notify.Notification, runti
 	result.UpstreamCode = "smtp accepted"
 	result.UpstreamMessage = "accepted"
 	return result, nil
+}
+
+// sanitizeHeader strips CR/LF and any control chars that would let a
+// template value smuggle new headers or a premature body (RFC 5322 § 2.2).
+func sanitizeHeader(value string) string {
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if r == '\t' || r >= 0x20 {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func normalizeTLSMode(value string) string {

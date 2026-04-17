@@ -79,8 +79,14 @@ func (d *WeChatWorkBotDriver) Send(ctx context.Context, n notify.Notification, r
 			"mentioned_mobile_list": cfg.MentionMobileList,
 		}
 	} else {
-		mentions := make([]string, 0, len(cfg.MentionList))
+		mentions := make([]string, 0, len(cfg.MentionList)+len(cfg.MentionMobileList))
 		for _, item := range cfg.MentionList {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				mentions = append(mentions, "<@"+item+">")
+			}
+		}
+		for _, item := range cfg.MentionMobileList {
 			item = strings.TrimSpace(item)
 			if item != "" {
 				mentions = append(mentions, "<@"+item+">")

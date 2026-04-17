@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -21,6 +24,9 @@ export default function CreateChannelPanel({
   onCancel: () => void;
 }) {
   const meta = CHANNEL_TYPE_META[draft.type];
+  const [revealedFields, setRevealedFields] = useState<Record<string, boolean>>(
+    {},
+  );
 
   return (
     <div className="rounded-[1.45rem] border border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(245,242,249,0.82))] px-4 py-4 shadow-[0_28px_72px_-50px_rgba(33,40,63,0.28)]">
@@ -60,50 +66,79 @@ export default function CreateChannelPanel({
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        {meta.fields.map((field) => (
-          <label
-            key={field.key}
-            className={cn("space-y-2", field.multiline ? "sm:col-span-2" : "")}
-          >
-            <span className="text-xs font-medium tracking-[0.16em] text-moon-350">
-              {field.label}
-            </span>
-            {field.multiline ? (
-              <textarea
-                value={draft.config[field.key] ?? ""}
-                onChange={(event) =>
-                  onDraftChange({
-                    ...draft,
-                    config: {
-                      ...draft.config,
-                      [field.key]: event.target.value,
-                    },
-                  })
-                }
-                className="min-h-28 w-full rounded-[1rem] border border-moon-200/65 bg-white/82 px-3 py-3 text-sm text-moon-700 outline-none transition focus:border-lunar-300/70"
-                placeholder={field.placeholder}
-              />
-            ) : (
-              <Input
-                type={field.secret ? "password" : "text"}
-                value={draft.config[field.key] ?? ""}
-                onChange={(event) =>
-                  onDraftChange({
-                    ...draft,
-                    config: {
-                      ...draft.config,
-                      [field.key]: event.target.value,
-                    },
-                  })
-                }
-                placeholder={field.placeholder}
-              />
-            )}
-            {field.helper ? (
-              <p className="text-xs leading-5 text-moon-400">{field.helper}</p>
-            ) : null}
-          </label>
-        ))}
+        {meta.fields.map((field) => {
+          const showSecret = revealedFields[field.key];
+          return (
+            <label
+              key={field.key}
+              className={cn("space-y-2", field.multiline ? "sm:col-span-2" : "")}
+            >
+              <span className="text-xs font-medium tracking-[0.16em] text-moon-350">
+                {field.label}
+              </span>
+              <div className="relative">
+                {field.multiline ? (
+                  <textarea
+                    value={draft.config[field.key] ?? ""}
+                    onChange={(event) =>
+                      onDraftChange({
+                        ...draft,
+                        config: {
+                          ...draft.config,
+                          [field.key]: event.target.value,
+                        },
+                      })
+                    }
+                    className="min-h-28 w-full rounded-[1rem] border border-moon-200/65 bg-white/82 px-3 py-3 text-sm text-moon-700 outline-none transition focus:border-lunar-300/70"
+                    placeholder={field.placeholder}
+                  />
+                ) : (
+                  <Input
+                    type={field.secret && !showSecret ? "password" : "text"}
+                    value={draft.config[field.key] ?? ""}
+                    onChange={(event) =>
+                      onDraftChange({
+                        ...draft,
+                        config: {
+                          ...draft.config,
+                          [field.key]: event.target.value,
+                        },
+                      })
+                    }
+                    placeholder={field.placeholder}
+                    className={field.secret ? "pr-12" : undefined}
+                  />
+                )}
+                {field.secret && !field.multiline ? (
+                  <div className="absolute top-2 right-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      className="rounded-full text-moon-450"
+                      aria-label={showSecret ? "隐藏" : "显示"}
+                      onClick={() =>
+                        setRevealedFields((current) => ({
+                          ...current,
+                          [field.key]: !current[field.key],
+                        }))
+                      }
+                    >
+                      {showSecret ? (
+                        <EyeOff className="size-4" />
+                      ) : (
+                        <Eye className="size-4" />
+                      )}
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+              {field.helper ? (
+                <p className="text-xs leading-5 text-moon-400">{field.helper}</p>
+              ) : null}
+            </label>
+          );
+        })}
       </div>
 
       {error ? (

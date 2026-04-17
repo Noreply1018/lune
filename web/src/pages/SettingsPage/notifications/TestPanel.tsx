@@ -27,7 +27,11 @@ export default function TestPanel({
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <Button className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={onRun} disabled={loading}>
+        <Button
+          className="rounded-full bg-amber-600 text-white hover:bg-amber-700 focus-visible:ring-2 focus-visible:ring-amber-900/70 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-50"
+          onClick={onRun}
+          disabled={loading}
+        >
           {loading ? (
             <RefreshCw className="size-4 animate-spin" />
           ) : (

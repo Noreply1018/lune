@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { useRouter } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
-import { CHANNEL_TYPE_META, SECRET_PLACEHOLDER } from "./types";
+import { CHANNEL_TYPE_META } from "./types";
 import type { NotificationChannelDraft } from "./types";
 
 export default function BasicConfigForm({
@@ -79,12 +79,14 @@ export default function BasicConfigForm({
         {meta.fields.map((field) => {
           const value = draft.config[field.key] ?? "";
           const showSecret = revealedFields[field.key];
-          const displayValue =
-            field.secret &&
-            draft.preservedSecrets[field.key] &&
-            value.trim() === ""
-              ? SECRET_PLACEHOLDER
-              : value;
+          const secretPreserved =
+            !!field.secret &&
+            !!draft.preservedSecrets[field.key] &&
+            value.trim() === "";
+          const displayValue = value;
+          const secretPlaceholder = secretPreserved
+            ? "已保存，留空保留原值"
+            : field.placeholder;
 
           return (
             <label
@@ -114,7 +116,12 @@ export default function BasicConfigForm({
                         },
                       })
                     }
-                    onBlur={(event) =>
+                    onBlur={(event) => {
+                      const next = event.currentTarget.value;
+                      if (field.secret && secretPreserved && next.trim() === "") {
+                        onCommit(field.key, draft);
+                        return;
+                      }
                       onCommit(field.key, {
                         ...draft,
                         preservedSecrets: {
@@ -123,12 +130,12 @@ export default function BasicConfigForm({
                         },
                         config: {
                           ...draft.config,
-                          [field.key]: event.currentTarget.value,
+                          [field.key]: next,
                         },
-                      })
-                    }
+                      });
+                    }}
                     className="min-h-28 w-full rounded-[1rem] border border-moon-200/65 bg-white/82 px-3 py-3 text-sm text-moon-700 outline-none transition focus:border-lunar-300/70"
-                    placeholder={field.placeholder}
+                    placeholder={secretPlaceholder}
                   />
                 ) : (
                   <Input
@@ -149,27 +156,25 @@ export default function BasicConfigForm({
                         },
                       })
                     }
-                    onBlur={(event) =>
-                      onCommit(
-                        field.key,
-                        field.secret &&
-                          draft.preservedSecrets[field.key] &&
-                          displayValue === SECRET_PLACEHOLDER
-                          ? draft
-                          : {
-                              ...draft,
-                              preservedSecrets: {
-                                ...draft.preservedSecrets,
-                                [field.key]: false,
-                              },
-                              config: {
-                                ...draft.config,
-                                [field.key]: event.currentTarget.value,
-                              },
-                            },
-                      )
-                    }
-                    placeholder={field.placeholder}
+                    onBlur={(event) => {
+                      const next = event.currentTarget.value;
+                      if (field.secret && secretPreserved && next.trim() === "") {
+                        onCommit(field.key, draft);
+                        return;
+                      }
+                      onCommit(field.key, {
+                        ...draft,
+                        preservedSecrets: {
+                          ...draft.preservedSecrets,
+                          [field.key]: false,
+                        },
+                        config: {
+                          ...draft.config,
+                          [field.key]: next,
+                        },
+                      });
+                    }}
+                    placeholder={secretPlaceholder}
                     className={field.secret ? "pr-22" : undefined}
                   />
                 )}

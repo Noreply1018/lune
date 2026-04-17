@@ -58,29 +58,75 @@ export default function SubscriptionChip({
     setDaysDraft(expiringDays);
   }, [expiringDays]);
 
+  const hasUnsavedChanges = useMemo(() => {
+    const next = normalizeSubscription(draft, titleMode, bodyMode);
+    return (
+      next.event !== subscription.event ||
+      next.min_severity !== subscription.min_severity ||
+      (next.title_template || "") !== (subscription.title_template || "") ||
+      (next.body_template || "") !== (subscription.body_template || "") ||
+      (draft.event === "account_expiring" && daysDraft !== expiringDays)
+    );
+  }, [draft, titleMode, bodyMode, daysDraft, subscription, expiringDays]);
+
   useEffect(() => {
     if (!open) {
       return;
     }
-    function handlePointerDown(event: MouseEvent) {
-      const path = event.composedPath();
-      if (rootRef.current && path.includes(rootRef.current)) {
-        return;
-      }
-      if (
-        path.some(
+    function containsTarget(event: MouseEvent): boolean {
+      const getPath = (event as MouseEvent & {
+        composedPath?: () => EventTarget[];
+      }).composedPath;
+      if (typeof getPath === "function") {
+        const path = getPath.call(event);
+        if (rootRef.current && path.includes(rootRef.current)) {
+          return true;
+        }
+        return path.some(
           (item) =>
             item instanceof HTMLElement &&
             typeof item.dataset.slot === "string" &&
-            item.dataset.slot.startsWith("select-"),
-        )
-      ) {
+            (item.dataset.slot.startsWith("select-") ||
+              item.dataset.slot === "notification-chip-internal"),
+        );
+      }
+      // Legacy fallback: no composedPath support (older Safari, jsdom).
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return false;
+      }
+      if (rootRef.current && rootRef.current.contains(target)) {
+        return true;
+      }
+      if (target instanceof HTMLElement) {
+        const slot = target.closest("[data-slot]") as HTMLElement | null;
+        if (
+          slot?.dataset.slot &&
+          (slot.dataset.slot.startsWith("select-") ||
+            slot.dataset.slot === "notification-chip-internal")
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+    function handlePointerDown(event: MouseEvent) {
+      if (containsTarget(event)) {
         return;
       }
       applyDraft();
     }
+    function handleKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
     document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKey);
+    };
   }, [open, draft, daysDraft, titleMode, bodyMode]);
 
   const eventOptions = useMemo(() => {
@@ -140,18 +186,32 @@ export default function SubscriptionChip({
             ? "已覆盖模板"
             : "使用默认"}
         </span>
-        <ChevronDown className="size-3.5" />
+        {open && hasUnsavedChanges ? (
+          <span
+            className="size-1.5 rounded-full bg-lunar-500"
+            aria-label="未保存改动"
+          />
+        ) : null}
+        <ChevronDown
+          className={cn(
+            "size-3.5 transition-transform",
+            open ? "rotate-180" : "",
+          )}
+        />
       </button>
 
       {open ? (
-        <div className="absolute z-20 mt-3 w-[min(34rem,calc(100vw-3rem))] rounded-[1.45rem] border border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.97),rgba(246,244,249,0.94))] p-4 shadow-[0_32px_80px_-46px_rgba(33,40,63,0.38)]">
+        <div
+          data-slot="notification-chip-internal"
+          className="absolute z-20 mt-3 w-[min(34rem,calc(100vw-3rem))] rounded-[1.45rem] border border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.97),rgba(246,244,249,0.94))] p-4 shadow-[0_32px_80px_-46px_rgba(33,40,63,0.38)]"
+        >
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-1">
               <p className="text-sm font-medium text-moon-800">
                 {eventLabel(eventTypes, subscription.event)}
               </p>
               <p className="text-xs leading-5 text-moon-400">
-                在这里调整事件、严重级别和模板覆盖。点外部、再点 chip 或右上角关闭时会自动保存。
+                在这里调整事件、严重级别和模板覆盖。点外部、Esc、再点 chip 或右上角关闭都会触发保存。
               </p>
             </div>
             <Button
@@ -287,7 +347,27 @@ export default function SubscriptionChip({
               <Trash2 className="size-4" />
               Remove
             </Button>
-            <p className="text-xs text-moon-400">点外部、再点 chip 或右上角关闭时自动保存。</p>
+            <div className="flex items-center gap-2">
+              {hasUnsavedChanges ? (
+                <span className="text-xs text-moon-500">未保存</span>
+              ) : null}
+              <Button
+                type="button"
+                variant="outline"
+                className="rounded-full"
+                onClick={() => setOpen(false)}
+              >
+                Close
+              </Button>
+              <Button
+                type="button"
+                className="rounded-full"
+                onClick={applyDraft}
+                disabled={!hasUnsavedChanges}
+              >
+                Save
+              </Button>
+            </div>
           </div>
         </div>
       ) : null}

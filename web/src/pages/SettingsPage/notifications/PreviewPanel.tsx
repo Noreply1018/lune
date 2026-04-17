@@ -23,6 +23,7 @@ export default function PreviewPanel({
   severity,
   result,
   loading,
+  hasPreviewed,
   onEventChange,
   onSeverityChange,
   onRun,
@@ -32,6 +33,7 @@ export default function PreviewPanel({
   severity: NotificationSeverity;
   result: PreviewResult | null;
   loading: boolean;
+  hasPreviewed: boolean;
   onEventChange: (value: string) => void;
   onSeverityChange: (value: NotificationSeverity) => void;
   onRun: () => void;
@@ -100,6 +102,10 @@ export default function PreviewPanel({
               {result.rendered_body || "--"}
             </p>
           </div>
+        </div>
+      ) : hasPreviewed ? (
+        <div className="rounded-[1.2rem] border border-dashed border-moon-200/55 bg-white/72 px-4 py-4 text-xs leading-5 text-moon-450">
+          未匹配此渠道：当前事件或严重级别未触发此 channel 的订阅。
         </div>
       ) : null}
     </section>

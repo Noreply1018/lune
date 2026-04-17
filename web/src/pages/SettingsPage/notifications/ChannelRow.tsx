@@ -64,9 +64,6 @@ export default function ChannelRow({
                 ? `最近 ${relativeTime(channel.last_delivery.created_at)} · ${formatDeliverySummary(channel.last_delivery)}`
                 : "尚未投递"}
             </span>
-            <span className="rounded-full bg-moon-100/70 px-2 py-0.5 text-[11px] tracking-[0.12em] text-moon-500">
-              {channel.enabled ? "ACTIVE" : "PAUSED"}
-            </span>
           </div>
           {channel.recent_deliveries?.length ? (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -98,21 +95,18 @@ export default function ChannelRow({
         )}
       </button>
 
-      <div className="flex shrink-0 items-center gap-2 rounded-full border border-moon-200/60 bg-white/88 px-2 py-1.5 sm:px-3">
+      <div className="flex shrink-0 items-center gap-2">
         {toggling ? (
           <RefreshCw className="size-3.5 animate-spin text-moon-400" />
         ) : null}
-        <span className="sr-only">{channel.enabled ? "停用通知渠道" : "启用通知渠道"}</span>
         <span
           aria-hidden="true"
           className={cn(
-            "rounded-full px-2 py-0.5 text-[11px] tracking-[0.14em]",
-            channel.enabled
-              ? "bg-emerald-100/90 text-emerald-700"
-              : "bg-moon-100/80 text-moon-500",
+            "text-[11px] font-medium tracking-[0.14em]",
+            channel.enabled ? "text-emerald-600" : "text-moon-450",
           )}
         >
-          {channel.enabled ? "On" : "Off"}
+          {channel.enabled ? "ON" : "OFF"}
         </span>
         <Switch
           checked={channel.enabled}
