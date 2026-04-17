@@ -92,13 +92,22 @@ func (d *EmailSMTPDriver) Send(ctx context.Context, n notify.Notification, runti
 
 // sanitizeHeader strips CR/LF and any control chars that would let a
 // template value smuggle new headers or a premature body (RFC 5322 § 2.2).
+// Printable non-ASCII (e.g. Chinese subject text) is allowed through so
+// SMTPUTF8-aware servers can still relay it; DEL and C1 controls are not.
 func sanitizeHeader(value string) string {
 	value = strings.ReplaceAll(value, "\r", " ")
 	value = strings.ReplaceAll(value, "\n", " ")
 	var b strings.Builder
 	b.Grow(len(value))
 	for _, r := range value {
-		if r == '\t' || r >= 0x20 {
+		switch {
+		case r == '\t':
+			b.WriteRune(r)
+		case r < 0x20, r == 0x7F:
+			// C0 control + DEL — skip
+		case r >= 0x80 && r <= 0x9F:
+			// C1 control — skip
+		default:
 			b.WriteRune(r)
 		}
 	}

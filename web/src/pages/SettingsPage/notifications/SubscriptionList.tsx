@@ -68,15 +68,23 @@ export default function SubscriptionList({
           <Tooltip>
             <TooltipTrigger
               render={
-                <Button
-                  variant="outline"
-                  className="rounded-full"
-                  disabled
+                <span
+                  tabIndex={0}
+                  role="button"
+                  aria-disabled="true"
                   aria-label="已为所有事件添加订阅"
+                  className="inline-flex"
                 >
-                  <Plus className="size-4" />
-                  Add Event
-                </Button>
+                  <Button
+                    variant="outline"
+                    className="pointer-events-none rounded-full"
+                    disabled
+                    tabIndex={-1}
+                  >
+                    <Plus className="size-4" />
+                    Add Event
+                  </Button>
+                </span>
               }
             />
             <TooltipContent>已为所有事件添加订阅</TooltipContent>

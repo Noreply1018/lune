@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type NotificationSubscription struct {
@@ -315,7 +316,13 @@ func truncateDeliverySummary(payload string, limit int) string {
 	if limit <= 0 || len(payload) <= limit {
 		return payload
 	}
-	return payload[:limit]
+	// Walk back from the byte budget to the nearest rune boundary so we
+	// never write a partial UTF-8 sequence into the deliveries table.
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(payload[cut]) {
+		cut--
+	}
+	return payload[:cut]
 }
 
 func (s *Store) SetNotificationChannelEnabled(id int64, enabled bool) error {

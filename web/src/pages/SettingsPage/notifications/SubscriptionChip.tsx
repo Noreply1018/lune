@@ -211,7 +211,7 @@ export default function SubscriptionChip({
                 {eventLabel(eventTypes, subscription.event)}
               </p>
               <p className="text-xs leading-5 text-moon-400">
-                在这里调整事件、严重级别和模板覆盖。点外部、Esc、再点 chip 或右上角关闭都会触发保存。
+                在这里调整事件、严重级别和模板覆盖。点外部、再点 chip 或右上角关闭会保存；Esc 关闭不保存。
               </p>
             </div>
             <Button
