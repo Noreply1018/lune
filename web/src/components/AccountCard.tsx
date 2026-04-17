@@ -83,7 +83,8 @@ export default function AccountCard({
 
       <div
         className={cn(
-          "pointer-events-none absolute inset-y-0 left-0 z-0 flex w-5 items-center justify-center text-moon-300 opacity-0 transition-opacity",
+          "pointer-events-none absolute bottom-0 left-0 z-0 flex w-5 items-center justify-center text-moon-300 opacity-0 transition-opacity",
+          isActive && priorityIndex != null ? "top-6" : "top-0",
           "group-hover:opacity-100",
           dragging ? "opacity-100" : "",
         )}

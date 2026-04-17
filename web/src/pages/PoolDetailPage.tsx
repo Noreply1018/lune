@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AccountCard from "@/components/AccountCard";
 import AccountDetailSheet from "@/components/AccountDetailSheet";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -35,35 +35,46 @@ export default function PoolDetailPage() {
   const [connectTokenValue, setConnectTokenValue] = useState<string | null>(null);
   const [revealedTokenCache, setRevealedTokenCache] = useState<Record<number, string>>({});
   const [revealedGlobalToken, setRevealedGlobalToken] = useState<string | null>(null);
+  const loadSeqRef = useRef(0);
+  const hasLoadedRef = useRef(false);
 
-  function load() {
+  const load = useCallback(() => {
     if (!hasValidPoolId) {
       setLoading(false);
       setError("无效的 Pool 路径");
       return;
     }
-    const isInitial = detail === null;
-    if (isInitial) setLoading(true);
+    const seq = ++loadSeqRef.current;
+    if (!hasLoadedRef.current) setLoading(true);
     setError(null);
     Promise.all([
       api.get<PoolDetailResponse>(`/pools/${poolId}`),
       api.get<Overview>("/overview"),
     ])
       .then(([detailData, overviewData]) => {
+        if (seq !== loadSeqRef.current) return;
+        hasLoadedRef.current = true;
         setDetail(detailData);
         setOverview(overviewData);
       })
       .catch((err) => {
+        if (seq !== loadSeqRef.current) return;
+        hasLoadedRef.current = true;
         setError(err instanceof Error ? err.message : "Pool 详情加载失败");
       })
       .finally(() => {
-        if (isInitial) setLoading(false);
+        if (seq !== loadSeqRef.current) return;
+        setLoading(false);
       });
-  }
+  }, [hasValidPoolId, poolId]);
+
+  useEffect(() => {
+    hasLoadedRef.current = false;
+  }, [hasValidPoolId, poolId]);
 
   useEffect(() => {
     load();
-  }, [hasValidPoolId, poolId, dataVersion]);
+  }, [load, dataVersion]);
 
   const pool = detail?.pool ?? null;
   const members = ensureArray(detail?.members);
