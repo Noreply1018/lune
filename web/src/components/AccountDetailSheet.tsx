@@ -104,6 +104,7 @@ export default function AccountDetailSheet({
 
               <div>
                 <MiniChat
+                  key={account.id}
                   accountId={account.id}
                   model={models[0]}
                   resolveToken={resolveToken}

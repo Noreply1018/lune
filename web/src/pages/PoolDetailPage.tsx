@@ -220,7 +220,6 @@ export default function PoolDetailPage() {
         onToggleEnabled={toggleMember}
         renderMember={(member, options) => (
           <AccountCard
-            key={member.id}
             member={member}
             variant={member.enabled ? "active" : "disabled"}
             priorityIndex={options.priorityIndex}

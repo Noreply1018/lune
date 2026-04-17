@@ -171,8 +171,9 @@ export default function DragSortArea({
     if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return;
 
     const reorderedZone = arrayMove(zoneMembers, oldIndex, newIndex);
-    const untouched = sourceZone === "enabled" ? disabledMembers : enabledMembers;
-    onReorder([...reorderedZone, ...untouched].map((member) => member.id));
+    const nextEnabled = sourceZone === "enabled" ? reorderedZone : enabledMembers;
+    const nextDisabled = sourceZone === "disabled" ? reorderedZone : disabledMembers;
+    onReorder([...nextEnabled, ...nextDisabled].map((member) => member.id));
   }
 
   return (
