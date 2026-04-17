@@ -891,16 +891,14 @@ func (h *Handler) regenerateToken(w http.ResponseWriter, r *http.Request) {
 // --- Settings ---
 
 type systemSettingsResponse struct {
-	AdminTokenMasked            string `json:"admin_token_masked"`
-	HealthCheckInterval         int    `json:"health_check_interval"`
-	RequestTimeout              int    `json:"request_timeout"`
-	MaxRetryAttempts            int    `json:"max_retry_attempts"`
-	NotificationErrorEnabled    bool   `json:"notification_error_enabled"`
-	NotificationExpiringEnabled bool   `json:"notification_expiring_enabled"`
-	NotificationExpiringDays    int    `json:"notification_expiring_days"`
-	WebhookEnabled              bool   `json:"webhook_enabled"`
-	WebhookURL                  string `json:"webhook_url"`
-	DataRetentionDays           int    `json:"data_retention_days"`
+	AdminTokenMasked         string `json:"admin_token_masked"`
+	HealthCheckInterval      int    `json:"health_check_interval"`
+	RequestTimeout           int    `json:"request_timeout"`
+	MaxRetryAttempts         int    `json:"max_retry_attempts"`
+	NotificationExpiringDays int    `json:"notification_expiring_days"`
+	WebhookEnabled           bool   `json:"webhook_enabled"`
+	WebhookURL               string `json:"webhook_url"`
+	DataRetentionDays        int    `json:"data_retention_days"`
 }
 
 func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -911,16 +909,14 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := systemSettingsResponse{
-		AdminTokenMasked:            maskKey(settings["admin_token"]),
-		HealthCheckInterval:         syscfg.ParsePositiveInt(settings["health_check_interval"], syscfg.DefaultHealthCheckInterval),
-		RequestTimeout:              syscfg.ParsePositiveInt(settings["request_timeout"], syscfg.DefaultRequestTimeout),
-		MaxRetryAttempts:            syscfg.ParsePositiveInt(settings["max_retry_attempts"], syscfg.DefaultMaxRetryAttempts),
-		NotificationErrorEnabled:    syscfg.ParseBool(settings["notification_error_enabled"], syscfg.DefaultNotificationErrorEnabled),
-		NotificationExpiringEnabled: syscfg.ParseBool(settings["notification_expiring_enabled"], syscfg.DefaultNotificationExpiringEnabled),
-		NotificationExpiringDays:    syscfg.ParsePositiveInt(settings["notification_expiring_days"], syscfg.DefaultNotificationExpiringDays),
-		WebhookEnabled:              syscfg.ParseBool(settings["webhook_enabled"], syscfg.DefaultWebhookEnabled),
-		WebhookURL:                  settings["webhook_url"],
-		DataRetentionDays:           syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays),
+		AdminTokenMasked:         maskKey(settings["admin_token"]),
+		HealthCheckInterval:      syscfg.ParsePositiveInt(settings["health_check_interval"], syscfg.DefaultHealthCheckInterval),
+		RequestTimeout:           syscfg.ParsePositiveInt(settings["request_timeout"], syscfg.DefaultRequestTimeout),
+		MaxRetryAttempts:         syscfg.ParsePositiveInt(settings["max_retry_attempts"], syscfg.DefaultMaxRetryAttempts),
+		NotificationExpiringDays: syscfg.ParsePositiveInt(settings["notification_expiring_days"], syscfg.DefaultNotificationExpiringDays),
+		WebhookEnabled:           syscfg.ParseBool(settings["webhook_enabled"], syscfg.DefaultWebhookEnabled),
+		WebhookURL:               settings["webhook_url"],
+		DataRetentionDays:        syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays),
 	}
 	webutil.WriteData(w, 200, resp)
 }
@@ -933,6 +929,9 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	pairs := make(map[string]string)
 	for k, v := range raw {
+		if isDeprecatedNotificationSetting(k) {
+			continue
+		}
 		if !syscfg.IsAllowedSettingKey(k) {
 			webutil.WriteAdminError(w, 400, "bad_request", fmt.Sprintf("unsupported setting key: %s", k))
 			return
@@ -967,7 +966,7 @@ func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
 
 func normalizeSettingValue(key string, raw json.RawMessage) (string, error) {
 	switch key {
-	case "notification_error_enabled", "notification_expiring_enabled", "webhook_enabled":
+	case "webhook_enabled":
 		var boolean bool
 		if err := json.Unmarshal(raw, &boolean); err == nil {
 			return syscfg.BoolString(boolean), nil
@@ -1013,6 +1012,15 @@ func normalizeSettingValue(key string, raw json.RawMessage) (string, error) {
 			}
 		}
 		return strconv.Itoa(value), nil
+	}
+}
+
+func isDeprecatedNotificationSetting(key string) bool {
+	switch key {
+	case "notification_error_enabled", "notification_expiring_enabled":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1336,7 +1344,7 @@ func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
 func normalizeImportedSettingValue(key, value string) (string, error) {
 	value = strings.TrimSpace(value)
 	switch key {
-	case "notification_error_enabled", "notification_expiring_enabled", "webhook_enabled":
+	case "webhook_enabled":
 		if value == "" {
 			return "", fmt.Errorf("setting %s must be a boolean", key)
 		}

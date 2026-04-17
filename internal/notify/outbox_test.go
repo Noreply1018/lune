@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"lune/internal/store"
 )
@@ -12,6 +13,7 @@ import (
 type stubChannelDriver struct {
 	sendCount int
 	lastBody  string
+	failCount int
 }
 
 func (d *stubChannelDriver) Type() string { return "stub" }
@@ -20,6 +22,10 @@ func (d *stubChannelDriver) SecretFields() []string { return nil }
 func (d *stubChannelDriver) DocsURL() string { return "" }
 func (d *stubChannelDriver) Send(ctx context.Context, n Notification, cfg ChannelRuntime) (Result, error) {
 	d.sendCount++
+	if d.failCount > 0 {
+		d.failCount--
+		return Result{OK: false, UpstreamCode: "http 500", UpstreamMessage: "boom"}, context.DeadlineExceeded
+	}
 	if cfg.Rendered != nil {
 		d.lastBody = cfg.Rendered.Body
 	}
@@ -236,5 +242,152 @@ func TestAttemptOneSkipsSendWhenOutboxRowAlreadyGone(t *testing.T) {
 	}
 	if driver.sendCount != 0 {
 		t.Fatalf("expected no send after outbox row was removed, got %d sends", driver.sendCount)
+	}
+}
+
+func TestAttemptOneUsesChannelRetrySchedule(t *testing.T) {
+	st := newNotifyTestStore(t)
+	driver := &stubChannelDriver{failCount: 1}
+	registry := NewRegistry(driver)
+	outbox := NewOutbox(st, registry)
+
+	channelID, err := st.CreateNotificationChannel(&store.NotificationChannel{
+		Name:             "stub",
+		Type:             "stub",
+		Enabled:          true,
+		Config:           json.RawMessage(`{}`),
+		Subscriptions:    []store.NotificationSubscription{{Event: "*"}},
+		RetryMaxAttempts: 2,
+		RetrySchedule:    []int{7, 19},
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	payload, err := json.Marshal(Notification{
+		Event:    "account_error",
+		Severity: "critical",
+		Title:    "Broken",
+		Message:  "boom",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	itemID, err := st.InsertNotificationOutbox(&store.NotificationOutbox{
+		ChannelID: channelID,
+		Event:     "account_error",
+		Severity:  "critical",
+		Payload:   string(payload),
+		DedupKey:  "retry-schedule",
+		Status:    "pending",
+	})
+	if err != nil {
+		t.Fatalf("insert outbox: %v", err)
+	}
+	channel, err := st.GetNotificationChannel(channelID)
+	if err != nil || channel == nil {
+		t.Fatalf("get channel: %v", err)
+	}
+
+	if err := outbox.AttemptOne(context.Background(), store.NotificationOutbox{
+		ID:        itemID,
+		ChannelID: channelID,
+		Event:     "account_error",
+		Severity:  "critical",
+		Payload:   string(payload),
+		DedupKey:  "retry-schedule",
+		Status:    "pending",
+	}, *channel, false); err != nil {
+		t.Fatalf("attempt one: %v", err)
+	}
+
+	outboxItem, err := st.GetNotificationOutbox(itemID)
+	if err != nil {
+		t.Fatalf("get outbox: %v", err)
+	}
+	if outboxItem == nil {
+		t.Fatalf("expected outbox row to remain for retry")
+	}
+	nextAttemptAt, err := time.Parse("2006-01-02 15:04:05", outboxItem.NextAttemptAt)
+	if err != nil {
+		t.Fatalf("parse next attempt: %v", err)
+	}
+	diff := nextAttemptAt.Sub(time.Now().UTC())
+	if diff < 5*time.Second || diff > 9*time.Second {
+		t.Fatalf("expected retry schedule near 7s, got %s", diff)
+	}
+}
+
+func TestAttemptOneDropsAfterRetryMaxAttempts(t *testing.T) {
+	st := newNotifyTestStore(t)
+	driver := &stubChannelDriver{failCount: 1}
+	registry := NewRegistry(driver)
+	outbox := NewOutbox(st, registry)
+
+	channelID, err := st.CreateNotificationChannel(&store.NotificationChannel{
+		Name:             "stub",
+		Type:             "stub",
+		Enabled:          true,
+		Config:           json.RawMessage(`{}`),
+		Subscriptions:    []store.NotificationSubscription{{Event: "*"}},
+		RetryMaxAttempts: 1,
+		RetrySchedule:    []int{3},
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	payload, err := json.Marshal(Notification{
+		Event:    "account_error",
+		Severity: "critical",
+		Title:    "Broken",
+		Message:  "boom",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	itemID, err := st.InsertNotificationOutbox(&store.NotificationOutbox{
+		ChannelID: channelID,
+		Event:     "account_error",
+		Severity:  "critical",
+		Payload:   string(payload),
+		DedupKey:  "drop-once",
+		Status:    "retrying",
+		Attempt:   1,
+	})
+	if err != nil {
+		t.Fatalf("insert outbox: %v", err)
+	}
+	channel, err := st.GetNotificationChannel(channelID)
+	if err != nil || channel == nil {
+		t.Fatalf("get channel: %v", err)
+	}
+
+	if err := outbox.AttemptOne(context.Background(), store.NotificationOutbox{
+		ID:        itemID,
+		ChannelID: channelID,
+		Event:     "account_error",
+		Severity:  "critical",
+		Payload:   string(payload),
+		DedupKey:  "drop-once",
+		Status:    "retrying",
+		Attempt:   1,
+	}, *channel, true); err != nil {
+		t.Fatalf("attempt one: %v", err)
+	}
+
+	outboxItem, err := st.GetNotificationOutbox(itemID)
+	if err != nil {
+		t.Fatalf("get outbox: %v", err)
+	}
+	if outboxItem == nil || outboxItem.Status != "dropped" {
+		t.Fatalf("expected outbox row to be dropped, got %+v", outboxItem)
+	}
+	deliveries, err := st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list deliveries: %v", err)
+	}
+	if len(deliveries) == 0 || deliveries[0].Status != "dropped" {
+		t.Fatalf("expected dropped delivery, got %+v", deliveries)
 	}
 }

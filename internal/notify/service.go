@@ -143,7 +143,7 @@ func (s *Service) previewOne(ch store.NotificationChannel, n Notification) (Rend
 	if !matchSubscriptions(ch.Subscriptions, n.Event, n.Severity) {
 		return RenderedMessage{}, false, "subscription_mismatch", nil
 	}
-	rendered, err := RenderNotification(n, ch.TitleTemplate, ch.BodyTemplate)
+	rendered, err := RenderChannelNotification(n, ch)
 	if err != nil {
 		return RenderedMessage{}, false, "", err
 	}
@@ -162,17 +162,18 @@ func (s *Service) SendChannelTest(ctx context.Context, channelID int64, n Notifi
 	if !ok {
 		return Result{}, fmt.Errorf("unsupported channel type: %s", channel.Type)
 	}
-	rendered, renderErr := RenderNotification(n, channel.TitleTemplate, channel.BodyTemplate)
+	rendered, renderErr := RenderChannelNotification(n, *channel)
 	if renderErr != nil {
 		return Result{}, renderErr
 	}
+	titleTpl, bodyTpl := ResolveChannelTemplates(*channel, n.Event)
 	result, err := driver.Send(ctx, n, ChannelRuntime{
 		ID:        channel.ID,
 		Name:      channel.Name,
 		Type:      channel.Type,
 		Config:    channel.Config,
-		TitleTpl:  channel.TitleTemplate,
-		BodyTpl:   channel.BodyTemplate,
+		TitleTpl:  titleTpl,
+		BodyTpl:   bodyTpl,
 		Triggered: "test",
 		Rendered:  &rendered,
 	})

@@ -16,128 +16,124 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 
 	notifications := make([]SystemNotification, 0, 8)
 
-	if syscfg.ParseBool(settings["notification_expiring_enabled"], syscfg.DefaultNotificationExpiringEnabled) {
-		expiringDays := syscfg.ParsePositiveInt(settings["notification_expiring_days"], syscfg.DefaultNotificationExpiringDays)
-		rows, err := s.db.Query(
-			`SELECT id, label, cpa_expired_at
-			 FROM accounts
-			 WHERE source_kind = 'cpa'
-			   AND cpa_expired_at != ''
-			 ORDER BY cpa_expired_at ASC, id ASC`,
-		)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
+	expiringDays := syscfg.ParsePositiveInt(settings["notification_expiring_days"], syscfg.DefaultNotificationExpiringDays)
+	rows, err := s.db.Query(
+		`SELECT id, label, cpa_expired_at
+		 FROM accounts
+		 WHERE source_kind = 'cpa'
+		   AND cpa_expired_at != ''
+		 ORDER BY cpa_expired_at ASC, id ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 
-		now := time.Now().UTC()
-		cutoff := now.AddDate(0, 0, expiringDays)
-		for rows.Next() {
-			var (
-				accountID int64
-				label     string
-				expiresAt string
-			)
-			if err := rows.Scan(&accountID, &label, &expiresAt); err != nil {
-				return nil, err
-			}
-			expiry, err := parseCpaExpiry(expiresAt)
-			if err != nil || expiry.After(cutoff) {
-				continue
-			}
-			severity := "warning"
-			title := "CPA account expiring soon"
-			if !expiry.After(now) {
-				severity = "critical"
-				title = "CPA account expired"
-			}
-			accountIDCopy := accountID
-			notifications = append(notifications, SystemNotification{
-				Type:      "account_expiring",
-				Severity:  severity,
-				Title:     title,
-				Message:   fmt.Sprintf("Account %q expires at %s", label, expiresAt),
-				AccountID: &accountIDCopy,
-				ExpiresAt: expiresAt,
-			})
-		}
-		if err := rows.Err(); err != nil {
+	now := time.Now().UTC()
+	cutoff := now.AddDate(0, 0, expiringDays)
+	for rows.Next() {
+		var (
+			accountID int64
+			label     string
+			expiresAt string
+		)
+		if err := rows.Scan(&accountID, &label, &expiresAt); err != nil {
 			return nil, err
 		}
+		expiry, err := parseCpaExpiry(expiresAt)
+		if err != nil || expiry.After(cutoff) {
+			continue
+		}
+		severity := "warning"
+		title := "CPA account expiring soon"
+		if !expiry.After(now) {
+			severity = "critical"
+			title = "CPA account expired"
+		}
+		accountIDCopy := accountID
+		notifications = append(notifications, SystemNotification{
+			Type:      "account_expiring",
+			Severity:  severity,
+			Title:     title,
+			Message:   fmt.Sprintf("Account %q expires at %s", label, expiresAt),
+			AccountID: &accountIDCopy,
+			ExpiresAt: expiresAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	if syscfg.ParseBool(settings["notification_error_enabled"], syscfg.DefaultNotificationErrorEnabled) {
-		accountRows, err := s.db.Query(
-			`SELECT id, label, last_error
-			 FROM accounts
-			 WHERE status = 'error'
-			 ORDER BY last_checked_at DESC, id DESC`,
+	accountRows, err := s.db.Query(
+		`SELECT id, label, last_error
+		 FROM accounts
+		 WHERE status = 'error'
+		 ORDER BY last_checked_at DESC, id DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer accountRows.Close()
+
+	for accountRows.Next() {
+		var (
+			accountID int64
+			label     string
+			lastError string
 		)
-		if err != nil {
+		if err := accountRows.Scan(&accountID, &label, &lastError); err != nil {
 			return nil, err
 		}
-		defer accountRows.Close()
-
-		for accountRows.Next() {
-			var (
-				accountID int64
-				label     string
-				lastError string
-			)
-			if err := accountRows.Scan(&accountID, &label, &lastError); err != nil {
-				return nil, err
-			}
-			if lastError == "" {
-				lastError = "unknown error"
-			}
-			accountIDCopy := accountID
-			notifications = append(notifications, SystemNotification{
-				Type:      "account_error",
-				Severity:  "critical",
-				Title:     "Account health check failed",
-				Message:   fmt.Sprintf("Account %q is in error state: %s", label, lastError),
-				AccountID: &accountIDCopy,
-			})
+		if lastError == "" {
+			lastError = "unknown error"
 		}
-		if err := accountRows.Err(); err != nil {
-			return nil, err
-		}
+		accountIDCopy := accountID
+		notifications = append(notifications, SystemNotification{
+			Type:      "account_error",
+			Severity:  "critical",
+			Title:     "Account health check failed",
+			Message:   fmt.Sprintf("Account %q is in error state: %s", label, lastError),
+			AccountID: &accountIDCopy,
+		})
+	}
+	if err := accountRows.Err(); err != nil {
+		return nil, err
+	}
 
-		serviceRows, err := s.db.Query(
-			`SELECT id, label, last_error
-			 FROM cpa_services
-			 WHERE status = 'error'
-			 ORDER BY last_checked_at DESC, id DESC`,
+	serviceRows, err := s.db.Query(
+		`SELECT id, label, last_error
+		 FROM cpa_services
+		 WHERE status = 'error'
+		 ORDER BY last_checked_at DESC, id DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer serviceRows.Close()
+
+	for serviceRows.Next() {
+		var (
+			serviceID int64
+			label     string
+			lastError string
 		)
-		if err != nil {
+		if err := serviceRows.Scan(&serviceID, &label, &lastError); err != nil {
 			return nil, err
 		}
-		defer serviceRows.Close()
-
-		for serviceRows.Next() {
-			var (
-				serviceID int64
-				label     string
-				lastError string
-			)
-			if err := serviceRows.Scan(&serviceID, &label, &lastError); err != nil {
-				return nil, err
-			}
-			if lastError == "" {
-				lastError = "unknown error"
-			}
-			serviceIDCopy := serviceID
-			notifications = append(notifications, SystemNotification{
-				Type:      "cpa_service_error",
-				Severity:  "critical",
-				Title:     "CPA service unhealthy",
-				Message:   fmt.Sprintf("CPA service %q is unhealthy: %s", label, lastError),
-				ServiceID: &serviceIDCopy,
-			})
+		if lastError == "" {
+			lastError = "unknown error"
 		}
-		if err := serviceRows.Err(); err != nil {
-			return nil, err
-		}
+		serviceIDCopy := serviceID
+		notifications = append(notifications, SystemNotification{
+			Type:      "cpa_service_error",
+			Severity:  "critical",
+			Title:     "CPA service unhealthy",
+			Message:   fmt.Sprintf("CPA service %q is unhealthy: %s", label, lastError),
+			ServiceID: &serviceIDCopy,
+		})
+	}
+	if err := serviceRows.Err(); err != nil {
+		return nil, err
 	}
 
 	return notifications, nil

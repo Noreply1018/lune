@@ -20,7 +20,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 6
+const v3SchemaVersion = 7
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -138,6 +138,8 @@ CREATE TABLE IF NOT EXISTS notification_channels (
     subscriptions   TEXT NOT NULL DEFAULT '[]',
     title_template  TEXT NOT NULL DEFAULT '',
     body_template   TEXT NOT NULL DEFAULT '',
+    retry_max_attempts INTEGER NOT NULL DEFAULT 5,
+    retry_schedule_seconds TEXT NOT NULL DEFAULT '[30,120,600,1800,7200]',
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -225,13 +227,24 @@ func (s *Store) migrateV3(dbPath string) error {
 		return nil // already at v3
 	}
 
+	if ver == 6 {
+		slog.Info("migrating schema to v7", "from_version", ver)
+		if err := s.migrateNotificationRetryConfig(); err != nil {
+			return fmt.Errorf("migrate notification retry config: %w", err)
+		}
+		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
+	}
+
 	if ver == 3 || ver == 4 || ver == 5 {
-		slog.Info("migrating schema to v6", "from_version", ver)
+		slog.Info("migrating schema to v7", "from_version", ver)
 		if err := s.createNotificationSchema(); err != nil {
 			return fmt.Errorf("create notification schema: %w", err)
 		}
 		if err := s.migrateNotificationForeignKeys(); err != nil {
 			return fmt.Errorf("migrate notification foreign keys: %w", err)
+		}
+		if err := s.migrateNotificationRetryConfig(); err != nil {
+			return fmt.Errorf("migrate notification retry config: %w", err)
 		}
 		if err := s.migrateLegacyWebhookChannel(); err != nil {
 			return fmt.Errorf("migrate legacy webhook channel: %w", err)
@@ -303,6 +316,8 @@ CREATE TABLE IF NOT EXISTS notification_channels (
     subscriptions   TEXT NOT NULL DEFAULT '[]',
     title_template  TEXT NOT NULL DEFAULT '',
     body_template   TEXT NOT NULL DEFAULT '',
+    retry_max_attempts INTEGER NOT NULL DEFAULT 5,
+    retry_schedule_seconds TEXT NOT NULL DEFAULT '[30,120,600,1800,7200]',
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -431,6 +446,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_name_unique ON notif
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) migrateNotificationRetryConfig() error {
+	hasAttempts, err := s.hasColumn("notification_channels", "retry_max_attempts")
+	if err != nil {
+		return err
+	}
+	if !hasAttempts {
+		if _, err := s.db.Exec(
+			`ALTER TABLE notification_channels ADD COLUMN retry_max_attempts INTEGER NOT NULL DEFAULT 5`,
+		); err != nil {
+			return err
+		}
+	}
+
+	hasSchedule, err := s.hasColumn("notification_channels", "retry_schedule_seconds")
+	if err != nil {
+		return err
+	}
+	if !hasSchedule {
+		if _, err := s.db.Exec(
+			`ALTER TABLE notification_channels ADD COLUMN retry_schedule_seconds TEXT NOT NULL DEFAULT '[30,120,600,1800,7200]'`,
+		); err != nil {
+			return err
+		}
+	}
+
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "notification_channels")
+	s.schemaMu.Unlock()
+	return nil
 }
 
 func (s *Store) migrateLegacyWebhookChannel() error {

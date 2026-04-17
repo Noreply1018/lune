@@ -163,8 +163,6 @@ export interface SystemSettings {
   health_check_interval: number;
   request_timeout: number;
   max_retry_attempts: number;
-  notification_error_enabled: boolean;
-  notification_expiring_enabled: boolean;
   notification_expiring_days: number;
   webhook_url: string;
   webhook_enabled: boolean;
@@ -182,6 +180,8 @@ export type ChannelType =
 export interface NotificationSubscription {
   event: string;
   min_severity?: NotificationSeverity;
+  title_template?: string;
+  body_template?: string;
 }
 
 export interface NotificationDeliveryMeta {
@@ -199,9 +199,12 @@ export interface NotificationChannel {
   subscriptions: NotificationSubscription[];
   title_template: string;
   body_template: string;
+  retry_max_attempts: number;
+  retry_schedule_seconds: number[];
   created_at: string;
   updated_at: string;
   last_delivery?: NotificationDeliveryMeta | null;
+  recent_deliveries?: NotificationDeliveryMeta[];
 }
 
 export interface NotificationPreviewItem {

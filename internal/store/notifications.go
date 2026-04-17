@@ -9,22 +9,27 @@ import (
 )
 
 type NotificationSubscription struct {
-	Event       string `json:"event"`
-	MinSeverity string `json:"min_severity,omitempty"`
+	Event         string `json:"event"`
+	MinSeverity   string `json:"min_severity,omitempty"`
+	TitleTemplate string `json:"title_template,omitempty"`
+	BodyTemplate  string `json:"body_template,omitempty"`
 }
 
 type NotificationChannel struct {
-	ID            int64                      `json:"id"`
-	Name          string                     `json:"name"`
-	Type          string                     `json:"type"`
-	Enabled       bool                       `json:"enabled"`
-	Config        json.RawMessage            `json:"config"`
-	Subscriptions []NotificationSubscription `json:"subscriptions"`
-	TitleTemplate string                     `json:"title_template"`
-	BodyTemplate  string                     `json:"body_template"`
-	CreatedAt     string                     `json:"created_at"`
-	UpdatedAt     string                     `json:"updated_at"`
-	LastDelivery  *NotificationDeliveryMeta  `json:"last_delivery,omitempty"`
+	ID               int64                      `json:"id"`
+	Name             string                     `json:"name"`
+	Type             string                     `json:"type"`
+	Enabled          bool                       `json:"enabled"`
+	Config           json.RawMessage            `json:"config"`
+	Subscriptions    []NotificationSubscription `json:"subscriptions"`
+	TitleTemplate    string                     `json:"title_template"`
+	BodyTemplate     string                     `json:"body_template"`
+	RetryMaxAttempts int                        `json:"retry_max_attempts"`
+	RetrySchedule    []int                      `json:"retry_schedule_seconds"`
+	CreatedAt        string                     `json:"created_at"`
+	UpdatedAt        string                     `json:"updated_at"`
+	LastDelivery     *NotificationDeliveryMeta  `json:"last_delivery,omitempty"`
+	RecentDeliveries []NotificationDeliveryMeta `json:"recent_deliveries,omitempty"`
 }
 
 type NotificationDeliveryMeta struct {
@@ -99,7 +104,7 @@ type NotificationDeliveryFilter struct {
 
 func (s *Store) ListNotificationChannels() ([]NotificationChannel, error) {
 	rows, err := s.db.Query(`
-		SELECT c.id, c.name, c.type, c.enabled, c.config, c.subscriptions, c.title_template, c.body_template, c.created_at, c.updated_at,
+		SELECT c.id, c.name, c.type, c.enabled, c.config, c.subscriptions, c.title_template, c.body_template, c.retry_max_attempts, c.retry_schedule_seconds, c.created_at, c.updated_at,
 			d.status, d.created_at, d.upstream_code
 		FROM notification_channels c
 		LEFT JOIN notification_deliveries d ON d.id = (
@@ -125,6 +130,9 @@ func (s *Store) ListNotificationChannels() ([]NotificationChannel, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := s.attachRecentNotificationDeliveries(channels, 5); err != nil {
+		return nil, err
+	}
 	if channels == nil {
 		channels = []NotificationChannel{}
 	}
@@ -133,7 +141,7 @@ func (s *Store) ListNotificationChannels() ([]NotificationChannel, error) {
 
 func (s *Store) ListEnabledNotificationChannels() ([]NotificationChannel, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, type, enabled, config, subscriptions, title_template, body_template, created_at, updated_at,
+		SELECT id, name, type, enabled, config, subscriptions, title_template, body_template, retry_max_attempts, retry_schedule_seconds, created_at, updated_at,
 			NULL, NULL, NULL
 		FROM notification_channels
 		WHERE enabled = 1
@@ -162,7 +170,7 @@ func (s *Store) ListEnabledNotificationChannels() ([]NotificationChannel, error)
 
 func (s *Store) GetNotificationChannel(id int64) (*NotificationChannel, error) {
 	row := s.db.QueryRow(`
-		SELECT c.id, c.name, c.type, c.enabled, c.config, c.subscriptions, c.title_template, c.body_template, c.created_at, c.updated_at,
+		SELECT c.id, c.name, c.type, c.enabled, c.config, c.subscriptions, c.title_template, c.body_template, c.retry_max_attempts, c.retry_schedule_seconds, c.created_at, c.updated_at,
 			d.status, d.created_at, d.upstream_code
 		FROM notification_channels c
 		LEFT JOIN notification_deliveries d ON d.id = (
@@ -180,13 +188,18 @@ func (s *Store) GetNotificationChannel(id int64) (*NotificationChannel, error) {
 	if err != nil {
 		return nil, err
 	}
+	recent, err := s.listRecentNotificationDeliveryMeta(id, 5)
+	if err != nil {
+		return nil, err
+	}
+	ch.RecentDeliveries = recent
 	return ch, nil
 }
 
 func (s *Store) CreateNotificationChannel(ch *NotificationChannel) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO notification_channels (name, type, enabled, config, subscriptions, title_template, body_template)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO notification_channels (name, type, enabled, config, subscriptions, title_template, body_template, retry_max_attempts, retry_schedule_seconds)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(ch.Name),
 		ch.Type,
 		boolToInt(ch.Enabled),
@@ -194,6 +207,8 @@ func (s *Store) CreateNotificationChannel(ch *NotificationChannel) (int64, error
 		marshalJSONOrDefault(ch.Subscriptions, `[]`),
 		ch.TitleTemplate,
 		ch.BodyTemplate,
+		intOrDefault(ch.RetryMaxAttempts, 5),
+		marshalJSONOrDefault(normalizeRetrySchedule(ch.RetrySchedule), `[30,120,600,1800,7200]`),
 	)
 	if err != nil {
 		return 0, err
@@ -204,7 +219,7 @@ func (s *Store) CreateNotificationChannel(ch *NotificationChannel) (int64, error
 func (s *Store) UpdateNotificationChannel(id int64, ch *NotificationChannel) error {
 	_, err := s.db.Exec(
 		`UPDATE notification_channels
-		 SET name = ?, type = ?, enabled = ?, config = ?, subscriptions = ?, title_template = ?, body_template = ?, updated_at = datetime('now')
+		 SET name = ?, type = ?, enabled = ?, config = ?, subscriptions = ?, title_template = ?, body_template = ?, retry_max_attempts = ?, retry_schedule_seconds = ?, updated_at = datetime('now')
 		 WHERE id = ?`,
 		strings.TrimSpace(ch.Name),
 		ch.Type,
@@ -213,6 +228,8 @@ func (s *Store) UpdateNotificationChannel(id int64, ch *NotificationChannel) err
 		marshalJSONOrDefault(ch.Subscriptions, `[]`),
 		ch.TitleTemplate,
 		ch.BodyTemplate,
+		intOrDefault(ch.RetryMaxAttempts, 5),
+		marshalJSONOrDefault(normalizeRetrySchedule(ch.RetrySchedule), `[30,120,600,1800,7200]`),
 		id,
 	)
 	return err
@@ -347,7 +364,7 @@ func (s *Store) ListNotificationChannelsByIDs(ids []int64) (map[int64]Notificati
 		return map[int64]NotificationChannel{}, nil
 	}
 	rows, err := s.db.Query(
-		`SELECT id, name, type, enabled, config, subscriptions, title_template, body_template, created_at, updated_at,
+		`SELECT id, name, type, enabled, config, subscriptions, title_template, body_template, retry_max_attempts, retry_schedule_seconds, created_at, updated_at,
 			NULL, NULL, NULL
 		FROM notification_channels
 		WHERE id IN (`+strings.Join(placeholders, ",")+`)`,
@@ -635,6 +652,8 @@ func scanNotificationChannel(scanner interface {
 		enabled          int
 		configRaw        string
 		subscriptionsRaw string
+		retryMaxAttempts int
+		retryScheduleRaw string
 		lastStatus       sql.NullString
 		lastCreatedAt    sql.NullString
 		lastUpstreamCode sql.NullString
@@ -649,6 +668,8 @@ func scanNotificationChannel(scanner interface {
 		&subscriptionsRaw,
 		&ch.TitleTemplate,
 		&ch.BodyTemplate,
+		&retryMaxAttempts,
+		&retryScheduleRaw,
 		&ch.CreatedAt,
 		&ch.UpdatedAt,
 		&lastStatus,
@@ -662,6 +683,11 @@ func scanNotificationChannel(scanner interface {
 	if err := json.Unmarshal([]byte(subscriptionsRaw), &ch.Subscriptions); err != nil {
 		return nil, fmt.Errorf("decode subscriptions: %w", err)
 	}
+	ch.RetryMaxAttempts = intOrDefault(retryMaxAttempts, 5)
+	if err := json.Unmarshal([]byte(retryScheduleRaw), &ch.RetrySchedule); err != nil {
+		ch.RetrySchedule = []int{30, 120, 600, 1800, 7200}
+	}
+	ch.RetrySchedule = normalizeRetrySchedule(ch.RetrySchedule)
 	if lastStatus.Valid && lastCreatedAt.Valid {
 		meta := &NotificationDeliveryMeta{
 			Status:    lastStatus.String,
@@ -697,6 +723,29 @@ func marshalJSONOrDefault(v any, fallback string) string {
 	return string(body)
 }
 
+func intOrDefault(value, fallback int) int {
+	if value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func normalizeRetrySchedule(values []int) []int {
+	if len(values) == 0 {
+		return []int{30, 120, 600, 1800, 7200}
+	}
+	out := make([]int, 0, len(values))
+	for _, value := range values {
+		if value > 0 {
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return []int{30, 120, 600, 1800, 7200}
+	}
+	return out
+}
+
 func ValidateNotificationDeliveryCursor(value string) error {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -705,6 +754,58 @@ func ValidateNotificationDeliveryCursor(value string) error {
 		return nil
 	}
 	return fmt.Errorf("invalid before cursor")
+}
+
+func (s *Store) attachRecentNotificationDeliveries(channels []NotificationChannel, limit int) error {
+	for index := range channels {
+		recent, err := s.listRecentNotificationDeliveryMeta(channels[index].ID, limit)
+		if err != nil {
+			return err
+		}
+		channels[index].RecentDeliveries = recent
+	}
+	return nil
+}
+
+func (s *Store) listRecentNotificationDeliveryMeta(channelID int64, limit int) ([]NotificationDeliveryMeta, error) {
+	if channelID <= 0 {
+		return []NotificationDeliveryMeta{}, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := s.db.Query(
+		`SELECT status, created_at, upstream_code
+		 FROM notification_deliveries
+		 WHERE channel_id = ?
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT ?`,
+		channelID,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]NotificationDeliveryMeta, 0, limit)
+	for rows.Next() {
+		var (
+			item         NotificationDeliveryMeta
+			upstreamCode sql.NullString
+		)
+		if err := rows.Scan(&item.Status, &item.CreatedAt, &upstreamCode); err != nil {
+			return nil, err
+		}
+		if upstreamCode.Valid && strings.TrimSpace(upstreamCode.String) != "" {
+			item.UpstreamCode = &upstreamCode.String
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func rollbackNotificationTx(tx *sql.Tx) {

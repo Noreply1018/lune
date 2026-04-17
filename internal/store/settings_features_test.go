@@ -23,9 +23,7 @@ func TestListSystemNotificationsHandlesRFC3339Expiry(t *testing.T) {
 	st := newTestStore(t)
 
 	if err := st.UpdateSettings(map[string]string{
-		"notification_expiring_enabled": "1",
-		"notification_error_enabled":    "0",
-		"notification_expiring_days":    "7",
+		"notification_expiring_days": "7",
 	}); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}

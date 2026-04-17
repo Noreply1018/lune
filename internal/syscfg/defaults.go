@@ -7,8 +7,6 @@ const (
 	DefaultRequestTimeout              = 120
 	DefaultMaxRetryAttempts            = 3
 	DefaultNotificationExpiringDays    = 7
-	DefaultNotificationErrorEnabled    = true
-	DefaultNotificationExpiringEnabled = true
 	DefaultWebhookEnabled              = false
 	DefaultWebhookURL                  = ""
 	DefaultDataRetentionDays           = 30
@@ -18,8 +16,6 @@ var allowedSettingKeys = map[string]struct{}{
 	"health_check_interval":         {},
 	"request_timeout":               {},
 	"max_retry_attempts":            {},
-	"notification_error_enabled":    {},
-	"notification_expiring_enabled": {},
 	"notification_expiring_days":    {},
 	"webhook_enabled":               {},
 	"webhook_url":                   {},

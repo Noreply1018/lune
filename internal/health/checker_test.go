@@ -12,7 +12,6 @@ import (
 	"lune/internal/notify"
 	"lune/internal/notify/drivers"
 	"lune/internal/store"
-	"lune/internal/syscfg"
 )
 
 func newTestStore(t *testing.T) *store.Store {
@@ -86,14 +85,6 @@ func TestSendWebhookNotificationsDedupesWithinBackoffWindow(t *testing.T) {
 	}))
 	defer server.Close()
 	createTestChannel(t, st, server.URL)
-
-	if err := st.UpdateSettings(map[string]string{
-		"notification_error_enabled":    syscfg.BoolString(true),
-		"notification_expiring_enabled": syscfg.BoolString(false),
-	}); err != nil {
-		t.Fatalf("update settings: %v", err)
-	}
-	cache.Invalidate()
 
 	checker := NewChecker(st, cache, "", newTestNotifier(st))
 
@@ -196,14 +187,6 @@ func TestSendWebhookNotificationsRetriesAfterFailure(t *testing.T) {
 	defer server.Close()
 	createTestChannel(t, st, server.URL)
 
-	if err := st.UpdateSettings(map[string]string{
-		"notification_error_enabled":    syscfg.BoolString(true),
-		"notification_expiring_enabled": syscfg.BoolString(false),
-	}); err != nil {
-		t.Fatalf("update settings: %v", err)
-	}
-	cache.Invalidate()
-
 	checker := NewChecker(st, cache, "", newTestNotifier(st))
 	checker.dispatchSystemNotifications(context.Background())
 	waitFor(t, func() bool { return attempts >= 1 })
@@ -259,8 +242,6 @@ func TestSendWebhookNotificationsSendsSeverityUpgrade(t *testing.T) {
 	createTestChannel(t, st, server.URL)
 
 	if err := st.UpdateSettings(map[string]string{
-		"notification_error_enabled":    syscfg.BoolString(false),
-		"notification_expiring_enabled": syscfg.BoolString(true),
 		"notification_expiring_days":    "7",
 	}); err != nil {
 		t.Fatalf("update settings: %v", err)

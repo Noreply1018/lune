@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"lune/internal/cpa"
@@ -318,6 +319,38 @@ func TestImportConfigCreatesPoolsSkipsExistingTokensAndIgnoresAdminToken(t *test
 	}
 	if settings["admin_token"] != "" {
 		t.Fatalf("expected admin_token to be ignored, got %q", settings["admin_token"])
+	}
+}
+
+func TestUpdateSettingsIgnoresDeprecatedNotificationFlags(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/admin/api/settings",
+		strings.NewReader(`{"notification_error_enabled":false,"notification_expiring_enabled":false,"notification_expiring_days":5}`),
+	)
+	rr := httptest.NewRecorder()
+
+	handler.updateSettings(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	settings, err := st.GetSettings()
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if settings["notification_expiring_days"] != "5" {
+		t.Fatalf("expected supported setting to persist, got %q", settings["notification_expiring_days"])
+	}
+	if _, ok := settings["notification_error_enabled"]; ok {
+		t.Fatalf("expected deprecated notification_error_enabled to be ignored")
+	}
+	if _, ok := settings["notification_expiring_enabled"]; ok {
+		t.Fatalf("expected deprecated notification_expiring_enabled to be ignored")
 	}
 }
 

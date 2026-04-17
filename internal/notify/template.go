@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"text/template"
+
+	"lune/internal/store"
 )
 
 type RenderedMessage struct {
@@ -50,6 +52,25 @@ func RenderNotification(n Notification, titleTpl, bodyTpl string) (RenderedMessa
 		return RenderedMessage{}, fmt.Errorf("render body: %w", err)
 	}
 	return RenderedMessage{Title: title, Body: body}, nil
+}
+
+func RenderChannelNotification(n Notification, channel store.NotificationChannel) (RenderedMessage, error) {
+	titleTpl, bodyTpl := ResolveChannelTemplates(channel, n.Event)
+	return RenderNotification(n, titleTpl, bodyTpl)
+}
+
+func ResolveChannelTemplates(channel store.NotificationChannel, event string) (string, string) {
+	for _, sub := range channel.Subscriptions {
+		if sub.Event == event {
+			return firstNonEmpty(sub.TitleTemplate, channel.TitleTemplate), firstNonEmpty(sub.BodyTemplate, channel.BodyTemplate)
+		}
+	}
+	for _, sub := range channel.Subscriptions {
+		if sub.Event == "*" {
+			return firstNonEmpty(sub.TitleTemplate, channel.TitleTemplate), firstNonEmpty(sub.BodyTemplate, channel.BodyTemplate)
+		}
+	}
+	return channel.TitleTemplate, channel.BodyTemplate
 }
 
 func renderTemplate(tpl string, n Notification) (string, error) {

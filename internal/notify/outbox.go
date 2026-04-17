@@ -9,13 +9,7 @@ import (
 	"lune/internal/store"
 )
 
-var retrySchedule = []time.Duration{
-	30 * time.Second,
-	2 * time.Minute,
-	10 * time.Minute,
-	30 * time.Minute,
-	2 * time.Hour,
-}
+var retrySchedule = []int{30, 120, 600, 1800, 7200}
 
 type Outbox struct {
 	store    *store.Store
@@ -80,7 +74,7 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 	title := n.Event
 	renderedBody := item.Payload
 	payloadSummary := truncateString(item.Payload, 1024)
-	if rendered, err := RenderNotification(n, channel.TitleTemplate, channel.BodyTemplate); err == nil {
+	if rendered, err := RenderChannelNotification(n, channel); err == nil {
 		title = rendered.Title
 		renderedBody = rendered.Body
 		payloadSummary = truncateString(rendered.Body, 1024)
@@ -96,13 +90,14 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 		return nil
 	}
 	item = *current
+	titleTpl, bodyTpl := ResolveChannelTemplates(channel, n.Event)
 	result, sendErr := driver.Send(ctx, n, ChannelRuntime{
 		ID:        channel.ID,
 		Name:      channel.Name,
 		Type:      channel.Type,
 		Config:    channel.Config,
-		TitleTpl:  channel.TitleTemplate,
-		BodyTpl:   channel.BodyTemplate,
+		TitleTpl:  titleTpl,
+		BodyTpl:   bodyTpl,
 		Triggered: "system",
 		Rendered:  &RenderedMessage{Title: title, Body: renderedBody},
 	})
@@ -136,14 +131,15 @@ func (o *Outbox) fail(item store.NotificationOutbox, channel store.NotificationC
 	title := item.Event
 	payloadSummary := truncateString(item.Payload, 1024)
 	if n, err := decodeNotificationPayload(item.Payload); err == nil {
-		if rendered, renderErr := RenderNotification(n, channel.TitleTemplate, channel.BodyTemplate); renderErr == nil {
+		if rendered, renderErr := RenderChannelNotification(n, channel); renderErr == nil {
 			title = rendered.Title
 			payloadSummary = truncateString(rendered.Body, 1024)
 		}
 	}
 	attempt := item.Attempt + 1
 	status := "failed"
-	if attempt > len(retrySchedule) {
+	retrySeconds := channelRetrySchedule(channel)
+	if attempt > channelRetryMaxAttempts(channel) {
 		status = "dropped"
 	}
 	delivery := &store.NotificationDelivery{
@@ -163,14 +159,28 @@ func (o *Outbox) fail(item store.NotificationOutbox, channel store.NotificationC
 		TriggeredBy:     "system",
 	}
 
-	if attempt > len(retrySchedule) {
+	if attempt > channelRetryMaxAttempts(channel) {
 		return o.store.RecordNotificationAttemptDropped(item.ID, delivery, attempt, firstNonEmpty(result.UpstreamMessage, message))
 	}
-	nextAttemptAt := time.Now().UTC().Add(retrySchedule[attempt-1]).Format("2006-01-02 15:04:05")
+	nextAttemptAt := time.Now().UTC().Add(time.Duration(retrySeconds[attempt-1]) * time.Second).Format("2006-01-02 15:04:05")
 	return o.store.RecordNotificationAttemptRetry(item.ID, delivery, attempt, nextAttemptAt, firstNonEmpty(result.UpstreamMessage, message))
 }
 
 func (o *Outbox) itemMutex(outboxID int64) *sync.Mutex {
 	actual, _ := o.itemMu.LoadOrStore(outboxID, &sync.Mutex{})
 	return actual.(*sync.Mutex)
+}
+
+func channelRetryMaxAttempts(channel store.NotificationChannel) int {
+	if channel.RetryMaxAttempts > 0 {
+		return channel.RetryMaxAttempts
+	}
+	return len(retrySchedule)
+}
+
+func channelRetrySchedule(channel store.NotificationChannel) []int {
+	if len(channel.RetrySchedule) >= channelRetryMaxAttempts(channel) {
+		return channel.RetrySchedule
+	}
+	return retrySchedule
 }

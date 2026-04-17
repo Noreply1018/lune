@@ -15,27 +15,32 @@ import (
 )
 
 type notificationChannelResponse struct {
-	ID            int64                            `json:"id"`
-	Name          string                           `json:"name"`
-	Type          string                           `json:"type"`
-	Enabled       bool                             `json:"enabled"`
-	Config        map[string]any                   `json:"config"`
-	Subscriptions []store.NotificationSubscription `json:"subscriptions"`
-	TitleTemplate string                           `json:"title_template"`
-	BodyTemplate  string                           `json:"body_template"`
-	CreatedAt     string                           `json:"created_at"`
-	UpdatedAt     string                           `json:"updated_at"`
-	LastDelivery  *store.NotificationDeliveryMeta  `json:"last_delivery,omitempty"`
+	ID               int64                            `json:"id"`
+	Name             string                           `json:"name"`
+	Type             string                           `json:"type"`
+	Enabled          bool                             `json:"enabled"`
+	Config           map[string]any                   `json:"config"`
+	Subscriptions    []store.NotificationSubscription `json:"subscriptions"`
+	TitleTemplate    string                           `json:"title_template"`
+	BodyTemplate     string                           `json:"body_template"`
+	RetryMaxAttempts int                              `json:"retry_max_attempts"`
+	RetrySchedule    []int                            `json:"retry_schedule_seconds"`
+	CreatedAt        string                           `json:"created_at"`
+	UpdatedAt        string                           `json:"updated_at"`
+	LastDelivery     *store.NotificationDeliveryMeta  `json:"last_delivery,omitempty"`
+	RecentDeliveries []store.NotificationDeliveryMeta `json:"recent_deliveries,omitempty"`
 }
 
 type notificationChannelRequest struct {
-	Name          string                           `json:"name"`
-	Type          string                           `json:"type"`
-	Enabled       bool                             `json:"enabled"`
-	Config        map[string]any                   `json:"config"`
-	Subscriptions []store.NotificationSubscription `json:"subscriptions"`
-	TitleTemplate string                           `json:"title_template"`
-	BodyTemplate  string                           `json:"body_template"`
+	Name             string                           `json:"name"`
+	Type             string                           `json:"type"`
+	Enabled          bool                             `json:"enabled"`
+	Config           map[string]any                   `json:"config"`
+	Subscriptions    []store.NotificationSubscription `json:"subscriptions"`
+	TitleTemplate    string                           `json:"title_template"`
+	BodyTemplate     string                           `json:"body_template"`
+	RetryMaxAttempts int                              `json:"retry_max_attempts"`
+	RetrySchedule    []int                            `json:"retry_schedule_seconds"`
 }
 
 type notificationChannelEnabledRequest struct {
@@ -91,6 +96,17 @@ func (h *Handler) createNotificationChannel(w http.ResponseWriter, r *http.Reque
 	if len(req.Subscriptions) == 0 {
 		req.Subscriptions = []store.NotificationSubscription{{Event: "*"}}
 	}
+	var err error
+	req.Subscriptions, err = normalizeSubscriptions(req.Subscriptions)
+	if err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", err.Error())
+		return
+	}
+	retryMaxAttempts, retrySchedule, err := normalizeRetryConfig(req.RetryMaxAttempts, req.RetrySchedule)
+	if err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", err.Error())
+		return
+	}
 	encodedConfig, err := h.notifier.Registry().MergeConfig(req.Type, nil, req.Config)
 	if err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", err.Error())
@@ -104,6 +120,8 @@ func (h *Handler) createNotificationChannel(w http.ResponseWriter, r *http.Reque
 		Subscriptions: req.Subscriptions,
 		TitleTemplate: req.TitleTemplate,
 		BodyTemplate:  req.BodyTemplate,
+		RetryMaxAttempts: retryMaxAttempts,
+		RetrySchedule:    retrySchedule,
 	}
 	id, err := h.store.CreateNotificationChannel(channel)
 	if err != nil {
@@ -149,6 +167,16 @@ func (h *Handler) updateNotificationChannel(w http.ResponseWriter, r *http.Reque
 	if len(req.Subscriptions) == 0 {
 		req.Subscriptions = []store.NotificationSubscription{{Event: "*"}}
 	}
+	req.Subscriptions, err = normalizeSubscriptions(req.Subscriptions)
+	if err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", err.Error())
+		return
+	}
+	retryMaxAttempts, retrySchedule, err := normalizeRetryConfig(req.RetryMaxAttempts, req.RetrySchedule)
+	if err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", err.Error())
+		return
+	}
 	baseConfig := existing.Config
 	if req.Type != existing.Type {
 		baseConfig = nil
@@ -165,6 +193,8 @@ func (h *Handler) updateNotificationChannel(w http.ResponseWriter, r *http.Reque
 	existing.Subscriptions = req.Subscriptions
 	existing.TitleTemplate = req.TitleTemplate
 	existing.BodyTemplate = req.BodyTemplate
+	existing.RetryMaxAttempts = retryMaxAttempts
+	existing.RetrySchedule = retrySchedule
 	if err := h.store.UpdateNotificationChannel(id, existing); err != nil {
 		h.internalError(w, err)
 		return
@@ -332,18 +362,67 @@ func (h *Handler) notificationChannelResponse(ch store.NotificationChannel) (not
 		return notificationChannelResponse{}, err
 	}
 	return notificationChannelResponse{
-		ID:            ch.ID,
-		Name:          ch.Name,
-		Type:          ch.Type,
-		Enabled:       ch.Enabled,
-		Config:        masked,
-		Subscriptions: ch.Subscriptions,
-		TitleTemplate: ch.TitleTemplate,
-		BodyTemplate:  ch.BodyTemplate,
-		CreatedAt:     ch.CreatedAt,
-		UpdatedAt:     ch.UpdatedAt,
-		LastDelivery:  ch.LastDelivery,
+		ID:               ch.ID,
+		Name:             ch.Name,
+		Type:             ch.Type,
+		Enabled:          ch.Enabled,
+		Config:           masked,
+		Subscriptions:    ch.Subscriptions,
+		TitleTemplate:    ch.TitleTemplate,
+		BodyTemplate:     ch.BodyTemplate,
+		RetryMaxAttempts: ch.RetryMaxAttempts,
+		RetrySchedule:    ch.RetrySchedule,
+		CreatedAt:        ch.CreatedAt,
+		UpdatedAt:        ch.UpdatedAt,
+		LastDelivery:     ch.LastDelivery,
+		RecentDeliveries: ch.RecentDeliveries,
 	}, nil
+}
+
+func normalizeSubscriptions(input []store.NotificationSubscription) ([]store.NotificationSubscription, error) {
+	if len(input) == 0 {
+		return []store.NotificationSubscription{{Event: "*"}}, nil
+	}
+	out := make([]store.NotificationSubscription, 0, len(input))
+	seen := make(map[string]struct{}, len(input))
+	for _, item := range input {
+		item.Event = strings.TrimSpace(item.Event)
+		item.MinSeverity = strings.TrimSpace(item.MinSeverity)
+		item.TitleTemplate = strings.TrimSpace(item.TitleTemplate)
+		item.BodyTemplate = strings.TrimSpace(item.BodyTemplate)
+		if item.Event == "" {
+			continue
+		}
+		if _, ok := seen[item.Event]; ok {
+			return nil, errors.New("duplicate subscription events are not allowed")
+		}
+		seen[item.Event] = struct{}{}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return []store.NotificationSubscription{{Event: "*"}}, nil
+	}
+	return out, nil
+}
+
+func normalizeRetryConfig(maxAttempts int, schedule []int) (int, []int, error) {
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	normalized := make([]int, 0, len(schedule))
+	for _, value := range schedule {
+		if value <= 0 {
+			return 0, nil, errors.New("retry_schedule_seconds must contain positive integers")
+		}
+		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		normalized = []int{30, 120, 600, 1800, 7200}
+	}
+	if len(normalized) < maxAttempts {
+		return 0, nil, errors.New("retry_schedule_seconds length must be greater than or equal to retry_max_attempts")
+	}
+	return maxAttempts, normalized, nil
 }
 
 func (h *Handler) deprecatedWebhookURL() (string, error) {
