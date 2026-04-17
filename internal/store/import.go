@@ -141,7 +141,7 @@ func getPoolByLabelTx(tx *sql.Tx, label string) (*Pool, error) {
 			 JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS healthy_account_count,
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
 		FROM pools p

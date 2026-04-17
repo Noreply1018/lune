@@ -180,7 +180,21 @@ export default function DragSortArea({
     if (!sourceMember) return;
 
     if (sourceZone !== targetZone) {
+      const remainingSource = (sourceZone === "enabled" ? enabledMembers : disabledMembers).filter(
+        (member) => member.id !== sourceMember.id,
+      );
+      const targetList = targetZone === "enabled" ? enabledMembers : disabledMembers;
+      const overIndex = targetList.findIndex((member) => String(member.id) === overId);
+      const insertAt = overIndex >= 0 ? overIndex : targetList.length;
+      const nextTarget = [
+        ...targetList.slice(0, insertAt),
+        sourceMember,
+        ...targetList.slice(insertAt),
+      ];
+      const nextEnabled = targetZone === "enabled" ? nextTarget : remainingSource;
+      const nextDisabled = targetZone === "disabled" ? nextTarget : remainingSource;
       onToggleEnabled(sourceMember, targetZone === "enabled");
+      onReorder([...nextEnabled, ...nextDisabled].map((member) => member.id));
       return;
     }
 

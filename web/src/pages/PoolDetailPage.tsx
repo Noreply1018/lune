@@ -220,15 +220,25 @@ export default function PoolDetailPage() {
   }
 
   async function reorderMembers(memberIds: number[]) {
-    await api.put(`/pools/${poolId}/members/reorder`, { member_ids: memberIds });
-    toast("优先级已更新");
-    refreshData();
+    try {
+      await api.put(`/pools/${poolId}/members/reorder`, { member_ids: memberIds });
+      toast("优先级已更新");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "优先级更新失败", "error");
+    } finally {
+      refreshData();
+    }
   }
 
   async function toggleMember(member: PoolMember, enabled: boolean) {
-    await api.put(`/pools/${poolId}/members/${member.id}`, { enabled });
-    toast(enabled ? "账号已启用" : "账号已移入禁用区");
-    refreshData();
+    try {
+      await api.put(`/pools/${poolId}/members/${member.id}`, { enabled });
+      toast(enabled ? "账号已启用" : "账号已移入禁用区");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "账号状态更新失败", "error");
+    } finally {
+      refreshData();
+    }
   }
 
   async function refreshModels(member: PoolMember) {

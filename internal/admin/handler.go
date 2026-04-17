@@ -92,10 +92,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	// Pool tokens
 	handle("GET /admin/api/pools/{id}/tokens", h.listPoolTokens)
 
-	// Pool usage & stats
-	handle("GET /admin/api/pools/{id}/usage", h.getPoolUsage)
-	handle("GET /admin/api/pools/{id}/stats", h.getPoolStats)
-
 	// Tokens
 	handle("GET /admin/api/tokens", h.listTokens)
 	handle("POST /admin/api/tokens", h.createToken)
@@ -656,46 +652,6 @@ func (h *Handler) listPoolTokens(w http.ResponseWriter, r *http.Request) {
 		tokens = []store.AccessToken{}
 	}
 	webutil.WriteList(w, tokens, len(tokens))
-}
-
-// --- Pool Usage & Stats ---
-
-func (h *Handler) getPoolUsage(w http.ResponseWriter, r *http.Request) {
-	poolID, ok := parseID(w, r)
-	if !ok {
-		return
-	}
-
-	window := r.URL.Query().Get("range")
-	if window == "" {
-		window = "24h"
-	}
-
-	stats, err := h.store.GetPoolStats(poolID, window)
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	webutil.WriteData(w, 200, stats)
-}
-
-func (h *Handler) getPoolStats(w http.ResponseWriter, r *http.Request) {
-	poolID, ok := parseID(w, r)
-	if !ok {
-		return
-	}
-
-	window := r.URL.Query().Get("window")
-	if window == "" {
-		window = "24h"
-	}
-
-	stats, err := h.store.GetPoolStats(poolID, window)
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	webutil.WriteData(w, 200, stats)
 }
 
 // --- Tokens ---

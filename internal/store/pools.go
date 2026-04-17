@@ -13,7 +13,7 @@ func (s *Store) ListPools() ([]Pool, error) {
 			 JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS healthy_account_count,
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
 		FROM pools p
@@ -55,7 +55,7 @@ func (s *Store) GetPool(id int64) (*Pool, error) {
 			 JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS healthy_account_count,
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
 		FROM pools p
@@ -86,7 +86,7 @@ func (s *Store) GetPoolByLabel(label string) (*Pool, error) {
 			 JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1) AS account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS healthy_account_count,
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
 		FROM pools p
@@ -106,21 +106,6 @@ func (s *Store) GetPoolByLabel(label string) (*Pool, error) {
 	}
 	p.Models = models
 	return p, nil
-}
-
-// GetPoolDetail returns a Pool with full members (each with Account) and models list.
-func (s *Store) GetPoolDetail(id int64) (*Pool, []PoolMember, error) {
-	p, err := s.GetPool(id)
-	if err != nil || p == nil {
-		return p, nil, err
-	}
-
-	members, err := s.ListPoolMembers(p.ID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return p, members, nil
 }
 
 func (s *Store) CreatePool(label string, priority int, enabled bool) (int64, error) {
@@ -149,11 +134,6 @@ func (s *Store) EnablePool(id int64) error {
 
 func (s *Store) DisablePool(id int64) error {
 	_, err := s.db.Exec(`UPDATE pools SET enabled=0, updated_at=datetime('now') WHERE id=?`, id)
-	return err
-}
-
-func (s *Store) DeletePool(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM pools WHERE id=?`, id)
 	return err
 }
 

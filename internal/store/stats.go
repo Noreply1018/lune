@@ -20,9 +20,7 @@ func (s *Store) GetOverview() (*Overview, error) {
 			(SELECT COUNT(*)
 			 FROM pool_members pm
 			 JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS strictly_healthy_count,
-			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS healthy_account_count
+			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS strictly_healthy_count
 		FROM pools p`)
 	if err == nil {
 		defer poolRows.Close()
@@ -30,8 +28,7 @@ func (s *Store) GetOverview() (*Overview, error) {
 			var enabled int
 			var accountCount int
 			var strictlyHealthyCount int
-			var healthyAccountCount int
-			if err := poolRows.Scan(&enabled, &accountCount, &strictlyHealthyCount, &healthyAccountCount); err != nil {
+			if err := poolRows.Scan(&enabled, &accountCount, &strictlyHealthyCount); err != nil {
 				continue
 			}
 			if enabled == 0 {
