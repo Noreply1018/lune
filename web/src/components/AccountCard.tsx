@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 
 type Variant = "active" | "disabled";
+type FlashState = "success" | "error" | null;
 
 export default function AccountCard({
   member,
@@ -25,6 +26,9 @@ export default function AccountCard({
   variant,
   priorityIndex,
   dragging = false,
+  selected = false,
+  dimmed = false,
+  flashState = null,
   onOpenDetails,
   onToggleEnabled,
   onDelete,
@@ -36,6 +40,9 @@ export default function AccountCard({
   variant: Variant;
   priorityIndex?: number;
   dragging?: boolean;
+  selected?: boolean;
+  dimmed?: boolean;
+  flashState?: FlashState;
   onOpenDetails: () => void;
   onToggleEnabled: () => void;
   onDelete: () => void;
@@ -66,6 +73,17 @@ export default function AccountCard({
 
   const isActive = variant === "active";
 
+  const flashRingClass =
+    flashState === "success"
+      ? "ring-2 ring-status-green/55 animate-pulse"
+      : flashState === "error"
+        ? "ring-2 ring-status-red/55 animate-pulse"
+        : "";
+  const selectedClass = selected
+    ? "ring-2 ring-lunar-300/70 scale-[1.01] shadow-[0_26px_52px_-30px_rgba(134,125,193,0.45)]"
+    : "";
+  const dimmedClass = dimmed && !selected ? "opacity-60 saturate-75" : "";
+
   return (
     <article
       {...dragHandleProps}
@@ -77,6 +95,9 @@ export default function AccountCard({
           ? "z-10 scale-[1.025] cursor-grabbing shadow-[0_28px_60px_-32px_rgba(33,40,63,0.4)]"
           : "hover:shadow-[0_22px_44px_-28px_rgba(33,40,63,0.3)]",
         isActive ? "min-h-[9.4rem] px-3.5 py-3" : "px-3 py-2.5",
+        selectedClass,
+        dimmedClass,
+        flashRingClass,
       )}
     >
       <div className="pointer-events-none absolute inset-x-0 top-0 h-10 bg-[linear-gradient(180deg,rgba(255,255,255,0.18),transparent)]" />

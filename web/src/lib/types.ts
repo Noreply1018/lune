@@ -140,6 +140,8 @@ export interface UsageStats {
     account_id: number;
     account_label: string;
     requests: number;
+    successful_requests: number;
+    success_rate: number;
     input_tokens: number;
     output_tokens: number;
   }>;

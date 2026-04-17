@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { KeyRound, QrCode, ShieldCheck } from "lucide-react";
 import AccountCard from "@/components/AccountCard";
 import AccountDetailSheet from "@/components/AccountDetailSheet";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import DragSortArea from "@/components/DragSortArea";
 import EmptyState from "@/components/EmptyState";
+import EnvSnippetsDialog from "@/components/EnvSnippetsDialog";
 import ErrorState from "@/components/ErrorState";
 import PageHeader from "@/components/PageHeader";
+import QrCodeDialog from "@/components/QrCodeDialog";
 import { useAdminUI } from "@/components/AdminUI";
 import { toast } from "@/components/Feedback";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { compact, pct } from "@/lib/fmt";
-import { ensureArray, getPoolHealth } from "@/lib/lune";
+import { ensureArray, getApiBaseUrl, getPoolHealth } from "@/lib/lune";
 import { matchPath, usePathname } from "@/lib/router";
 import type {
   Overview,
@@ -19,6 +23,18 @@ import type {
   PoolMember,
   RevealedAccessToken,
 } from "@/lib/types";
+
+const SELF_CHECK_MESSAGE = "你好，请用一句话回复我。";
+const SELF_CHECK_TIMEOUT_MS = 25_000;
+const FLASH_HOLD_MS = 2400;
+
+type FlashState = "success" | "error" | null;
+type AccountStatsEntry = {
+  requests: number;
+  successRate: number | null;
+  inputTokens: number;
+  outputTokens: number;
+};
 
 export default function PoolDetailPage() {
   const pathname = usePathname();
@@ -35,8 +51,15 @@ export default function PoolDetailPage() {
   const [connectTokenValue, setConnectTokenValue] = useState<string | null>(null);
   const [revealedTokenCache, setRevealedTokenCache] = useState<Record<number, string>>({});
   const [revealedGlobalToken, setRevealedGlobalToken] = useState<string | null>(null);
+  const [snippetsOpen, setSnippetsOpen] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [dialogToken, setDialogToken] = useState<string>("");
+  const [selfChecking, setSelfChecking] = useState(false);
+  const [flashMap, setFlashMap] = useState<Record<number, FlashState>>({});
   const loadSeqRef = useRef(0);
   const hasLoadedRef = useRef(false);
+  const flashTimersRef = useRef<Map<number, number>>(new Map());
+  const selfCheckingRef = useRef(false);
 
   const load = useCallback(() => {
     if (!hasValidPoolId) {
@@ -76,6 +99,13 @@ export default function PoolDetailPage() {
     load();
   }, [load, dataVersion]);
 
+  useEffect(() => {
+    return () => {
+      flashTimersRef.current.forEach((id) => window.clearTimeout(id));
+      flashTimersRef.current.clear();
+    };
+  }, []);
+
   const pool = detail?.pool ?? null;
   const members = ensureArray(detail?.members);
   const stats = detail?.stats;
@@ -86,18 +116,60 @@ export default function PoolDetailPage() {
     () => poolTokens.map((token) => `${token.id}:${token.enabled ? 1 : 0}`).join("|"),
     [poolTokens],
   );
-  const accountRequestMap = useMemo(() => {
-    const map = new Map<number, number>();
+  const accountStatsMap = useMemo(() => {
+    const map = new Map<number, AccountStatsEntry>();
     statsByAccount.forEach((row) => {
-      map.set(row.account_id, row.requests);
+      map.set(row.account_id, {
+        requests: row.requests ?? 0,
+        successRate:
+          row.requests > 0 && typeof row.success_rate === "number" ? row.success_rate : null,
+        inputTokens: row.input_tokens ?? 0,
+        outputTokens: row.output_tokens ?? 0,
+      });
     });
     return map;
   }, [statsByAccount]);
+  const enabledMembers = useMemo(
+    () => members.filter((m) => m.enabled),
+    [members],
+  );
+  const priorityIndexMap = useMemo(() => {
+    const map = new Map<number, number>();
+    enabledMembers.forEach((m, idx) => map.set(m.id, idx + 1));
+    return map;
+  }, [enabledMembers]);
   const health = pool ? getPoolHealth(pool) : "degraded";
   const detailMember = useMemo(
     () => (detailMemberId == null ? null : members.find((m) => m.id === detailMemberId) ?? null),
     [detailMemberId, members],
   );
+  const detailMemberStats: AccountStatsEntry = useMemo(() => {
+    if (!detailMember) {
+      return { requests: 0, successRate: null, inputTokens: 0, outputTokens: 0 };
+    }
+    return (
+      accountStatsMap.get(detailMember.account_id) ?? {
+        requests: 0,
+        successRate: null,
+        inputTokens: 0,
+        outputTokens: 0,
+      }
+    );
+  }, [detailMember, accountStatsMap]);
+  const detailPriorityIndex = detailMember ? priorityIndexMap.get(detailMember.id) : undefined;
+
+  const baseUrl = getApiBaseUrl();
+  const hasConnectToken = Boolean(primaryPoolTokenId) || Boolean(overview?.global_token_id);
+  const maskedConnectToken = primaryPoolTokenId
+    ? poolTokens.find((t) => t.id === primaryPoolTokenId)?.token_masked ?? "—"
+    : overview?.global_token_masked ?? "未配置全局 Token";
+  const firstPoolModel = useMemo(() => {
+    for (const member of enabledMembers) {
+      const models = ensureArray(member.account?.models);
+      if (models.length > 0) return models[0];
+    }
+    return ensureArray(pool?.models)[0];
+  }, [enabledMembers, pool]);
 
   useEffect(() => {
     setConnectTokenValue(null);
@@ -118,6 +190,14 @@ export default function PoolDetailPage() {
     return revealed.token;
   }
 
+  async function revealGlobalToken(): Promise<string> {
+    if (revealedGlobalToken) return revealedGlobalToken;
+    if (!overview?.global_token_id) return "";
+    const revealed = await api.post<RevealedAccessToken>("/tokens/global/reveal");
+    setRevealedGlobalToken(revealed.token);
+    return revealed.token;
+  }
+
   async function getTokenForConnect(): Promise<string> {
     if (connectTokenValue) {
       return connectTokenValue;
@@ -127,15 +207,16 @@ export default function PoolDetailPage() {
       setConnectTokenValue(token);
       return token;
     }
-    if (revealedGlobalToken) {
-      return revealedGlobalToken;
-    }
-    if (overview?.global_token_id) {
-      const revealed = await api.post<RevealedAccessToken>("/tokens/global/reveal");
-      setRevealedGlobalToken(revealed.token);
-      return revealed.token;
-    }
-    return "";
+    return revealGlobalToken();
+  }
+
+  // For per-account direct requests we need a token that leaves tokenPoolID = nil on
+  // the gateway, otherwise X-Lune-Account-Id is silently dropped (gateway/handler.go).
+  // Pool-scoped tokens always route through pool weights — use global whenever possible.
+  async function getTokenForAccountProbe(): Promise<string> {
+    const global = await revealGlobalToken();
+    if (global) return global;
+    return getTokenForConnect();
   }
 
   async function reorderMembers(memberIds: number[]) {
@@ -172,6 +253,132 @@ export default function PoolDetailPage() {
     }
   }
 
+  function setFlash(memberId: number, state: FlashState) {
+    setFlashMap((prev) => ({ ...prev, [memberId]: state }));
+    const prevTimer = flashTimersRef.current.get(memberId);
+    if (prevTimer) window.clearTimeout(prevTimer);
+    if (state != null) {
+      const timer = window.setTimeout(() => {
+        setFlashMap((prev) => {
+          const next = { ...prev };
+          delete next[memberId];
+          return next;
+        });
+        flashTimersRef.current.delete(memberId);
+      }, FLASH_HOLD_MS);
+      flashTimersRef.current.set(memberId, timer);
+    } else {
+      flashTimersRef.current.delete(memberId);
+    }
+  }
+
+  async function runSelfCheck() {
+    if (selfCheckingRef.current || enabledMembers.length === 0) return;
+    selfCheckingRef.current = true;
+    setSelfChecking(true);
+    try {
+      const token = await getTokenForAccountProbe().catch(() => "");
+      if (!token) {
+        toast("未找到可用的 Token，无法自检", "error");
+        return;
+      }
+      if (!overview?.global_token_id) {
+        toast("没有全局 Token，自检改用 Pool Token，结果反映整个 Pool 而非单账号", "error");
+      }
+
+      const targets = enabledMembers
+        .map((member) => {
+          const accountModels = ensureArray(member.account?.models);
+          const model = accountModels[0] ?? firstPoolModel;
+          return { member, model };
+        })
+        .filter((t): t is { member: PoolMember; model: string } => Boolean(t.model));
+      if (targets.length === 0) {
+        toast("没有可测模型", "error");
+        return;
+      }
+
+      setFlashMap({});
+      const initial: Record<number, FlashState> = {};
+      targets.forEach(({ member }) => {
+        initial[member.id] = null;
+      });
+      setFlashMap(initial);
+
+      const results = await Promise.all(
+        targets.map(async ({ member, model }) => {
+          const controller = new AbortController();
+          const timer = window.setTimeout(() => controller.abort(), SELF_CHECK_TIMEOUT_MS);
+          try {
+            const res = await fetch("/v1/chat/completions", {
+              method: "POST",
+              signal: controller.signal,
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+                "X-Lune-Account-Id": String(member.account_id),
+              },
+              body: JSON.stringify({
+                model,
+                messages: [{ role: "user", content: SELF_CHECK_MESSAGE }],
+                stream: false,
+              }),
+            });
+            const ok = res.ok;
+            setFlash(member.id, ok ? "success" : "error");
+            return { memberId: member.id, ok };
+          } catch {
+            setFlash(member.id, "error");
+            return { memberId: member.id, ok: false };
+          } finally {
+            window.clearTimeout(timer);
+          }
+        }),
+      );
+      const successCount = results.filter((r) => r.ok).length;
+      const failCount = results.length - successCount;
+      if (failCount === 0) {
+        toast(`自检全部通过（${successCount}/${results.length}）`);
+      } else {
+        toast(
+          `自检完成：${successCount}/${results.length} 成功，${failCount} 失败`,
+          "error",
+        );
+      }
+    } finally {
+      selfCheckingRef.current = false;
+      setSelfChecking(false);
+    }
+  }
+
+  async function openSnippetsWithToken() {
+    try {
+      const token = await getTokenForConnect();
+      if (!token) {
+        toast("未找到可用的 Token", "error");
+        return;
+      }
+      setDialogToken(token);
+      setSnippetsOpen(true);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "读取 Token 失败", "error");
+    }
+  }
+
+  async function openQrWithToken() {
+    try {
+      const token = await getTokenForConnect();
+      if (!token) {
+        toast("未找到可用的 Token", "error");
+        return;
+      }
+      setDialogToken(token);
+      setQrOpen(true);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "读取 Token 失败", "error");
+    }
+  }
+
   if (loading) {
     return (
       <div className="space-y-8">
@@ -204,6 +411,40 @@ export default function PoolDetailPage() {
       <PageHeader
         title={pool.label}
         description="左边是 Active Pool，拖动卡片即可调整路由优先级；右侧停泊区收纳临时停用的账号。"
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={runSelfCheck}
+              disabled={selfChecking || enabledMembers.length === 0}
+              className="rounded-full border-moon-200/55 bg-white/45"
+            >
+              <ShieldCheck className="size-3.5" />
+              {selfChecking ? "自检中" : "自检 Pool"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openSnippetsWithToken}
+              disabled={!hasConnectToken}
+              className="rounded-full border-moon-200/55 bg-white/45"
+            >
+              <KeyRound className="size-3.5" />
+              Env Snippets
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openQrWithToken}
+              disabled={!hasConnectToken}
+              className="rounded-full border-moon-200/55 bg-white/45"
+            >
+              <QrCode className="size-3.5" />
+              QR
+            </Button>
+          </div>
+        }
         meta={
           <>
             <span className="inline-flex items-center gap-2">
@@ -224,6 +465,9 @@ export default function PoolDetailPage() {
             <span>{pool.routable_account_count} 可用</span>
             <span>24h 请求 {compact(stats?.total_requests ?? 0)}</span>
             <span>成功率 {pct(stats?.success_rate ?? 0)}</span>
+            <span className="truncate text-moon-400" title={maskedConnectToken}>
+              Token {maskedConnectToken}
+            </span>
           </>
         }
       />
@@ -232,39 +476,56 @@ export default function PoolDetailPage() {
         members={members}
         onReorder={reorderMembers}
         onToggleEnabled={toggleMember}
-        renderMember={(member, options) => (
-          <AccountCard
-            member={member}
-            variant={member.enabled ? "active" : "disabled"}
-            priorityIndex={options.priorityIndex}
-            dragging={options.dragging}
-            dragHandleProps={options.dragHandleProps}
-            requests={accountRequestMap.get(member.account_id) ?? 0}
-            onOpenDetails={() => setDetailMemberId(member.id)}
-            onToggleEnabled={() => toggleMember(member, !member.enabled)}
-            onDelete={() => setDeleteTarget(member)}
-            onRefreshModels={() => refreshModels(member)}
-          />
-        )}
+        renderMember={(member, options) => {
+          const spotlightActive = detailMemberId != null;
+          const isSelected = detailMemberId === member.id;
+          return (
+            <AccountCard
+              member={member}
+              variant={member.enabled ? "active" : "disabled"}
+              priorityIndex={options.priorityIndex}
+              dragging={options.dragging}
+              dragHandleProps={options.dragHandleProps}
+              requests={accountStatsMap.get(member.account_id)?.requests ?? 0}
+              selected={isSelected}
+              dimmed={spotlightActive && !isSelected}
+              flashState={flashMap[member.id] ?? null}
+              onOpenDetails={() => setDetailMemberId(member.id)}
+              onToggleEnabled={() => toggleMember(member, !member.enabled)}
+              onDelete={() => setDeleteTarget(member)}
+              onRefreshModels={() => refreshModels(member)}
+            />
+          );
+        }}
       />
+
       <AccountDetailSheet
         member={detailMember}
-        requests={detailMember ? accountRequestMap.get(detailMember.account_id) ?? 0 : 0}
-        resolveToken={getTokenForConnect}
+        stats={detailMemberStats}
+        priorityIndex={detailPriorityIndex}
+        poolId={poolId}
+        resolveToken={getTokenForAccountProbe}
         onOpenChange={(open) => {
           if (!open) setDetailMemberId(null);
         }}
-        onToggleEnabled={() => {
-          if (!detailMember) return;
-          toggleMember(detailMember, !detailMember.enabled);
-        }}
-        onDelete={() => {
-          if (!detailMember) return;
-          setDeleteTarget(detailMember);
-          setDetailMemberId(null);
-        }}
-        onRefreshModels={() => detailMember && refreshModels(detailMember)}
       />
+
+      <EnvSnippetsDialog
+        open={snippetsOpen}
+        onOpenChange={setSnippetsOpen}
+        title={`${pool.label} · Env Snippets`}
+        baseUrl={baseUrl}
+        token={dialogToken}
+        model={firstPoolModel}
+      />
+      <QrCodeDialog
+        open={qrOpen}
+        onOpenChange={setQrOpen}
+        title={`${pool.label} · Token QR`}
+        baseUrl={baseUrl}
+        token={dialogToken}
+      />
+
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => !open && setDeleteTarget(null)}

@@ -310,6 +310,7 @@ func (s *Store) GetUsageSummary(f UsageFilter) (*UsageStats, error) {
 
 	accountRows, err := s.db.Query(
 		`SELECT rl.account_id, COALESCE(a.label, '') AS account_label, COUNT(*),
+			COALESCE(SUM(rl.success), 0),
 			COALESCE(SUM(rl.input_tokens), 0), COALESCE(SUM(rl.output_tokens), 0)
 		 FROM request_logs rl
 		 LEFT JOIN accounts a ON a.id = rl.account_id
@@ -324,8 +325,11 @@ func (s *Store) GetUsageSummary(f UsageFilter) (*UsageStats, error) {
 	defer accountRows.Close()
 	for accountRows.Next() {
 		var row UsageByAccount
-		if err := accountRows.Scan(&row.AccountID, &row.AccountLabel, &row.Requests, &row.InputTokens, &row.OutputTokens); err != nil {
+		if err := accountRows.Scan(&row.AccountID, &row.AccountLabel, &row.Requests, &row.SuccessfulRequests, &row.InputTokens, &row.OutputTokens); err != nil {
 			return nil, err
+		}
+		if row.Requests > 0 {
+			row.SuccessRate = float64(row.SuccessfulRequests) / float64(row.Requests)
 		}
 		stats.ByAccount = append(stats.ByAccount, row)
 	}
@@ -406,6 +410,7 @@ func (s *Store) GetPoolStats(poolID int64, window string) (*UsageStats, error) {
 
 	accountRows, err := s.db.Query(
 		`SELECT rl.account_id, COALESCE(a.label, '') AS account_label, COUNT(*),
+			COALESCE(SUM(rl.success), 0),
 			COALESCE(SUM(rl.input_tokens), 0), COALESCE(SUM(rl.output_tokens), 0)
 		 FROM request_logs rl
 		 LEFT JOIN accounts a ON a.id = rl.account_id
@@ -420,8 +425,11 @@ func (s *Store) GetPoolStats(poolID int64, window string) (*UsageStats, error) {
 	defer accountRows.Close()
 	for accountRows.Next() {
 		var row UsageByAccount
-		if err := accountRows.Scan(&row.AccountID, &row.AccountLabel, &row.Requests, &row.InputTokens, &row.OutputTokens); err != nil {
+		if err := accountRows.Scan(&row.AccountID, &row.AccountLabel, &row.Requests, &row.SuccessfulRequests, &row.InputTokens, &row.OutputTokens); err != nil {
 			return nil, err
+		}
+		if row.Requests > 0 {
+			row.SuccessRate = float64(row.SuccessfulRequests) / float64(row.Requests)
 		}
 		stats.ByAccount = append(stats.ByAccount, row)
 	}

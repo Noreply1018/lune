@@ -1,4 +1,5 @@
-import { Power, RefreshCw, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, Clock3, Copy, Loader2, SendHorizonal } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -7,9 +8,17 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsIndicator, TabsPanel, TabsTab } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import StatusBadge from "@/components/StatusBadge";
-import MiniChat from "@/components/MiniChat";
-import { compact, relativeTime } from "@/lib/fmt";
+import { api } from "@/lib/api";
+import { compact, latency, relativeTime } from "@/lib/fmt";
 import {
   ensureArray,
   getAccessLabel,
@@ -17,148 +26,539 @@ import {
   getExpiryMeta,
   parseQuotaDisplay,
 } from "@/lib/lune";
-import type { PoolMember } from "@/lib/types";
+import type { LatencyBucket, PoolMember } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+type Tone = "default" | "success" | "warning" | "danger";
+
+type TabKey = "overview" | "playground" | "debug";
+
+const PRESET_MESSAGES = [
+  { label: "你好", value: "你好，请用一句话回复我。" },
+  { label: "你是什么模型？", value: "请告诉我你的模型名称和版本。" },
+];
+
+type AccountStats = {
+  requests: number;
+  successRate: number | null;
+  inputTokens: number;
+  outputTokens: number;
+};
 
 export default function AccountDetailSheet({
   member,
-  requests,
+  stats,
+  priorityIndex,
+  poolId,
   resolveToken,
   onOpenChange,
-  onToggleEnabled,
-  onDelete,
-  onRefreshModels,
 }: {
   member: PoolMember | null;
-  requests: number;
+  stats: AccountStats;
+  priorityIndex?: number;
+  poolId?: number;
   resolveToken: () => Promise<string>;
   onOpenChange: (open: boolean) => void;
-  onToggleEnabled: () => void;
-  onDelete: () => void;
-  onRefreshModels: () => void;
 }) {
   const account = member?.account ?? null;
   const open = Boolean(member && account);
-  const health = account ? getAccountHealth(account) : "unknown";
-  const expiry = getExpiryMeta(account?.cpa_expired_at ?? null);
-  const quota = parseQuotaDisplay(account?.quota_display ?? "");
-  const models = ensureArray(account?.models);
+  const [tab, setTab] = useState<TabKey>("overview");
+
+  useEffect(() => {
+    if (open) setTab("overview");
+  }, [open, account?.id]);
+
+  if (!member || !account) {
+    return (
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent
+          side="right"
+          className="w-full max-w-[42rem] border-l border-white/75 bg-[linear-gradient(180deg,rgba(252,250,247,0.97),rgba(246,244,240,0.96))] p-0 data-[side=right]:sm:max-w-[42rem] sm:max-w-[42rem]"
+        />
+      </Sheet>
+    );
+  }
+
+  const health = getAccountHealth(account);
+  const expiry = getExpiryMeta(account.cpa_expired_at ?? null);
+  const quota = parseQuotaDisplay(account.quota_display ?? "");
+  const models = ensureArray(account.models);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="w-full max-w-[28rem] overflow-y-auto border-l border-moon-200/60 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(244,241,250,0.92))] sm:max-w-[28rem]"
+        className="w-full max-w-[42rem] overflow-hidden border-l border-white/75 bg-[linear-gradient(180deg,rgba(252,250,247,0.97),rgba(246,244,240,0.96))] p-0 data-[side=right]:sm:max-w-[42rem] sm:max-w-[42rem]"
       >
-        {member && account ? (
-          <>
-            <SheetHeader className="gap-2 px-5 pt-5">
+        <div className="flex h-full flex-col">
+          <SheetHeader className="gap-2 border-b border-moon-200/55 px-7 py-6">
+            <div className="flex items-center gap-2">
               <p className="eyebrow-label">{getAccessLabel(account)}</p>
-              <SheetTitle className="text-[1.2rem] font-semibold tracking-[-0.02em] text-moon-800">
-                {account.label}
-              </SheetTitle>
-              <SheetDescription className="text-moon-500">
-                这里是账号的运行时与连通性细节，可直接发起一次测试请求。
-              </SheetDescription>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-moon-500">
-                <StatusBadge status={health === "unknown" ? "degraded" : health} />
-                <span className="rounded-full bg-moon-100/85 px-2.5 py-1">{quota}</span>
-                <span className="rounded-full bg-moon-100/85 px-2.5 py-1">
-                  今日 {compact(requests)} 请求
+              {priorityIndex != null ? (
+                <span className="rounded-full bg-lunar-100/80 px-2 py-0.5 text-[10px] tracking-[0.08em] text-lunar-700">
+                  P{priorityIndex}
                 </span>
-                {expiry ? (
-                  <span
-                    className={cn(
-                      "rounded-full px-2.5 py-1",
-                      expiry.tone === "danger"
-                        ? "bg-status-red/10 text-status-red"
-                        : expiry.tone === "warning"
-                          ? "bg-status-yellow/12 text-status-yellow"
-                          : "bg-moon-100/80 text-moon-500",
-                    )}
-                  >
-                    {expiry.label}
-                  </span>
-                ) : null}
-                <span className="text-moon-400">
-                  最后检查 {relativeTime(account.last_checked_at ?? null)}
+              ) : null}
+            </div>
+            <SheetTitle className="text-[1.35rem] font-semibold tracking-[-0.02em] text-moon-800">
+              {account.label}
+            </SheetTitle>
+            <SheetDescription className="text-moon-500">
+              当前账号的运行细节、直测与底层字段，分三页查看。
+            </SheetDescription>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-moon-500">
+              <StatusBadge status={health === "unknown" ? "degraded" : health} />
+              <span className="rounded-full bg-moon-100/85 px-2.5 py-1">{quota}</span>
+              {expiry ? (
+                <span
+                  className={cn(
+                    "rounded-full px-2.5 py-1",
+                    expiry.tone === "danger"
+                      ? "bg-status-red/10 text-status-red"
+                      : expiry.tone === "warning"
+                        ? "bg-status-yellow/12 text-status-yellow"
+                        : "bg-moon-100/80 text-moon-500",
+                  )}
+                >
+                  {expiry.label}
                 </span>
-              </div>
-            </SheetHeader>
+              ) : null}
+              <span className="inline-flex items-center gap-1 text-moon-400">
+                <Clock3 className="size-3" />
+                {relativeTime(account.last_checked_at ?? null)}
+              </span>
+            </div>
+          </SheetHeader>
 
-            <div className="space-y-5 px-5 pb-2">
-              <div className="grid gap-3 rounded-[1.2rem] border border-moon-200/55 bg-white/72 p-4 sm:grid-cols-2">
-                <DetailItem
-                  label="Runtime"
-                  value={account.runtime?.base_url || account.base_url || "--"}
-                  breakAll
-                />
-                <DetailItem label="Models" value={models.join(", ") || "--"} />
-                <DetailItem label="Notes" value={account.notes || "--"} />
-                <DetailItem
-                  label="Error"
-                  value={account.last_error || "--"}
-                  tone={account.last_error ? "danger" : "default"}
-                />
-              </div>
+          <Tabs
+            value={tab}
+            onValueChange={(next) => setTab(next as TabKey)}
+            className="flex min-h-0 flex-1 flex-col gap-0"
+          >
+            <div className="border-b border-moon-200/55 px-7 py-3">
+              <TabsList>
+                <TabsIndicator />
+                <TabsTab value="overview">Overview</TabsTab>
+                <TabsTab value="playground">Playground</TabsTab>
+                <TabsTab value="debug">Debug</TabsTab>
+              </TabsList>
+            </div>
 
-              <div>
-                <MiniChat
+            <div className="min-h-0 flex-1 overflow-y-auto px-7 py-6">
+              <TabsPanel value="overview">
+                <OverviewPanel
+                  accountId={account.id}
+                  poolId={poolId}
+                  stats={stats}
+                  models={models}
+                  quota={quota}
+                />
+              </TabsPanel>
+              <TabsPanel value="playground">
+                <PlaygroundPanel
                   key={account.id}
                   accountId={account.id}
-                  model={models[0]}
-                  resolveToken={resolveToken}
+                  models={models}
                   disabled={!member.enabled}
+                  resolveToken={resolveToken}
                 />
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-[1.2rem] border border-moon-200/55 bg-white/64 px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={onRefreshModels}>
-                    <RefreshCw className="size-4" />
-                    刷新模型
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={onToggleEnabled}>
-                    <Power className="size-4" />
-                    {member.enabled ? "移入禁用区" : "重新启用"}
-                  </Button>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-status-red hover:text-status-red"
-                  onClick={onDelete}
-                >
-                  <Trash2 className="size-4" />
-                  删除账号
-                </Button>
-              </div>
+              </TabsPanel>
+              <TabsPanel value="debug">
+                <DebugPanel
+                  accountId={account.id}
+                  baseUrl={account.runtime?.base_url || account.base_url || "--"}
+                  expiry={account.cpa_expired_at ?? null}
+                  lastCheckedAt={account.last_checked_at ?? null}
+                  lastError={account.last_error ?? null}
+                />
+              </TabsPanel>
             </div>
-          </>
-        ) : null}
+          </Tabs>
+        </div>
       </SheetContent>
     </Sheet>
   );
 }
 
-function DetailItem({
+function OverviewPanel({
+  accountId,
+  poolId,
+  stats,
+  models,
+  quota,
+}: {
+  accountId: number;
+  poolId?: number;
+  stats: AccountStats;
+  models: string[];
+  quota: string;
+}) {
+  const [latencyState, setLatencyState] = useState<
+    { status: "loading" } | { status: "ready"; p50: number | null; p95: number | null } | { status: "empty" } | { status: "error" }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    setLatencyState({ status: "loading" });
+    const poolParam = poolId ? `&pool=${poolId}` : "";
+    api
+      .get<LatencyBucket[]>(
+        `/usage/latency?period=24h&bucket=1d&account=${accountId}${poolParam}`,
+      )
+      .then((buckets) => {
+        if (cancelled) return;
+        if (!buckets || buckets.length === 0) {
+          setLatencyState({ status: "empty" });
+          return;
+        }
+        const last = buckets[buckets.length - 1];
+        setLatencyState({
+          status: "ready",
+          p50: last.p50 ?? null,
+          p95: last.p95 ?? null,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setLatencyState({ status: "error" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, poolId]);
+
+  const latencyLabel =
+    latencyState.status === "ready" && latencyState.p50 != null
+      ? latency(latencyState.p50)
+      : latencyState.status === "loading"
+        ? "…"
+        : "—";
+  const latencyHint =
+    latencyState.status === "ready" && latencyState.p95 != null
+      ? `P95 ${latency(latencyState.p95)}`
+      : latencyState.status === "empty"
+        ? "24h 无样本"
+        : latencyState.status === "error"
+          ? "读取失败"
+          : "读取中";
+
+  const successLabel =
+    stats.requests > 0 && stats.successRate != null
+      ? formatSuccessRate(stats.successRate)
+      : "—";
+  const successTone: Tone =
+    stats.successRate == null || stats.requests === 0
+      ? "default"
+      : stats.successRate >= 0.99
+        ? "success"
+        : stats.successRate >= 0.95
+          ? "default"
+          : stats.successRate >= 0.8
+            ? "warning"
+            : "danger";
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Meter label="今日请求" value={compact(stats.requests)} hint={`${stats.requests} 次`} />
+        <Meter label="成功率" value={successLabel} hint={`24h 窗口`} tone={successTone} />
+        <Meter
+          label="P50 延迟"
+          value={latencyLabel}
+          hint={latencyHint}
+          tone={latencyState.status === "error" ? "warning" : "default"}
+        />
+      </div>
+
+      <section className="space-y-3">
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Models</p>
+          <p className="text-[11px] text-moon-400">{models.length} 个</p>
+        </div>
+        {models.length === 0 ? (
+          <div className="rounded-[1.1rem] border border-dashed border-moon-200/65 bg-white/40 px-4 py-6 text-center text-sm text-moon-400">
+            当前没有发现可用模型
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {models.map((model) => (
+              <span
+                key={model}
+                className="rounded-full bg-moon-100/70 px-2.5 py-1 text-[11px] text-moon-600"
+                title={model}
+              >
+                {model}
+              </span>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-2.5 rounded-[1.2rem] border border-moon-200/55 bg-white/60 px-4 py-4">
+        <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Quota</p>
+        <p className="text-sm text-moon-700">{quota}</p>
+        <p className="text-xs text-moon-400">
+          当前只有 quota_display 手动字段，CPA 原生 5h / 周额度透传待实现。
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function PlaygroundPanel({
+  accountId,
+  models,
+  disabled,
+  resolveToken,
+}: {
+  accountId: number;
+  models: string[];
+  disabled: boolean;
+  resolveToken: () => Promise<string>;
+}) {
+  const [selectedModel, setSelectedModel] = useState<string | undefined>(models[0]);
+  const [message, setMessage] = useState(PRESET_MESSAGES[0].value);
+  const [reply, setReply] = useState("");
+  const [usageText, setUsageText] = useState("");
+  const [durationMs, setDurationMs] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [lastCurl, setLastCurl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedModel && models.length > 0) {
+      setSelectedModel(models[0]);
+    }
+  }, [models, selectedModel]);
+
+  async function runTest(custom?: string) {
+    const content = (custom ?? message).trim();
+    if (!content || !selectedModel || loading || disabled) return;
+    setLoading(true);
+    setError(null);
+    setReply("");
+    setUsageText("");
+    setDurationMs(null);
+    setLastCurl(null);
+
+    let token = "";
+    try {
+      token = await resolveToken();
+      if (!token) {
+        throw new Error("未找到可用的 Token");
+      }
+      const started = performance.now();
+      const res = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          "X-Lune-Account-Id": String(accountId),
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          messages: [{ role: "user", content }],
+          stream: false,
+        }),
+      });
+      const elapsed = performance.now() - started;
+      const data = (await res.json().catch(() => null)) as
+        | {
+            choices?: Array<{ message?: { content?: string } }>;
+            usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+            error?: { message?: string };
+          }
+        | null;
+
+      if (!res.ok) {
+        const errMsg = data?.error?.message ?? `请求失败 (${res.status})`;
+        throw new Error(errMsg);
+      }
+
+      setReply(data?.choices?.[0]?.message?.content ?? "");
+      const u = data?.usage;
+      if (u) {
+        setUsageText(
+          `${u.prompt_tokens ?? 0} in · ${u.completion_tokens ?? 0} out · ${u.total_tokens ?? 0} total`,
+        );
+      }
+      setDurationMs(elapsed);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "测试失败");
+      const origin = window.location.origin;
+      const maskedToken = token ? `${token.slice(0, 6)}…` : "<TOKEN>";
+      const bodyJson = JSON.stringify({
+        model: selectedModel ?? "",
+        messages: [{ role: "user", content }],
+      });
+      // Wrap the body in shell single quotes; escape any embedded ' as '\''
+      const shellSafeBody = bodyJson.replace(/'/g, "'\\''");
+      const curl = `curl ${origin}/v1/chat/completions \\
+  -H 'Authorization: Bearer ${maskedToken}' \\
+  -H 'X-Lune-Account-Id: ${accountId}' \\
+  -H 'Content-Type: application/json' \\
+  -d '${shellSafeBody}'`;
+      setLastCurl(curl);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const hasModel = Boolean(selectedModel);
+  const canSend = !loading && !disabled && hasModel && message.trim().length > 0;
+
+  return (
+    <div className="space-y-5">
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Model</p>
+          <p className="text-[11px] text-moon-400">{models.length} 个可选</p>
+        </div>
+        {models.length === 0 ? (
+          <p className="rounded-[1rem] border border-dashed border-moon-200/65 bg-white/40 px-4 py-4 text-sm text-moon-400">
+            当前账号没有模型，无法直测。
+          </p>
+        ) : (
+          <Select
+            value={selectedModel}
+            onValueChange={(value) => setSelectedModel(value ?? undefined)}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="选择模型" />
+            </SelectTrigger>
+            <SelectContent>
+              {models.map((model) => (
+                <SelectItem key={model} value={model}>
+                  {model}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Message</p>
+        <div className="flex flex-wrap gap-2">
+          {PRESET_MESSAGES.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              onClick={() => {
+                setMessage(preset.value);
+                void runTest(preset.value);
+              }}
+              disabled={!canSend}
+              className={cn(
+                "rounded-full border border-moon-200/55 bg-white/75 px-3 py-1.5 text-[12.5px] text-moon-600 transition-colors hover:bg-white hover:text-moon-800",
+                !canSend && "cursor-not-allowed opacity-55 hover:bg-white/75 hover:text-moon-600",
+              )}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <textarea
+          value={message}
+          onChange={(event) => setMessage(event.target.value)}
+          disabled={disabled}
+          className="min-h-20 w-full rounded-[1rem] border border-moon-200/60 bg-white/78 px-3 py-3 text-sm text-moon-700 outline-none ring-0 transition focus:border-lunar-300 disabled:opacity-55"
+        />
+        <div className="flex items-center justify-end">
+          <Button onClick={() => runTest()} disabled={!canSend}>
+            {loading ? <Loader2 className="size-4 animate-spin" /> : <SendHorizonal className="size-4" />}
+            {loading ? "测试中" : "发送"}
+          </Button>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Response</p>
+          <p className="text-[11px] text-moon-400">
+            {[selectedModel, durationMs != null ? latency(durationMs) : null, usageText]
+              .filter(Boolean)
+              .join(" · ") || "等待响应"}
+          </p>
+        </div>
+        {error ? (
+          <div className="space-y-2 rounded-[1rem] border border-status-red/30 bg-red-50/70 px-4 py-3 text-sm text-status-red">
+            <p className="font-medium">{error}</p>
+            {lastCurl ? (
+              <div className="flex items-center justify-between gap-2">
+                <p className="truncate text-[11px] text-moon-500">curl 命令已生成，可定位底层问题</p>
+                <CopyButton value={lastCurl} label="复制 curl" />
+              </div>
+            ) : null}
+          </div>
+        ) : reply ? (
+          <div className="space-y-2 rounded-[1rem] border border-moon-200/55 bg-white/70 px-4 py-3">
+            <p className="whitespace-pre-wrap text-sm leading-6 text-moon-700">{reply}</p>
+          </div>
+        ) : (
+          <p className="rounded-[1rem] border border-dashed border-moon-200/60 bg-white/40 px-4 py-4 text-sm text-moon-400">
+            选一条预置或写你的问题，发送后这里会显示回复。
+          </p>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function DebugPanel({
+  accountId,
+  baseUrl,
+  expiry,
+  lastCheckedAt,
+  lastError,
+}: {
+  accountId: number;
+  baseUrl: string;
+  expiry: string | null;
+  lastCheckedAt: string | null;
+  lastError: string | null;
+}) {
+  return (
+    <div className="space-y-4 text-sm">
+      <DebugRow label="Account ID" value={String(accountId)} copyable />
+      <DebugRow label="Runtime Base URL" value={baseUrl} copyable breakAll />
+      <DebugRow
+        label="CPA Expires"
+        value={expiry ? `${expiry} · ${relativeTime(expiry)}` : "--"}
+      />
+      <DebugRow label="Last Checked" value={relativeTime(lastCheckedAt) || "--"} />
+      <DebugRow
+        label="Last Error"
+        value={lastError || "--"}
+        tone={lastError ? "danger" : "default"}
+        breakAll
+      />
+    </div>
+  );
+}
+
+function DebugRow({
   label,
   value,
   tone = "default",
-  breakAll = false,
+  breakAll,
+  copyable,
 }: {
   label: string;
   value: string;
   tone?: "default" | "danger";
   breakAll?: boolean;
+  copyable?: boolean;
 }) {
   return (
-    <div>
-      <p className="text-[11px] uppercase tracking-[0.18em] text-moon-350">{label}</p>
+    <div className="space-y-1.5 border-b border-moon-200/45 pb-3 last:border-b-0">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">{label}</p>
+        {copyable ? <CopyButton value={value} label="复制" /> : null}
+      </div>
       <p
         className={cn(
-          "mt-1 text-sm leading-6",
-          tone === "danger" ? "text-status-red" : "text-moon-600",
+          "text-sm leading-6",
+          tone === "danger" ? "text-status-red" : "text-moon-700",
           breakAll ? "break-all" : "",
         )}
       >
@@ -166,4 +566,77 @@ function DetailItem({
       </p>
     </div>
   );
+}
+
+function CopyButton({ value, label = "复制" }: { value: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="inline-flex items-center gap-1 text-xs text-moon-400 transition-colors hover:text-moon-700"
+    >
+      {copied ? <Check className="size-3.5 text-status-green" /> : <Copy className="size-3.5" />}
+      <span>{copied ? "已复制" : label}</span>
+    </button>
+  );
+}
+
+function Meter({
+  label,
+  value,
+  hint,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: Tone;
+}) {
+  const toneClass = useMemo(() => {
+    switch (tone) {
+      case "success":
+        return "border-status-green/25 bg-[linear-gradient(180deg,rgba(231,247,235,0.72),rgba(245,250,247,0.68))] text-status-green";
+      case "warning":
+        return "border-status-yellow/30 bg-[linear-gradient(180deg,rgba(252,245,224,0.75),rgba(250,247,238,0.68))] text-status-yellow";
+      case "danger":
+        return "border-status-red/25 bg-[linear-gradient(180deg,rgba(252,231,230,0.72),rgba(250,243,243,0.68))] text-status-red";
+      default:
+        return "border-moon-200/60 bg-white/70 text-moon-700";
+    }
+  }, [tone]);
+
+  return (
+    <div className={cn("rounded-[1.15rem] border px-4 py-3.5", toneClass)}>
+      <p className="text-[10.5px] uppercase tracking-[0.18em] text-moon-400">{label}</p>
+      <p className="mt-1.5 font-editorial text-[1.4rem] font-semibold tabular-nums tracking-[-0.01em]">
+        {value}
+      </p>
+      {hint ? <p className="mt-0.5 text-[11px] text-moon-400">{hint}</p> : null}
+    </div>
+  );
+}
+
+function formatSuccessRate(value: number): string {
+  const percent = value * 100;
+  if (percent >= 99.95) return "100%";
+  return `${percent.toFixed(1).replace(/\.0$/, "")}%`;
 }

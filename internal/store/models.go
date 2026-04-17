@@ -139,11 +139,13 @@ type UsageStats struct {
 }
 
 type UsageByAccount struct {
-	AccountID    int64  `json:"account_id"`
-	AccountLabel string `json:"account_label"`
-	Requests     int64  `json:"requests"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
+	AccountID          int64   `json:"account_id"`
+	AccountLabel       string  `json:"account_label"`
+	Requests           int64   `json:"requests"`
+	SuccessfulRequests int64   `json:"successful_requests"`
+	SuccessRate        float64 `json:"success_rate"`
+	InputTokens        int64   `json:"input_tokens"`
+	OutputTokens       int64   `json:"output_tokens"`
 }
 
 type UsageByToken struct {
