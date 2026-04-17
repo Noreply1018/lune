@@ -146,6 +146,17 @@ export default function NotificationsSection({
     });
   }
 
+  function clearSingleFieldError(event: string, field: "title" | "body") {
+    setRowErrors((current) => {
+      const existing = current[event];
+      if (!existing || existing[field] == null) {
+        return current;
+      }
+      const updated = { ...existing, [field]: null };
+      return { ...current, [event]: updated };
+    });
+  }
+
   async function commitSubscription(
     event: string,
     field: "subscribed" | "title" | "body",
@@ -357,12 +368,12 @@ export default function NotificationsSection({
             <SubscriptionsTable
               subscriptions={subscriptions}
               eventTypes={eventTypes}
-              savingEvent={null}
               savingField={rowSavingField}
               fieldErrors={rowErrors}
               onCommit={(event, field, next) =>
                 void commitSubscription(event, field, next)
               }
+              onClearFieldError={clearSingleFieldError}
             />
           ) : null}
 

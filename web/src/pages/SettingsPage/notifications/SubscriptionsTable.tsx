@@ -7,7 +7,6 @@ import type {
 type SubscriptionsTableProps = {
   subscriptions: NotificationSubscription[];
   eventTypes: NotificationEventType[];
-  savingEvent: string | null;
   savingField: Record<string, string | null>;
   fieldErrors: Record<string, { title?: string | null; body?: string | null }>;
   onCommit: (
@@ -15,6 +14,7 @@ type SubscriptionsTableProps = {
     field: "subscribed" | "title" | "body",
     next: NotificationSubscription,
   ) => void;
+  onClearFieldError: (event: string, field: "title" | "body") => void;
 };
 
 export default function SubscriptionsTable({
@@ -23,6 +23,7 @@ export default function SubscriptionsTable({
   savingField,
   fieldErrors,
   onCommit,
+  onClearFieldError,
 }: SubscriptionsTableProps) {
   const byEvent = new Map(subscriptions.map((item) => [item.event, item]));
 
@@ -51,6 +52,9 @@ export default function SubscriptionsTable({
               titleError={fieldErrors[eventType.event]?.title ?? null}
               bodyError={fieldErrors[eventType.event]?.body ?? null}
               onCommit={(field, next) => onCommit(eventType.event, field, next)}
+              onClearFieldError={(field) =>
+                onClearFieldError(eventType.event, field)
+              }
             />
           );
         })}

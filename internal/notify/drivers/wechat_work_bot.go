@@ -79,22 +79,26 @@ func (d *WeChatWorkBotDriver) Send(ctx context.Context, n notify.Notification, r
 			"mentioned_mobile_list": cfg.MentionMobileList,
 		}
 	} else {
-		mentions := make([]string, 0, len(cfg.MentionList)+len(cfg.MentionMobileList))
+		// WeCom markdown only supports <@userid> inline mentions; mobile-number
+		// @ is text-msgtype only, so mention_mobile_list is surfaced as plain
+		// text so users can still see who it was aimed at.
+		mentions := make([]string, 0, len(cfg.MentionList))
 		for _, item := range cfg.MentionList {
 			item = strings.TrimSpace(item)
 			if item != "" {
 				mentions = append(mentions, "<@"+item+">")
 			}
 		}
+		plain := make([]string, 0, len(cfg.MentionMobileList))
 		for _, item := range cfg.MentionMobileList {
 			item = strings.TrimSpace(item)
 			if item != "" {
-				mentions = append(mentions, "<@"+item+">")
+				plain = append(plain, "@"+item)
 			}
 		}
 		content := fmt.Sprintf("## %s\n\n%s", rendered.Title, rendered.Body)
-		if len(mentions) > 0 {
-			content += "\n\n" + strings.Join(mentions, " ")
+		if len(mentions) > 0 || len(plain) > 0 {
+			content += "\n\n" + strings.Join(append(mentions, plain...), " ")
 		}
 		payload["msgtype"] = "markdown"
 		payload["markdown"] = map[string]any{

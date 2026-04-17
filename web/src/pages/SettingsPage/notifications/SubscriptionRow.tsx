@@ -25,6 +25,7 @@ type SubscriptionRowProps = {
     field: "subscribed" | "title" | "body",
     next: NotificationSubscription,
   ) => void;
+  onClearFieldError: (field: "title" | "body") => void;
 };
 
 export default function SubscriptionRow({
@@ -34,6 +35,7 @@ export default function SubscriptionRow({
   titleError,
   bodyError,
   onCommit,
+  onClearFieldError,
 }: SubscriptionRowProps) {
   const placeholders = useMemo(
     () => placeholdersForEvent(eventType),
@@ -149,6 +151,7 @@ export default function SubscriptionRow({
             minRows={2}
             onChange={setTitleDisplay}
             onCommit={commitTitle}
+            onReset={() => onClearFieldError("title")}
             error={titleError ?? null}
           />
           <TemplateEditor
@@ -160,6 +163,7 @@ export default function SubscriptionRow({
             minRows={3}
             onChange={setBodyDisplay}
             onCommit={commitBody}
+            onReset={() => onClearFieldError("body")}
             error={bodyError ?? null}
           />
         </div>

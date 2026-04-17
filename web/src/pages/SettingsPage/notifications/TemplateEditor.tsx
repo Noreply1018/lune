@@ -21,6 +21,7 @@ type TemplateEditorProps = {
   minRows?: number;
   onChange: (nextDisplay: string) => void;
   onCommit: () => void;
+  onReset?: () => void;
   error?: string | null;
 };
 
@@ -33,6 +34,7 @@ export default function TemplateEditor({
   minRows = 2,
   onChange,
   onCommit,
+  onReset,
   error,
 }: TemplateEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -131,6 +133,7 @@ export default function TemplateEditor({
             className="h-8 rounded-full px-2 text-xs text-moon-450 hover:text-moon-700"
             onClick={() => {
               onChange(defaultValue);
+              onReset?.();
               requestAnimationFrame(() => onCommit());
             }}
             disabled={disabled || !canReset}
