@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
   pointerWithin,
   rectIntersection,
@@ -9,6 +10,7 @@ import {
   useSensors,
   type CollisionDetection,
   type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -95,9 +97,10 @@ function SortableMember({
     <div
       ref={setNodeRef}
       style={{
-        transform: CSS.Transform.toString(transform),
+        transform: isDragging ? undefined : CSS.Transform.toString(transform),
         transition,
-        opacity: isDragging ? 0.85 : 1,
+        opacity: isDragging ? 0 : 1,
+        touchAction: "none",
       }}
     >
       {children({ dragging: isDragging, priorityIndex, dragHandleProps: handleProps })}
@@ -119,6 +122,13 @@ export default function DragSortArea({
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const enabledMembers = useMemo(() => members.filter((member) => member.enabled), [members]);
   const disabledMembers = useMemo(() => members.filter((member) => !member.enabled), [members]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const activeMember = activeId ? members.find((m) => String(m.id) === activeId) ?? null : null;
+  const activePriorityIndex = (() => {
+    if (!activeMember?.enabled) return undefined;
+    const idx = enabledMembers.findIndex((m) => m.id === activeMember.id);
+    return idx >= 0 ? idx + 1 : undefined;
+  })();
 
   // Custom collision detection: SortableContext synthesizes oversized rects for items so its
   // own sort strategy works, which makes the last active card "claim" the empty Disabled zone
@@ -148,7 +158,16 @@ export default function DragSortArea({
     return null;
   }
 
+  function handleDragStart(event: DragStartEvent) {
+    setActiveId(String(event.active.id));
+  }
+
+  function handleDragCancel() {
+    setActiveId(null);
+  }
+
   function handleDragEnd(event: DragEndEvent) {
+    setActiveId(null);
     const activeId = String(event.active.id);
     const overId = event.over ? String(event.over.id) : "";
     if (!overId) return;
@@ -177,8 +196,14 @@ export default function DragSortArea({
   }
 
   return (
-    <DndContext sensors={sensors} collisionDetection={collisionDetection} onDragEnd={handleDragEnd}>
-      <div className="grid grid-cols-1 items-stretch gap-5 md:grid-cols-[3fr_1fr]">
+    <DndContext
+      sensors={sensors}
+      collisionDetection={collisionDetection}
+      onDragStart={handleDragStart}
+      onDragCancel={handleDragCancel}
+      onDragEnd={handleDragEnd}
+    >
+      <div className="grid grid-cols-1 items-stretch gap-5 md:grid-cols-[minmax(0,3fr)_minmax(0,1fr)]">
         <DropZone
           id="enabled-drop"
           title="Active Pool"
@@ -229,6 +254,15 @@ export default function DragSortArea({
           </SortableContext>
         </DropZone>
       </div>
+      <DragOverlay dropAnimation={null}>
+        {activeMember
+          ? renderMember(activeMember, {
+              dragging: true,
+              priorityIndex: activePriorityIndex,
+              dragHandleProps: {},
+            })
+          : null}
+      </DragOverlay>
     </DndContext>
   );
 }

@@ -42,7 +42,8 @@ export default function PoolDetailPage() {
       setError("无效的 Pool 路径");
       return;
     }
-    setLoading(true);
+    const isInitial = detail === null;
+    if (isInitial) setLoading(true);
     setError(null);
     Promise.all([
       api.get<PoolDetailResponse>(`/pools/${poolId}`),
@@ -55,7 +56,9 @@ export default function PoolDetailPage() {
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Pool 详情加载失败");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (isInitial) setLoading(false);
+      });
   }
 
   useEffect(() => {

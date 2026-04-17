@@ -95,10 +95,11 @@ export default function AccountCard({
       {isActive && priorityIndex != null ? (
         <span
           className={cn(
-            "absolute right-2 top-2 z-10 flex size-5 items-center justify-center rounded-full bg-moon-100/90 text-[10px] font-semibold text-moon-500",
+            "absolute left-0 top-0 z-10 flex size-5 items-center justify-center rounded-br-[0.9rem] rounded-tl-[1.3rem] bg-lunar-200/70 text-[10px] font-semibold text-lunar-700 shadow-[inset_0_-1px_0_rgba(154,147,201,0.25)]",
             !enabled ? "opacity-60" : "",
           )}
           title={`当前优先级序号 ${priorityIndex}`}
+          aria-hidden
         >
           {priorityIndex}
         </span>
