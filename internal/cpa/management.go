@@ -49,12 +49,15 @@ func NewManagementClient(baseURL, apiKey string) *ManagementClient {
 }
 
 // ListAuthFiles returns all auth files visible to the management key.
+// CPA wraps the list in {"files": [...]}.
 func (c *ManagementClient) ListAuthFiles(ctx context.Context) ([]AuthFile, error) {
-	var out []AuthFile
+	var out struct {
+		Files []AuthFile `json:"files"`
+	}
 	if err := c.doJSON(ctx, http.MethodGet, "/auth-files", nil, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Files, nil
 }
 
 // APICall proxies a single HTTP call through CPA, substituting $TOKEN$ in header

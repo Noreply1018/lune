@@ -172,7 +172,7 @@ func (a *App) Run() error {
 	notifier := notify.NewServiceWithRegistry(a.store, registry)
 
 	// create health checker (needed by admin handler for model discovery)
-	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir, notifier)
+	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, notifier)
 
 	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, hc, notifier)
 

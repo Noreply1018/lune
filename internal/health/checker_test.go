@@ -86,7 +86,7 @@ func TestSendWebhookNotificationsDedupesWithinBackoffWindow(t *testing.T) {
 	defer server.Close()
 	createTestChannel(t, st, server.URL)
 
-	checker := NewChecker(st, cache, "", newTestNotifier(st))
+	checker := NewChecker(st, cache, "", "", newTestNotifier(st))
 
 	if err := st.UpdateAccountHealth(accountID, "error", "boom"); err != nil {
 		t.Fatalf("set account error: %v", err)
@@ -187,7 +187,7 @@ func TestSendWebhookNotificationsRetriesAfterFailure(t *testing.T) {
 	defer server.Close()
 	createTestChannel(t, st, server.URL)
 
-	checker := NewChecker(st, cache, "", newTestNotifier(st))
+	checker := NewChecker(st, cache, "", "", newTestNotifier(st))
 	checker.dispatchSystemNotifications(context.Background())
 	waitFor(t, func() bool { return attempts >= 1 })
 	if attempts != 1 {
@@ -253,7 +253,7 @@ func TestSendWebhookNotificationsSendsSeverityUpgrade(t *testing.T) {
 	}
 	cache.Invalidate()
 
-	checker := NewChecker(st, cache, "", newTestNotifier(st))
+	checker := NewChecker(st, cache, "", "", newTestNotifier(st))
 	checker.dispatchSystemNotifications(context.Background())
 	deliveries, err := st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
 	if err != nil {

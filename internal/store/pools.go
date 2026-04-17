@@ -353,6 +353,7 @@ func scanPoolMemberWithAccount(row rowScanner, m *PoolMember, mEnabled *int) (*A
 		&a.ID, &a.Label, &a.SourceKind, &a.BaseURL, &a.APIKey, &a.Provider,
 		&cpaServiceID, &a.CpaProvider, &a.CpaAccountKey, &a.CpaEmail, &a.CpaPlanType, &a.CpaOpenaiID,
 		&a.CpaExpiredAt, &a.CpaLastRefreshAt, &cpaDisabled,
+		&a.CodexQuotaJSON, &a.CodexQuotaFetchedAt,
 		&aEnabled, &a.Status, &a.Notes, &a.QuotaDisplay, &lastCheckedAt, &a.LastError, &createdAt, &updatedAt,
 	)
 	if err != nil {

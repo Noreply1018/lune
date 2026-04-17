@@ -24,20 +24,22 @@ const (
 )
 
 type Checker struct {
-	store      *store.Store
-	cache      *store.RoutingCache
-	client     *http.Client
-	cpaAuthDir string
-	notifier   *notify.Service
+	store         *store.Store
+	cache         *store.RoutingCache
+	client        *http.Client
+	cpaAuthDir    string
+	managementKey string
+	notifier      *notify.Service
 }
 
-func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir string, notifier *notify.Service) *Checker {
+func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir, managementKey string, notifier *notify.Service) *Checker {
 	return &Checker{
-		store:      st,
-		cache:      cache,
-		client:     &http.Client{Timeout: 15 * time.Second},
-		cpaAuthDir: cpaAuthDir,
-		notifier:   notifier,
+		store:         st,
+		cache:         cache,
+		client:        &http.Client{Timeout: 15 * time.Second},
+		cpaAuthDir:    cpaAuthDir,
+		managementKey: managementKey,
+		notifier:      notifier,
 	}
 }
 
@@ -265,7 +267,14 @@ func (c *Checker) checkCpaService(ctx context.Context, svc *store.CpaService) {
 // next tick retries, so transient hiccups do not cascade into account errors.
 func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 	svc := c.cache.GetCpaServiceSingle()
-	if svc == nil || !svc.Enabled || svc.ManagementKey == "" {
+	if svc == nil || !svc.Enabled {
+		return
+	}
+	managementKey := svc.ManagementKey
+	if managementKey == "" {
+		managementKey = c.managementKey
+	}
+	if managementKey == "" {
 		return
 	}
 
@@ -303,7 +312,7 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 		return
 	}
 
-	client := cpa.NewManagementClient(svc.BaseURL, svc.ManagementKey)
+	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
 	files, err := client.ListAuthFiles(ctx)
 	if err != nil {
 		slog.Warn("fetch codex quotas: list auth-files", "err", err)
