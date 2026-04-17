@@ -20,7 +20,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 7
+const v3SchemaVersion = 8
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     cpa_expired_at      TEXT NOT NULL DEFAULT '',
     cpa_last_refresh_at TEXT NOT NULL DEFAULT '',
     cpa_disabled        INTEGER NOT NULL DEFAULT 0,
+    codex_quota_json    TEXT NOT NULL DEFAULT '',
+    codex_quota_fetched_at TEXT NOT NULL DEFAULT '',
     enabled             INTEGER NOT NULL DEFAULT 1,
     status              TEXT NOT NULL DEFAULT 'unknown',
     notes               TEXT NOT NULL DEFAULT '',
@@ -227,16 +229,27 @@ func (s *Store) migrateV3(dbPath string) error {
 		return nil // already at v3
 	}
 
+	if ver == 7 {
+		slog.Info("migrating schema to v8", "from_version", ver)
+		if err := s.migrateCodexQuotaColumns(); err != nil {
+			return fmt.Errorf("migrate codex quota columns: %w", err)
+		}
+		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
+	}
+
 	if ver == 6 {
-		slog.Info("migrating schema to v7", "from_version", ver)
+		slog.Info("migrating schema to v8", "from_version", ver)
 		if err := s.migrateNotificationRetryConfig(); err != nil {
 			return fmt.Errorf("migrate notification retry config: %w", err)
+		}
+		if err := s.migrateCodexQuotaColumns(); err != nil {
+			return fmt.Errorf("migrate codex quota columns: %w", err)
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
 	}
 
 	if ver == 3 || ver == 4 || ver == 5 {
-		slog.Info("migrating schema to v7", "from_version", ver)
+		slog.Info("migrating schema to v8", "from_version", ver)
 		if err := s.createNotificationSchema(); err != nil {
 			return fmt.Errorf("create notification schema: %w", err)
 		}
@@ -248,6 +261,9 @@ func (s *Store) migrateV3(dbPath string) error {
 		}
 		if err := s.migrateLegacyWebhookChannel(); err != nil {
 			return fmt.Errorf("migrate legacy webhook channel: %w", err)
+		}
+		if err := s.migrateCodexQuotaColumns(); err != nil {
+			return fmt.Errorf("migrate codex quota columns: %w", err)
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
 	}
@@ -475,6 +491,49 @@ func (s *Store) migrateNotificationRetryConfig() error {
 
 	s.schemaMu.Lock()
 	delete(s.schemaCache, "notification_channels")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migrateCodexQuotaColumns() error {
+	// Partial pre-v3 migration paths (and narrowly-scoped tests) may reach here
+	// before an `accounts` table exists. In that case the fresh-schema block
+	// will eventually recreate the table with the columns already baked in, so
+	// there's nothing to alter.
+	exists, err := s.tableExists("accounts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	hasJSON, err := s.hasColumn("accounts", "codex_quota_json")
+	if err != nil {
+		return err
+	}
+	if !hasJSON {
+		if _, err := s.db.Exec(
+			`ALTER TABLE accounts ADD COLUMN codex_quota_json TEXT NOT NULL DEFAULT ''`,
+		); err != nil {
+			return err
+		}
+	}
+
+	hasFetchedAt, err := s.hasColumn("accounts", "codex_quota_fetched_at")
+	if err != nil {
+		return err
+	}
+	if !hasFetchedAt {
+		if _, err := s.db.Exec(
+			`ALTER TABLE accounts ADD COLUMN codex_quota_fetched_at TEXT NOT NULL DEFAULT ''`,
+		); err != nil {
+			return err
+		}
+	}
+
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "accounts")
 	s.schemaMu.Unlock()
 	return nil
 }

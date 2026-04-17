@@ -90,6 +90,7 @@ func (c *Checker) checkAll(ctx context.Context) {
 
 	// sync CPA metadata from auth files
 	c.syncCpaMetadata()
+	c.fetchCodexQuotas(ctx)
 	c.pruneRequestLogs()
 
 	c.cache.Invalidate()
@@ -256,6 +257,119 @@ func (c *Checker) checkCpaService(ctx context.Context, svc *store.CpaService) {
 
 	c.store.UpdateCpaServiceHealth(svc.ID, "healthy", "")
 	c.cache.Invalidate()
+}
+
+// fetchCodexQuotas pulls `wham/usage` through CPA api-call for every enabled
+// Codex account whose `codex_quota_fetched_at` is older than the configured
+// interval, then persists the raw JSON. Failures are logged and skipped — the
+// next tick retries, so transient hiccups do not cascade into account errors.
+func (c *Checker) fetchCodexQuotas(ctx context.Context) {
+	svc := c.cache.GetCpaServiceSingle()
+	if svc == nil || !svc.Enabled || svc.ManagementKey == "" {
+		return
+	}
+
+	interval := syscfg.ParsePositiveInt(
+		c.cache.GetSetting("codex_quota_fetch_interval"),
+		syscfg.DefaultCodexQuotaFetchInterval,
+	)
+	cutoff := time.Now().UTC().Add(-time.Duration(interval) * time.Second)
+	now := time.Now().UTC()
+
+	var targets []store.Account
+	for _, acc := range c.cache.GetAccounts() {
+		if acc.SourceKind != "cpa" || acc.CpaProvider != "codex" {
+			continue
+		}
+		if !acc.Enabled || acc.CpaDisabled {
+			continue
+		}
+		if acc.CpaOpenaiID == "" {
+			continue
+		}
+		if acc.CpaExpiredAt != "" {
+			if exp, err := time.Parse(time.RFC3339, acc.CpaExpiredAt); err == nil && !exp.IsZero() && exp.Before(now) {
+				continue
+			}
+		}
+		if acc.CodexQuotaFetchedAt != "" {
+			if t, err := time.Parse("2006-01-02 15:04:05", acc.CodexQuotaFetchedAt); err == nil && t.After(cutoff) {
+				continue
+			}
+		}
+		targets = append(targets, acc)
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	client := cpa.NewManagementClient(svc.BaseURL, svc.ManagementKey)
+	files, err := client.ListAuthFiles(ctx)
+	if err != nil {
+		slog.Warn("fetch codex quotas: list auth-files", "err", err)
+		return
+	}
+
+	// CPA `auth-files[i].id` is `<cpa_account_key>.json`; strip the suffix to
+	// match Lune's stored `cpa_account_key`.
+	keyToIndex := make(map[string]string, len(files))
+	for _, f := range files {
+		key := strings.TrimSuffix(f.ID, ".json")
+		if key == "" {
+			key = strings.TrimSuffix(f.Name, ".json")
+		}
+		if key == "" || f.AuthIndex == "" {
+			continue
+		}
+		keyToIndex[key] = f.AuthIndex
+	}
+
+	sem := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+	for _, acc := range targets {
+		authIndex, ok := keyToIndex[acc.CpaAccountKey]
+		if !ok || authIndex == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(a store.Account, idx string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			c.fetchOneCodexQuota(ctx, client, a, idx)
+		}(acc, authIndex)
+	}
+	wg.Wait()
+}
+
+func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.ManagementClient, acc store.Account, authIndex string) {
+	header := map[string]string{
+		"Authorization":      "Bearer $TOKEN$",
+		"ChatGPT-Account-Id": acc.CpaOpenaiID,
+	}
+	resp, err := client.APICall(ctx, authIndex, http.MethodGet, "https://chatgpt.com/backend-api/wham/usage", header)
+	if err != nil {
+		slog.Warn("fetch codex quota", "account_id", acc.ID, "err", err)
+		return
+	}
+	if resp.StatusCode != http.StatusOK {
+		slog.Warn("fetch codex quota: non-200", "account_id", acc.ID, "status", resp.StatusCode)
+		return
+	}
+	body := strings.TrimSpace(resp.Body)
+	if body == "" {
+		return
+	}
+	var sanity map[string]any
+	if err := json.Unmarshal([]byte(body), &sanity); err != nil {
+		slog.Warn("fetch codex quota: invalid JSON", "account_id", acc.ID, "err", err)
+		return
+	}
+
+	fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	if err := c.store.UpdateAccountCodexQuota(acc.ID, body, fetchedAt); err != nil {
+		slog.Error("fetch codex quota: persist", "account_id", acc.ID, "err", err)
+	}
 }
 
 func (c *Checker) syncCpaMetadata() {

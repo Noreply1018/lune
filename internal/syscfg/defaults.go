@@ -10,6 +10,7 @@ const (
 	DefaultWebhookEnabled              = false
 	DefaultWebhookURL                  = ""
 	DefaultDataRetentionDays           = 30
+	DefaultCodexQuotaFetchInterval     = 1800
 )
 
 var allowedSettingKeys = map[string]struct{}{
@@ -20,6 +21,7 @@ var allowedSettingKeys = map[string]struct{}{
 	"webhook_enabled":               {},
 	"webhook_url":                   {},
 	"data_retention_days":           {},
+	"codex_quota_fetch_interval":    {},
 }
 
 func IsAllowedSettingKey(key string) bool {

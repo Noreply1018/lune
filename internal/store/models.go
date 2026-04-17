@@ -21,6 +21,10 @@ type Account struct {
 	CpaLastRefreshAt string `json:"cpa_last_refresh_at,omitempty"`
 	CpaDisabled      bool   `json:"cpa_disabled,omitempty"`
 
+	// codex quota snapshot (updated by health loop)
+	CodexQuotaJSON      string `json:"codex_quota_json,omitempty"`
+	CodexQuotaFetchedAt string `json:"codex_quota_fetched_at,omitempty"`
+
 	// common fields
 	Enabled       bool    `json:"enabled"`
 	Status        string  `json:"status"`
