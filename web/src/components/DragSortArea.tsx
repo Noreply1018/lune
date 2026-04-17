@@ -2,16 +2,19 @@ import { useMemo } from "react";
 import {
   DndContext,
   PointerSensor,
-  closestCenter,
+  pointerWithin,
+  rectIntersection,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
   arrayMove,
   rectSortingStrategy,
+  verticalListSortingStrategy,
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -19,41 +22,52 @@ import type { PoolMember } from "@/lib/types";
 
 type Zone = "enabled" | "disabled";
 
+type RenderOptions = {
+  dragging: boolean;
+  priorityIndex?: number;
+  dragHandleProps: React.HTMLAttributes<HTMLDivElement>;
+};
+
 function DropZone({
   id,
   title,
   description,
-  compact = false,
+  tone = "active",
   children,
+  childrenWrapperClassName,
 }: {
   id: string;
   title: string;
   description: string;
-  compact?: boolean;
+  tone?: "active" | "disabled";
   children: React.ReactNode;
+  childrenWrapperClassName?: string;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id });
+  const isActive = tone === "active";
 
   return (
     <section
       ref={setNodeRef}
-      className={`relative overflow-visible rounded-[1.95rem] border transition-colors ${
-        compact
+      className={`relative flex h-full min-h-[28rem] flex-col overflow-visible rounded-[1.6rem] border transition-colors ${
+        isActive
           ? isOver
-            ? "border-lunar-300/65 bg-[linear-gradient(180deg,rgba(248,245,252,0.92),rgba(243,239,249,0.86))]"
-            : "border-moon-200/60 bg-[linear-gradient(180deg,rgba(255,255,255,0.82),rgba(244,241,249,0.76))]"
-          : isOver
-            ? "border-lunar-300/65 bg-[linear-gradient(180deg,rgba(250,247,253,0.94),rgba(243,238,250,0.9))]"
+            ? "border-lunar-300/70 bg-[linear-gradient(180deg,rgba(250,247,253,0.94),rgba(243,238,250,0.9))]"
             : "border-moon-200/60 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(244,241,250,0.82))]"
+          : isOver
+            ? "border-lunar-300/65 border-dashed bg-[linear-gradient(180deg,rgba(247,244,250,0.92),rgba(240,235,247,0.85))]"
+            : "border-moon-200/55 border-dashed bg-[linear-gradient(180deg,rgba(250,248,253,0.78),rgba(243,240,249,0.72))]"
       }`}
     >
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(154,147,201,0.14),transparent_44%)]" />
-      <div className={compact ? "relative px-4 py-4" : "relative px-5 py-5 sm:px-6 sm:py-6"}>
+      {isActive ? (
+        <div className="pointer-events-none absolute inset-0 rounded-[1.6rem] bg-[radial-gradient(circle_at_top_right,rgba(154,147,201,0.14),transparent_44%)]" />
+      ) : null}
+      <div className="relative flex h-full flex-col px-4 py-4 sm:px-5 sm:py-5">
         <div>
           <p className="eyebrow-label">{title}</p>
           <p className="mt-1 text-sm text-moon-500">{description}</p>
         </div>
-        <div className={compact ? "mt-4" : "mt-5"}>{children}</div>
+        <div className={`mt-4 flex-1 ${childrenWrapperClassName ?? ""}`}>{children}</div>
       </div>
     </section>
   );
@@ -61,14 +75,21 @@ function DropZone({
 
 function SortableMember({
   member,
+  priorityIndex,
   children,
 }: {
   member: PoolMember;
-  children: (options: { dragging: boolean }) => React.ReactNode;
+  priorityIndex?: number;
+  children: (options: RenderOptions) => React.ReactNode;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: String(member.id),
   });
+
+  // Only spread the pointer/keyboard listeners onto the card; we deliberately drop
+  // dnd-kit's `attributes` (role="button", tabIndex) so the card doesn't masquerade
+  // as a single button and swallow inner Info/Menu buttons in the accessibility tree.
+  const handleProps = (listeners ?? {}) as React.HTMLAttributes<HTMLDivElement>;
 
   return (
     <div
@@ -76,11 +97,10 @@ function SortableMember({
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
+        opacity: isDragging ? 0.85 : 1,
       }}
-      {...attributes}
-      {...listeners}
     >
-      {children({ dragging: isDragging })}
+      {children({ dragging: isDragging, priorityIndex, dragHandleProps: handleProps })}
     </div>
   );
 }
@@ -92,13 +112,33 @@ export default function DragSortArea({
   onToggleEnabled,
 }: {
   members: PoolMember[];
-  renderMember: (member: PoolMember, options: { dragging: boolean }) => React.ReactNode;
+  renderMember: (member: PoolMember, options: RenderOptions) => React.ReactNode;
   onReorder: (memberIds: number[]) => void;
   onToggleEnabled: (member: PoolMember, enabled: boolean) => void;
 }) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const enabledMembers = useMemo(() => members.filter((member) => member.enabled), [members]);
   const disabledMembers = useMemo(() => members.filter((member) => !member.enabled), [members]);
+
+  // Custom collision detection: SortableContext synthesizes oversized rects for items so its
+  // own sort strategy works, which makes the last active card "claim" the empty Disabled zone
+  // when measured purely by item rects. We instead anchor on the section's droppable id, then
+  // only return items that actually belong to that zone — guaranteeing cross-zone drops fire.
+  const collisionDetection: CollisionDetection = (args) => {
+    const pointerHits = pointerWithin(args);
+    const zoneHit = pointerHits.find(
+      (hit) => hit.id === "enabled-drop" || hit.id === "disabled-drop",
+    );
+    if (zoneHit) {
+      const zoneMembers = zoneHit.id === "enabled-drop" ? enabledMembers : disabledMembers;
+      const memberIds = new Set(zoneMembers.map((member) => String(member.id)));
+      const itemHits = pointerHits.filter((hit) => memberIds.has(String(hit.id)));
+      if (itemHits.length > 0) return itemHits;
+      return [zoneHit];
+    }
+    if (pointerHits.length > 0) return pointerHits;
+    return rectIntersection(args);
+  };
 
   function findZone(id: string): Zone | null {
     if (enabledMembers.some((member) => String(member.id) === id)) return "enabled";
@@ -136,47 +176,78 @@ export default function DragSortArea({
   }
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <div className="space-y-6">
+    <DndContext sensors={sensors} collisionDetection={collisionDetection} onDragEnd={handleDragEnd}>
+      <div className="grid grid-cols-1 items-stretch gap-5 md:grid-cols-[3fr_1fr]">
         <DropZone
           id="enabled-drop"
-          title="Active Order"
-          description="拖拽排列顺序即路由优先级。"
+          title="Active Pool"
+          description="左右拖拽即调整路由优先级，越靠前的账号优先承接请求。"
         >
-          <SortableContext items={enabledMembers.map((member) => String(member.id))} strategy={rectSortingStrategy}>
-            <div className="flex min-h-[25rem] flex-col gap-4">
-              {enabledMembers.map((member) => (
-                <SortableMember key={member.id} member={member}>
-                  {(options) => renderMember(member, options)}
-                </SortableMember>
-              ))}
-            </div>
+          <SortableContext
+            items={enabledMembers.map((member) => String(member.id))}
+            strategy={rectSortingStrategy}
+          >
+            {enabledMembers.length === 0 ? (
+              <EmptyDropHint label="把账号拖进来以启用" />
+            ) : (
+              <div
+                className="grid gap-3"
+                style={{ gridTemplateColumns: "repeat(auto-fill, minmax(15.5rem, 1fr))" }}
+              >
+                {enabledMembers.map((member, index) => (
+                  <SortableMember key={member.id} member={member} priorityIndex={index + 1}>
+                    {(options) => renderMember(member, options)}
+                  </SortableMember>
+                ))}
+              </div>
+            )}
           </SortableContext>
         </DropZone>
 
         <DropZone
           id="disabled-drop"
           title="Disabled Dock"
-          description="拖入这里可停用账号，仍保留可见性和测试入口。"
-          compact
+          description="拖到这里即停用，仍保留账号信息以便随时启用。"
+          tone="disabled"
         >
-          <SortableContext items={disabledMembers.map((member) => String(member.id))} strategy={rectSortingStrategy}>
-            <div className="flex flex-col gap-4">
-              {disabledMembers.length === 0 ? (
-                <div className="rounded-[1.3rem] border border-dashed border-moon-200/70 px-4 py-6 text-sm text-moon-400">
-                  这里还没有停用账号。
-                </div>
-              ) : (
-                disabledMembers.map((member) => (
+          <SortableContext
+            items={disabledMembers.map((member) => String(member.id))}
+            strategy={verticalListSortingStrategy}
+          >
+            {disabledMembers.length === 0 ? (
+              <EmptyDropHint label="拖账号到这里即停用" tone="disabled" />
+            ) : (
+              <div className="flex flex-col gap-2.5">
+                {disabledMembers.map((member) => (
                   <SortableMember key={member.id} member={member}>
                     {(options) => renderMember(member, options)}
                   </SortableMember>
-                ))
-              )}
-            </div>
+                ))}
+              </div>
+            )}
           </SortableContext>
         </DropZone>
       </div>
     </DndContext>
+  );
+}
+
+function EmptyDropHint({
+  label,
+  tone = "active",
+}: {
+  label: string;
+  tone?: "active" | "disabled";
+}) {
+  return (
+    <div
+      className={`flex h-full min-h-[10rem] items-center justify-center rounded-[1.2rem] border border-dashed px-4 py-6 text-center text-sm ${
+        tone === "active"
+          ? "border-moon-300/60 bg-white/40 text-moon-400"
+          : "border-moon-300/55 bg-white/30 text-moon-400"
+      }`}
+    >
+      {label}
+    </div>
   );
 }

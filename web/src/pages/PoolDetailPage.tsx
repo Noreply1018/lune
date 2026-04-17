@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import AccountCard from "@/components/AccountCard";
+import AccountDetailSheet from "@/components/AccountDetailSheet";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import DragSortArea from "@/components/DragSortArea";
 import EmptyState from "@/components/EmptyState";
@@ -30,6 +31,7 @@ export default function PoolDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PoolMember | null>(null);
+  const [detailMemberId, setDetailMemberId] = useState<number | null>(null);
   const [connectTokenValue, setConnectTokenValue] = useState<string | null>(null);
   const [revealedTokenCache, setRevealedTokenCache] = useState<Record<number, string>>({});
   const [revealedGlobalToken, setRevealedGlobalToken] = useState<string | null>(null);
@@ -78,6 +80,10 @@ export default function PoolDetailPage() {
     return map;
   }, [statsByAccount]);
   const health = pool ? getPoolHealth(pool) : "degraded";
+  const detailMember = useMemo(
+    () => (detailMemberId == null ? null : members.find((m) => m.id === detailMemberId) ?? null),
+    [detailMemberId, members],
+  );
 
   useEffect(() => {
     setConnectTokenValue(null);
@@ -183,7 +189,7 @@ export default function PoolDetailPage() {
     <div className="space-y-7 pb-6">
       <PageHeader
         title={pool.label}
-        description="这里是当前 Pool 的账号编排面。把稳定账号放前面，把临时停用的账号收进下方停泊区。"
+        description="左边是 Active Pool，拖动卡片即可调整路由优先级；右侧停泊区收纳临时停用的账号。"
         meta={
           <>
             <span className="inline-flex items-center gap-2">
@@ -216,15 +222,35 @@ export default function PoolDetailPage() {
           <AccountCard
             key={member.id}
             member={member}
+            variant={member.enabled ? "active" : "disabled"}
+            priorityIndex={options.priorityIndex}
             dragging={options.dragging}
+            dragHandleProps={options.dragHandleProps}
             requests={accountRequestMap.get(member.account_id) ?? 0}
-            compactLayout={!member.enabled}
-            resolveToken={getTokenForConnect}
+            onOpenDetails={() => setDetailMemberId(member.id)}
             onToggleEnabled={() => toggleMember(member, !member.enabled)}
             onDelete={() => setDeleteTarget(member)}
             onRefreshModels={() => refreshModels(member)}
           />
         )}
+      />
+      <AccountDetailSheet
+        member={detailMember}
+        requests={detailMember ? accountRequestMap.get(detailMember.account_id) ?? 0 : 0}
+        resolveToken={getTokenForConnect}
+        onOpenChange={(open) => {
+          if (!open) setDetailMemberId(null);
+        }}
+        onToggleEnabled={() => {
+          if (!detailMember) return;
+          toggleMember(detailMember, !detailMember.enabled);
+        }}
+        onDelete={() => {
+          if (!detailMember) return;
+          setDeleteTarget(detailMember);
+          setDetailMemberId(null);
+        }}
+        onRefreshModels={() => detailMember && refreshModels(detailMember)}
       />
       <ConfirmDialog
         open={Boolean(deleteTarget)}

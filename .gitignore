@@ -14,6 +14,10 @@
 tmp/
 wget-log
 audit-*.png
+# Stray screenshots dropped at repo root by playwright / manual captures
+/*.png
+/*.jpg
+/*.jpeg
 
 # Local config
 lune.yaml
