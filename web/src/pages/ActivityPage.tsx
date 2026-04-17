@@ -34,6 +34,13 @@ type UsageBundle = {
 
 type NotificationStatusFilter = "all" | "success" | "failed" | "dropped" | "test";
 
+function initialNotificationChannelFilter() {
+  if (typeof window === "undefined") {
+    return "all";
+  }
+  return window.location.search ? new URLSearchParams(window.location.search).get("channel_id") || "all" : "all";
+}
+
 type TrendBucket = {
   key: string;
   label: string;
@@ -346,7 +353,9 @@ export default function ActivityPage() {
   const [notificationChannels, setNotificationChannels] = useState<NotificationChannel[]>([]);
   const [notificationEventTypes, setNotificationEventTypes] = useState<NotificationEventType[]>([]);
   const [notificationDeliveries, setNotificationDeliveries] = useState<NotificationDelivery[]>([]);
-  const [notificationFilterChannel, setNotificationFilterChannel] = useState("all");
+  const [notificationFilterChannel, setNotificationFilterChannel] = useState(
+    initialNotificationChannelFilter,
+  );
   const [notificationFilterEvent, setNotificationFilterEvent] = useState("all");
   const [notificationFilterStatus, setNotificationFilterStatus] =
     useState<NotificationStatusFilter>("all");

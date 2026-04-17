@@ -53,6 +53,7 @@ func (o *Outbox) processDue(ctx context.Context) {
 		ch, ok := channelsByID[item.ChannelID]
 		if !ok {
 			_ = o.store.DeleteNotificationOutbox(item.ID)
+			o.itemMu.Delete(item.ID)
 			continue
 		}
 		if err := o.AttemptOne(ctx, item, ch, true); err != nil {
@@ -81,6 +82,7 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 	}
 	mu := o.itemMutex(item.ID)
 	mu.Lock()
+	defer o.releaseItemMutex(item.ID)
 	defer mu.Unlock()
 	current, err := o.store.GetNotificationOutbox(item.ID)
 	if err != nil {
@@ -169,6 +171,16 @@ func (o *Outbox) fail(item store.NotificationOutbox, channel store.NotificationC
 func (o *Outbox) itemMutex(outboxID int64) *sync.Mutex {
 	actual, _ := o.itemMu.LoadOrStore(outboxID, &sync.Mutex{})
 	return actual.(*sync.Mutex)
+}
+
+func (o *Outbox) releaseItemMutex(outboxID int64) {
+	current, err := o.store.GetNotificationOutbox(outboxID)
+	if err != nil {
+		return
+	}
+	if current == nil || current.Status == "success" || current.Status == "dropped" {
+		o.itemMu.Delete(outboxID)
+	}
 }
 
 func channelRetryMaxAttempts(channel store.NotificationChannel) int {

@@ -324,6 +324,13 @@ func TestImportConfigCreatesPoolsSkipsExistingTokensAndIgnoresAdminToken(t *test
 
 func TestUpdateSettingsIgnoresDeprecatedNotificationFlags(t *testing.T) {
 	st := newTestStore(t)
+	if err := st.UpdateSettings(map[string]string{
+		"notification_error_enabled":     "true",
+		"notification_expiring_enabled":  "true",
+		"notification_expiring_days":     "9",
+	}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
 	cache := store.NewRoutingCache(st)
 	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
 
@@ -346,11 +353,11 @@ func TestUpdateSettingsIgnoresDeprecatedNotificationFlags(t *testing.T) {
 	if settings["notification_expiring_days"] != "5" {
 		t.Fatalf("expected supported setting to persist, got %q", settings["notification_expiring_days"])
 	}
-	if _, ok := settings["notification_error_enabled"]; ok {
-		t.Fatalf("expected deprecated notification_error_enabled to be ignored")
+	if settings["notification_error_enabled"] != "true" {
+		t.Fatalf("expected deprecated notification_error_enabled to remain untouched, got %q", settings["notification_error_enabled"])
 	}
-	if _, ok := settings["notification_expiring_enabled"]; ok {
-		t.Fatalf("expected deprecated notification_expiring_enabled to be ignored")
+	if settings["notification_expiring_enabled"] != "true" {
+		t.Fatalf("expected deprecated notification_expiring_enabled to remain untouched, got %q", settings["notification_expiring_enabled"])
 	}
 }
 
@@ -498,6 +505,29 @@ func TestCreateNotificationChannelRejectsUnknownType(t *testing.T) {
 		"type":"bogus",
 		"enabled":true,
 		"config":{"password":"secret"}
+	}`))
+	rr := httptest.NewRecorder()
+
+	handler.createNotificationChannel(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateNotificationChannelRejectsInvalidSubscriptionSeverity(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/notifications/channels", bytes.NewBufferString(`{
+		"name":"Ops",
+		"type":"generic_webhook",
+		"enabled":false,
+		"config":{"url":"https://example.com/webhook"},
+		"subscriptions":[{"event":"account_error","min_severity":"fatal"}]
 	}`))
 	rr := httptest.NewRecorder()
 

@@ -1,7 +1,5 @@
 import { Plus } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-
 import { CHANNEL_TYPE_META, type ChannelType } from "./types";
 
 export default function EmptyState({
@@ -22,7 +20,7 @@ export default function EmptyState({
           <button
             key={type}
             type="button"
-            className="group rounded-[1.35rem] border border-white/75 bg-white/78 px-4 py-4 text-left shadow-[0_20px_50px_-44px_rgba(33,40,63,0.28)] transition hover:-translate-y-0.5 hover:border-lunar-300/45"
+            className="group rounded-[1.35rem] border border-white/75 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(247,244,250,0.76))] px-4 py-4 text-left shadow-[0_20px_50px_-44px_rgba(33,40,63,0.28)] transition hover:-translate-y-0.5 hover:border-lunar-300/45"
             onClick={() => onCreate(type as ChannelType)}
           >
             <div className="flex items-center justify-between gap-3">
@@ -36,14 +34,11 @@ export default function EmptyState({
             <p className="mt-3 text-sm leading-6 text-moon-500">
               {meta.description}
             </p>
+            <p className="mt-4 text-xs tracking-[0.16em] text-moon-350">
+              CREATE CHANNEL
+            </p>
           </button>
         ))}
-      </div>
-      <div className="mt-5">
-        <Button variant="outline" className="rounded-full" disabled>
-          <Plus className="size-4" />
-          选择一种类型开始
-        </Button>
       </div>
     </div>
   );

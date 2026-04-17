@@ -311,4 +311,20 @@ INSERT INTO notification_channels (name, type, enabled, config, subscriptions) V
 	if !foundAttempts || !foundSchedule {
 		t.Fatalf("expected retry columns after migration, attempts=%v schedule=%v", foundAttempts, foundSchedule)
 	}
+
+	var (
+		retryMaxAttempts int
+		retrySchedule    string
+	)
+	if err := st.DB().QueryRow(
+		`SELECT retry_max_attempts, retry_schedule_seconds FROM notification_channels WHERE name = 'ops'`,
+	).Scan(&retryMaxAttempts, &retrySchedule); err != nil {
+		t.Fatalf("query migrated retry values: %v", err)
+	}
+	if retryMaxAttempts != 5 {
+		t.Fatalf("expected retry_max_attempts backfilled to 5, got %d", retryMaxAttempts)
+	}
+	if retrySchedule != "[30,120,600,1800,7200]" {
+		t.Fatalf("expected retry_schedule_seconds backfilled to defaults, got %q", retrySchedule)
+	}
 }

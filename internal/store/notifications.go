@@ -680,7 +680,9 @@ func scanNotificationChannel(scanner interface {
 	}
 	ch.Enabled = enabled != 0
 	ch.Config = json.RawMessage(configRaw)
-	if err := json.Unmarshal([]byte(subscriptionsRaw), &ch.Subscriptions); err != nil {
+	if strings.TrimSpace(subscriptionsRaw) == "" || strings.TrimSpace(subscriptionsRaw) == "null" {
+		ch.Subscriptions = []NotificationSubscription{}
+	} else if err := json.Unmarshal([]byte(subscriptionsRaw), &ch.Subscriptions); err != nil {
 		return nil, fmt.Errorf("decode subscriptions: %w", err)
 	}
 	ch.RetryMaxAttempts = intOrDefault(retryMaxAttempts, 5)

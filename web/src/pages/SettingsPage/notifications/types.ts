@@ -181,10 +181,7 @@ export function makeChannelDraft(
 ): NotificationChannelDraft {
   return {
     ...channel,
-    subscriptions:
-      channel.subscriptions.length > 0
-        ? channel.subscriptions
-        : [DEFAULT_SUBSCRIPTION],
+    subscriptions: normalizeSubscriptions(channel.subscriptions),
     config: decodeChannelConfig(channel.type, channel.config),
     preservedSecrets: decodePreservedSecrets(channel.type, channel.config),
     retry_max_attempts: channel.retry_max_attempts || 5,
@@ -201,10 +198,7 @@ export function buildChannelPayload(draft: NotificationChannelDraft) {
     type: draft.type,
     enabled: draft.enabled,
     config: buildChannelConfig(draft),
-    subscriptions:
-      draft.subscriptions.filter((item) => item.event.trim()).length > 0
-        ? draft.subscriptions.filter((item) => item.event.trim())
-        : [DEFAULT_SUBSCRIPTION],
+    subscriptions: normalizeSubscriptions(draft.subscriptions),
     title_template: draft.title_template.trim(),
     body_template: draft.body_template.trim(),
     retry_max_attempts: draft.retry_max_attempts,
@@ -277,6 +271,24 @@ export function parseRetryInput(value: string) {
 
 export function retryInputValue(values: number[]) {
   return values.join(", ");
+}
+
+export function normalizeSubscriptions(values: NotificationSubscription[]) {
+  const seen = new Set<string>();
+  return values.reduce<NotificationSubscription[]>((result, item) => {
+    const event = item.event?.trim() || "";
+    if (!event || seen.has(event)) {
+      return result;
+    }
+    seen.add(event);
+    result.push({
+      event,
+      min_severity: item.min_severity || "info",
+      title_template: item.title_template?.trim() || "",
+      body_template: item.body_template?.trim() || "",
+    });
+    return result;
+  }, []);
 }
 
 function decodeChannelConfig(

@@ -19,20 +19,15 @@ export default function TestPanel({
   onRun: () => void;
 }) {
   return (
-    <section className="space-y-3">
+    <section className="space-y-3 rounded-[1.2rem] border border-amber-200/55 bg-[linear-gradient(180deg,rgba(255,251,235,0.88),rgba(255,247,237,0.72))] px-4 py-4">
       <div className="space-y-1">
         <p className="text-sm font-medium text-moon-800">测试发送</p>
         <p className="text-xs leading-5 text-moon-400">
-          会真实发送一条测试消息到当前 channel，先确认再执行。
+          会真实发送一条测试消息到当前 channel。按钮样式刻意更重，避免和无副作用的预览混淆。
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <Button
-          variant="outline"
-          className="rounded-full"
-          onClick={onRun}
-          disabled={loading}
-        >
+        <Button className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={onRun} disabled={loading}>
           {loading ? (
             <RefreshCw className="size-4 animate-spin" />
           ) : (

@@ -37,7 +37,7 @@ export default function PreviewPanel({
   onRun: () => void;
 }) {
   return (
-    <section className="space-y-3">
+    <section className="space-y-3 rounded-[1.2rem] border border-moon-200/55 bg-[linear-gradient(180deg,rgba(255,255,255,0.86),rgba(245,243,249,0.7))] px-4 py-4">
       <div className="space-y-1">
         <p className="text-sm font-medium text-moon-800">渲染预览</p>
         <p className="text-xs leading-5 text-moon-400">

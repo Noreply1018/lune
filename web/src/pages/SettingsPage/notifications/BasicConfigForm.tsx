@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useRouter } from "@/lib/router";
 import { cn } from "@/lib/utils";
 
 import { CHANNEL_TYPE_META, SECRET_PLACEHOLDER } from "./types";
@@ -22,6 +23,7 @@ export default function BasicConfigForm({
   const [revealedFields, setRevealedFields] = useState<Record<string, boolean>>(
     {},
   );
+  const { navigate } = useRouter();
   const meta = CHANNEL_TYPE_META[draft.type];
 
   return (
@@ -33,12 +35,13 @@ export default function BasicConfigForm({
             类型固定不变，其余字段失焦后自动保存。
           </p>
         </div>
-        <a
-          href="/admin/activity"
+        <button
+          type="button"
           className="text-sm text-moon-500 underline underline-offset-4"
+          onClick={() => navigate(`/admin/activity?channel_id=${draft.id}`)}
         >
           查看 Activity
-        </a>
+        </button>
       </div>
 
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_12rem]">

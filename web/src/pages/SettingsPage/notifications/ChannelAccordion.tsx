@@ -10,9 +10,12 @@ export default function ChannelAccordion({
   draft,
   eventTypes,
   expiringDays,
+  expiringDaysError,
   togglingId,
   savingField,
-  error,
+  saveError,
+  deleteError,
+  deletingId,
   onExpand,
   onToggleEnabled,
   onDraftChange,
@@ -26,9 +29,12 @@ export default function ChannelAccordion({
   draft: NotificationChannelDraft | null;
   eventTypes: NotificationEventType[];
   expiringDays: number;
+  expiringDaysError: string | null;
   togglingId: number | null;
   savingField: string | null;
-  error: string | null;
+  saveError: string | null;
+  deleteError: string | null;
+  deletingId: number | null;
   onExpand: (id: number | null) => void;
   onToggleEnabled: (id: number, enabled: boolean) => void;
   onDraftChange: (next: NotificationChannelDraft) => void;
@@ -38,15 +44,22 @@ export default function ChannelAccordion({
   onRefresh: () => Promise<void>;
 }) {
   const rowRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const previousExpandedId = useRef<number | null>(null);
 
   useEffect(() => {
     if (expandedId == null) {
+      previousExpandedId.current = expandedId;
+      return;
+    }
+    if (previousExpandedId.current == null) {
+      previousExpandedId.current = expandedId;
       return;
     }
     rowRefs.current[expandedId]?.scrollIntoView({
       block: "start",
       behavior: "smooth",
     });
+    previousExpandedId.current = expandedId;
   }, [expandedId]);
 
   return (
@@ -88,8 +101,11 @@ export default function ChannelAccordion({
                       draft={draft}
                       eventTypes={eventTypes}
                       expiringDays={expiringDays}
+                      expiringDaysError={expiringDaysError}
                       savingField={savingField}
-                      error={error}
+                      saveError={saveError}
+                      deleteError={deleteError}
+                      deleting={deletingId === channel.id}
                       onDraftChange={onDraftChange}
                       onCommit={onCommit}
                       onSaveExpiringDays={onSaveExpiringDays}

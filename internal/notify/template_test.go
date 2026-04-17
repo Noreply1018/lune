@@ -71,3 +71,28 @@ func TestRenderChannelNotificationFallsBackToWildcardSubscriptionOverride(t *tes
 		t.Fatalf("unexpected wildcard render: %+v", rendered)
 	}
 }
+
+func TestRenderChannelNotificationPrefersExactSubscriptionOverWildcard(t *testing.T) {
+	n := Notification{
+		Event:    "account_error",
+		Severity: "critical",
+		Title:    "Broken",
+		Message:  "boom",
+	}
+	channel := store.NotificationChannel{
+		TitleTemplate: "channel {{ .Title }}",
+		BodyTemplate:  "channel {{ .Message }}",
+		Subscriptions: []store.NotificationSubscription{
+			{Event: "*", TitleTemplate: "wild {{ .Title }}", BodyTemplate: "wild {{ .Message }}"},
+			{Event: "account_error", TitleTemplate: "exact {{ .Title }}", BodyTemplate: "exact {{ .Message }}"},
+		},
+	}
+
+	rendered, err := RenderChannelNotification(n, channel)
+	if err != nil {
+		t.Fatalf("render with exact + wildcard override: %v", err)
+	}
+	if rendered.Title != "exact Broken" || rendered.Body != "exact boom" {
+		t.Fatalf("expected exact override to win over wildcard, got %+v", rendered)
+	}
+}

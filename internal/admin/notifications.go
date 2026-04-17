@@ -93,9 +93,6 @@ func (h *Handler) createNotificationChannel(w http.ResponseWriter, r *http.Reque
 		webutil.WriteAdminError(w, 400, "bad_request", "name and type are required")
 		return
 	}
-	if len(req.Subscriptions) == 0 {
-		req.Subscriptions = []store.NotificationSubscription{{Event: "*"}}
-	}
 	var err error
 	req.Subscriptions, err = normalizeSubscriptions(req.Subscriptions)
 	if err != nil {
@@ -113,13 +110,13 @@ func (h *Handler) createNotificationChannel(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	channel := &store.NotificationChannel{
-		Name:          strings.TrimSpace(req.Name),
-		Type:          req.Type,
-		Enabled:       req.Enabled,
-		Config:        encodedConfig,
-		Subscriptions: req.Subscriptions,
-		TitleTemplate: req.TitleTemplate,
-		BodyTemplate:  req.BodyTemplate,
+		Name:             strings.TrimSpace(req.Name),
+		Type:             req.Type,
+		Enabled:          req.Enabled,
+		Config:           encodedConfig,
+		Subscriptions:    req.Subscriptions,
+		TitleTemplate:    strings.TrimSpace(req.TitleTemplate),
+		BodyTemplate:     strings.TrimSpace(req.BodyTemplate),
 		RetryMaxAttempts: retryMaxAttempts,
 		RetrySchedule:    retrySchedule,
 	}
@@ -164,9 +161,6 @@ func (h *Handler) updateNotificationChannel(w http.ResponseWriter, r *http.Reque
 		webutil.WriteAdminError(w, 400, "bad_request", "name and type are required")
 		return
 	}
-	if len(req.Subscriptions) == 0 {
-		req.Subscriptions = []store.NotificationSubscription{{Event: "*"}}
-	}
 	req.Subscriptions, err = normalizeSubscriptions(req.Subscriptions)
 	if err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", err.Error())
@@ -191,8 +185,8 @@ func (h *Handler) updateNotificationChannel(w http.ResponseWriter, r *http.Reque
 	existing.Enabled = req.Enabled
 	existing.Config = encodedConfig
 	existing.Subscriptions = req.Subscriptions
-	existing.TitleTemplate = req.TitleTemplate
-	existing.BodyTemplate = req.BodyTemplate
+	existing.TitleTemplate = strings.TrimSpace(req.TitleTemplate)
+	existing.BodyTemplate = strings.TrimSpace(req.BodyTemplate)
 	existing.RetryMaxAttempts = retryMaxAttempts
 	existing.RetrySchedule = retrySchedule
 	if err := h.store.UpdateNotificationChannel(id, existing); err != nil {
@@ -381,7 +375,7 @@ func (h *Handler) notificationChannelResponse(ch store.NotificationChannel) (not
 
 func normalizeSubscriptions(input []store.NotificationSubscription) ([]store.NotificationSubscription, error) {
 	if len(input) == 0 {
-		return []store.NotificationSubscription{{Event: "*"}}, nil
+		return []store.NotificationSubscription{}, nil
 	}
 	out := make([]store.NotificationSubscription, 0, len(input))
 	seen := make(map[string]struct{}, len(input))
@@ -393,6 +387,9 @@ func normalizeSubscriptions(input []store.NotificationSubscription) ([]store.Not
 		if item.Event == "" {
 			continue
 		}
+		if item.MinSeverity != "" && item.MinSeverity != "info" && item.MinSeverity != "warning" && item.MinSeverity != "critical" {
+			return nil, errors.New("min_severity must be info, warning, or critical")
+		}
 		if _, ok := seen[item.Event]; ok {
 			return nil, errors.New("duplicate subscription events are not allowed")
 		}
@@ -400,7 +397,7 @@ func normalizeSubscriptions(input []store.NotificationSubscription) ([]store.Not
 		out = append(out, item)
 	}
 	if len(out) == 0 {
-		return []store.NotificationSubscription{{Event: "*"}}, nil
+		return []store.NotificationSubscription{}, nil
 	}
 	return out, nil
 }

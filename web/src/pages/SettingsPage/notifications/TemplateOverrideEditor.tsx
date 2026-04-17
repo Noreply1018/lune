@@ -3,6 +3,7 @@ export default function TemplateOverrideEditor({
   mode,
   value,
   defaultValue,
+  defaultLabel = "当前默认",
   onModeChange,
   onValueChange,
   onBlur,
@@ -11,6 +12,7 @@ export default function TemplateOverrideEditor({
   mode: "default" | "custom";
   value: string;
   defaultValue: string;
+  defaultLabel?: string;
   onModeChange: (value: "default" | "custom") => void;
   onValueChange: (value: string) => void;
   onBlur?: () => void;
@@ -47,19 +49,28 @@ export default function TemplateOverrideEditor({
         </label>
       </div>
       {mode === "custom" ? (
-        <textarea
-          value={value}
-          onChange={(event) => onValueChange(event.target.value)}
-          onBlur={onBlur}
-          className="min-h-28 w-full rounded-[1rem] border border-moon-200/65 bg-white/82 px-3 py-3 text-sm text-moon-700 outline-none transition focus:border-lunar-300/70"
-        />
+        <div className="space-y-3 rounded-[1.1rem] border border-moon-200/55 bg-white/86 px-3 py-3">
+          <textarea
+            value={value}
+            onChange={(event) => onValueChange(event.target.value)}
+            onBlur={onBlur}
+            className="min-h-28 w-full rounded-[0.95rem] border border-moon-200/65 bg-white px-3 py-3 text-sm text-moon-700 outline-none transition focus:border-lunar-300/70"
+          />
+          <div className="rounded-[0.95rem] border border-moon-200/55 bg-moon-50/78 px-3 py-3">
+            <p className="text-[11px] tracking-[0.16em] text-moon-350">
+              {defaultLabel}
+            </p>
+            <pre className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-moon-500">
+              {defaultValue || "--"}
+            </pre>
+          </div>
+        </div>
       ) : null}
-      <div className="rounded-[1rem] border border-moon-200/55 bg-moon-50/78 px-3 py-3">
-        <p className="text-[11px] tracking-[0.16em] text-moon-350">DEFAULT</p>
-        <pre className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-moon-500">
-          {defaultValue || "--"}
-        </pre>
-      </div>
+      {mode === "default" ? (
+        <div className="rounded-[1rem] border border-dashed border-moon-200/55 bg-moon-50/62 px-3 py-3 text-sm text-moon-500">
+          使用默认模板。保存后会回退到{defaultLabel}。
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -1,6 +1,11 @@
 import { ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { relativeTime } from "@/lib/fmt";
 import { cn } from "@/lib/utils";
 
@@ -29,9 +34,11 @@ export default function ChannelRow({
       <button
         type="button"
         className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        aria-label={`${channel.name}，${expanded ? "收起通知详情" : "展开通知详情"}`}
         onClick={onToggleExpand}
       >
         <span
+          aria-hidden="true"
           className={cn(
             "size-2.5 shrink-0 rounded-full shadow-[0_0_0_4px_rgba(255,255,255,0.7)]",
             deliveryTone(channel.last_delivery),
@@ -52,44 +59,66 @@ export default function ChannelRow({
             </span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-moon-450">
-            <span>
+            <span aria-hidden="true">
               {channel.last_delivery
-                ? `最近 ${relativeTime(channel.last_delivery.created_at)} ${formatDeliverySummary(channel.last_delivery)}`
+                ? `最近 ${relativeTime(channel.last_delivery.created_at)} · ${formatDeliverySummary(channel.last_delivery)}`
                 : "尚未投递"}
             </span>
-            <span>{channel.enabled ? "Enabled" : "Disabled"}</span>
+            <span className="rounded-full bg-moon-100/70 px-2 py-0.5 text-[11px] tracking-[0.12em] text-moon-500">
+              {channel.enabled ? "ACTIVE" : "PAUSED"}
+            </span>
           </div>
           {channel.recent_deliveries?.length ? (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               {channel.recent_deliveries.slice(0, 5).map((item, index) => (
-                <span
-                  key={`${item.created_at}-${index}`}
-                  className="rounded-full border border-moon-200/55 bg-white/82 px-2.5 py-1 text-[11px] text-moon-500"
-                >
-                  {formatDeliverySummary(item)} · {relativeTime(item.created_at)}
-                </span>
+                <Tooltip key={`${item.created_at}-${index}`}>
+                  <TooltipTrigger
+                    render={
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "size-2.5 rounded-full border border-white/80 shadow-[0_0_0_4px_rgba(255,255,255,0.62)]",
+                          deliveryTone(item),
+                        )}
+                      />
+                    }
+                  />
+                  <TooltipContent>
+                    {formatDeliverySummary(item)} · {relativeTime(item.created_at)}
+                  </TooltipContent>
+                </Tooltip>
               ))}
             </div>
           ) : null}
         </div>
         {expanded ? (
-          <ChevronUp className="size-4 shrink-0 text-moon-400" />
+          <ChevronUp className="size-4 shrink-0 text-moon-400" aria-hidden="true" />
         ) : (
-          <ChevronDown className="size-4 shrink-0 text-moon-400" />
+          <ChevronDown className="size-4 shrink-0 text-moon-400" aria-hidden="true" />
         )}
       </button>
 
-      <div className="flex shrink-0 items-center gap-2 rounded-full border border-moon-200/60 bg-white/88 px-3 py-1.5">
+      <div className="flex shrink-0 items-center gap-2 rounded-full border border-moon-200/60 bg-white/88 px-2 py-1.5 sm:px-3">
         {toggling ? (
           <RefreshCw className="size-3.5 animate-spin text-moon-400" />
         ) : null}
-        <span className="text-[11px] tracking-[0.14em] text-moon-400">
-          Enabled
+        <span className="sr-only">{channel.enabled ? "停用通知渠道" : "启用通知渠道"}</span>
+        <span
+          aria-hidden="true"
+          className={cn(
+            "rounded-full px-2 py-0.5 text-[11px] tracking-[0.14em]",
+            channel.enabled
+              ? "bg-emerald-100/90 text-emerald-700"
+              : "bg-moon-100/80 text-moon-500",
+          )}
+        >
+          {channel.enabled ? "On" : "Off"}
         </span>
         <Switch
           checked={channel.enabled}
           onCheckedChange={onToggleEnabled}
           disabled={toggling}
+          aria-label={channel.enabled ? "停用通知渠道" : "启用通知渠道"}
         />
       </div>
     </div>

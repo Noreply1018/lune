@@ -3,7 +3,7 @@ import { Plus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 import SubscriptionChip from "./SubscriptionChip";
-import { DEFAULT_SUBSCRIPTION, eventLabel } from "./types";
+import { DEFAULT_SUBSCRIPTION, eventLabel, normalizeSubscriptions } from "./types";
 import type {
   NotificationEventType,
   NotificationSubscription,
@@ -13,6 +13,7 @@ export default function SubscriptionList({
   subscriptions,
   eventTypes,
   expiringDays,
+  expiringDaysError,
   saving,
   onChange,
   onSaveExpiringDays,
@@ -20,13 +21,17 @@ export default function SubscriptionList({
   subscriptions: NotificationSubscription[];
   eventTypes: NotificationEventType[];
   expiringDays: number;
+  expiringDaysError?: string | null;
   saving?: boolean;
   onChange: (value: NotificationSubscription[]) => void;
   onSaveExpiringDays: (value: number) => void;
 }) {
   const currentEvents = subscriptions.map((item) => item.event);
   const nextAddEvent =
-    eventTypes.find((item) => !currentEvents.includes(item.event))?.event ?? null;
+    eventTypes.find((item) => !currentEvents.includes(item.event))?.event ??
+    (!currentEvents.includes(DEFAULT_SUBSCRIPTION.event)
+      ? DEFAULT_SUBSCRIPTION.event
+      : null);
 
   return (
     <section className="space-y-3">
@@ -34,7 +39,7 @@ export default function SubscriptionList({
         <div className="space-y-1">
           <p className="text-sm font-medium text-moon-800">订阅事件</p>
           <p className="text-xs leading-5 text-moon-400">
-            以 chip 管理事件、最低严重级别和模板覆盖；关闭编辑层时自动保存。
+            以 chip 管理事件、最低严重级别和模板覆盖。允许留空；留空时该 channel 只保留配置，不接收任何事件。
           </p>
         </div>
         <Button
@@ -58,7 +63,7 @@ export default function SubscriptionList({
         </Button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {subscriptions.map((item, index) => (
+        {subscriptions.length ? subscriptions.map((item, index) => (
           <SubscriptionChip
             key={`${item.event}-${index}`}
             subscription={item}
@@ -67,26 +72,37 @@ export default function SubscriptionList({
             expiringDays={expiringDays}
             onSave={(value) =>
               onChange(
-                subscriptions.map((entry, entryIndex) =>
-                  entryIndex === index ? value : entry,
+                normalizeSubscriptions(
+                  subscriptions.map((entry, entryIndex) =>
+                    entryIndex === index ? value : entry,
+                  ),
                 ),
               )
             }
             onRemove={() =>
               onChange(
-                subscriptions.length === 1
-                  ? [DEFAULT_SUBSCRIPTION]
-                  : subscriptions.filter((_, entryIndex) => entryIndex !== index),
+                subscriptions.filter((_, entryIndex) => entryIndex !== index),
               )
             }
             onSaveExpiringDays={onSaveExpiringDays}
           />
-        ))}
+        )) : (
+          <div className="rounded-[1rem] border border-dashed border-moon-200/60 px-3 py-3 text-sm text-moon-450">
+            当前没有事件订阅。这个 channel 不会接收任何通知，直到你添加一条订阅。
+          </div>
+        )}
         {saving ? <RefreshCw className="size-4 animate-spin text-moon-350" /> : null}
       </div>
       <div className="text-xs leading-5 text-moon-400">
-        {subscriptions.map((item) => eventLabel(eventTypes, item.event)).join(" / ")}
+        {subscriptions.length
+          ? subscriptions.map((item) => eventLabel(eventTypes, item.event)).join(" / ")
+          : "无订阅"}
       </div>
+      {expiringDaysError ? (
+        <div className="rounded-[0.95rem] border border-status-red/18 bg-status-red/6 px-3 py-2 text-xs text-status-red">
+          {expiringDaysError}
+        </div>
+      ) : null}
     </section>
   );
 }

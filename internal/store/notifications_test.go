@@ -154,3 +154,28 @@ func TestNotificationChannelDefaultsRetryConfigWhenMissing(t *testing.T) {
 		t.Fatalf("expected missing subscription template fields to decode as zero values, got %+v", channels[0].Subscriptions[0])
 	}
 }
+
+func TestNotificationChannelHandlesNullSubscriptionsJSON(t *testing.T) {
+	st := newNotificationStore(t)
+
+	if _, err := st.DB().Exec(
+		`INSERT INTO notification_channels (name, type, enabled, config, subscriptions, title_template, body_template, retry_max_attempts, retry_schedule_seconds)
+		 VALUES ('null-subs', 'generic_webhook', 1, '{}', 'null', '', '', 5, '[30,120,600,1800,7200]')`,
+	); err != nil {
+		t.Fatalf("seed null subscriptions channel: %v", err)
+	}
+
+	channel, err := st.GetNotificationChannel(1)
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+	if channel == nil {
+		t.Fatalf("expected channel to exist")
+	}
+	if channel.Subscriptions == nil {
+		t.Fatalf("expected subscriptions to decode to empty slice, got nil")
+	}
+	if len(channel.Subscriptions) != 0 {
+		t.Fatalf("expected empty subscriptions for null JSON, got %+v", channel.Subscriptions)
+	}
+}
