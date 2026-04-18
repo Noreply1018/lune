@@ -678,7 +678,7 @@ export default function SettingsPage() {
                       : "尚未检查"
                   }
                 />
-                <div className="flex items-end justify-end sm:col-start-2">
+                <div className="flex items-end justify-start sm:col-start-1">
                   <Button
                     variant="outline"
                     size="sm"
