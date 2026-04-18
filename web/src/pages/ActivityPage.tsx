@@ -1690,52 +1690,61 @@ export default function ActivityPage() {
           description="顺着一条请求往下查问题。"
         />
 
-        <div className="mt-5 flex flex-wrap items-center gap-3">
-          <Select
-            value={filterPool}
-            onValueChange={(value) => setFilterPool(value ?? "all")}
-          >
-            <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
-              <SelectValue placeholder="全部 Pool" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部 Pool</SelectItem>
-              {pools.map((pool) => (
-                <SelectItem key={pool.id} value={String(pool.id)}>
-                  {pool.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select
-            value={filterStatus}
-            onValueChange={(value) => setFilterStatus(value ?? "all")}
-          >
-            <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
-              <SelectValue placeholder="全部状态" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
-              <SelectItem value="success">成功</SelectItem>
-              <SelectItem value="error">失败</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={filterModel}
-            onValueChange={(value) => setFilterModel(value ?? "all")}
-          >
-            <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
-              <SelectValue placeholder="全部模型" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部模型</SelectItem>
-              {modelOptions.map((model) => (
-                <SelectItem key={model} value={model}>
-                  {model}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-moon-500">Pool</span>
+            <Select
+              value={filterPool}
+              onValueChange={(value) => setFilterPool(value ?? "all")}
+            >
+              <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
+                <SelectValue placeholder="全部" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                {pools.map((pool) => (
+                  <SelectItem key={pool.id} value={String(pool.id)}>
+                    {pool.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-moon-500">状态</span>
+            <Select
+              value={filterStatus}
+              onValueChange={(value) => setFilterStatus(value ?? "all")}
+            >
+              <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
+                <SelectValue placeholder="全部" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                <SelectItem value="success">成功</SelectItem>
+                <SelectItem value="error">失败</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-moon-500">模型</span>
+            <Select
+              value={filterModel}
+              onValueChange={(value) => setFilterModel(value ?? "all")}
+            >
+              <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
+                <SelectValue placeholder="全部" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部</SelectItem>
+                {modelOptions.map((model) => (
+                  <SelectItem key={model} value={model}>
+                    {model}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           {/* Active-request chip — shows only when the list is narrowed down
               to a single request via TopErrors "跳到一次样本" or a
               #logs-<rid> hash link. Gives the user a way to back out of
