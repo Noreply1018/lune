@@ -62,7 +62,6 @@ export default function PoolDetailPage() {
   const flashTimersRef = useRef<Map<number, number>>(new Map());
   const selfCheckingRef = useRef(false);
   const revealInFlightRef = useRef<Set<number>>(new Set());
-  const scrollRetryRef = useRef<number | null>(null);
 
   const load = useCallback(() => {
     if (!hasValidPoolId) {
@@ -106,10 +105,6 @@ export default function PoolDetailPage() {
     return () => {
       flashTimersRef.current.forEach((id) => window.clearTimeout(id));
       flashTimersRef.current.clear();
-      if (scrollRetryRef.current) {
-        window.clearTimeout(scrollRetryRef.current);
-        scrollRetryRef.current = null;
-      }
     };
   }, []);
 
@@ -332,30 +327,13 @@ export default function PoolDetailPage() {
   }
 
   function jumpToTokenInSettings(tokenId: number) {
-    navigate("/admin/settings");
     // Custom router stores pathname without hash; replaceState afterwards so
     // the URL is shareable without confusing pathname matching in App.tsx.
+    // Scroll + highlight are owned by SettingsPage's hash effect — this
+    // component unmounts as soon as the route changes, so any scroll retry
+    // scheduled here would get cleaned up before the token DOM exists.
+    navigate("/admin/settings");
     window.history.replaceState(null, "", `/admin/settings#access-token-${tokenId}`);
-    // Cancel any pending retry chain from a prior jump so we don't keep
-    // timers alive after the component unmounts or the user re-triggers.
-    if (scrollRetryRef.current) {
-      window.clearTimeout(scrollRetryRef.current);
-      scrollRetryRef.current = null;
-    }
-    let attempts = 0;
-    const tryScroll = () => {
-      scrollRetryRef.current = null;
-      const el = document.getElementById(`access-token-${tokenId}`);
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        return;
-      }
-      if (attempts < 20) {
-        attempts += 1;
-        scrollRetryRef.current = window.setTimeout(tryScroll, 60);
-      }
-    };
-    tryScroll();
   }
 
   async function runSelfCheck() {

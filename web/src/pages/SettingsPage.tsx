@@ -192,32 +192,60 @@ export default function SettingsPage() {
     settingsRef.current = settings;
   }, [settings]);
 
-  // Honor `#access-token-<id>` in the URL so PoolDetailPage can deep-link to
-  // a specific token row. PoolDetailPage takes care of scroll-into-view (it
-  // knows the target id); we only own the transient highlight state here.
-  // Timer is managed via ref so that re-triggering the same id (user clicks
-  // the jump link twice in quick succession) resets the fade-out countdown
-  // instead of letting the old timer carry over — which would otherwise
-  // clear the highlight earlier than the full 2.6s.
+  // Honor `#access-token-<id>` and `#token-management` deep links so other
+  // pages (PoolDetailPage's disabled-token jump) can land us on the right row.
+  // Scroll is owned here because the sender unmounts as soon as the route
+  // changes — a retry scheduled in the sender would get cleaned up before
+  // the token DOM even exists. Scroll target is the Token Management section
+  // itself so the section heading stays visible above the highlighted row.
   const highlightTimerRef = useRef<number | null>(null);
+  const scrollRetryRef = useRef<number | null>(null);
   useEffect(() => {
-    function readHash() {
-      const match = window.location.hash.match(/^#access-token-(\d+)$/);
-      if (!match) return;
-      setHighlightedTokenId(Number(match[1]));
-      if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
-      highlightTimerRef.current = window.setTimeout(() => {
-        setHighlightedTokenId(null);
-        highlightTimerRef.current = null;
-      }, 2600);
+    function handleHash() {
+      const hash = window.location.hash;
+      const tokenMatch = hash.match(/^#access-token-(\d+)$/);
+      const tokenId = tokenMatch ? Number(tokenMatch[1]) : null;
+      const wantsSection = hash === "#token-management" || tokenId != null;
+      if (!wantsSection) return;
+
+      if (tokenId != null) {
+        setHighlightedTokenId(tokenId);
+        if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = window.setTimeout(() => {
+          setHighlightedTokenId(null);
+          highlightTimerRef.current = null;
+        }, 2600);
+      }
+
+      if (scrollRetryRef.current) window.clearTimeout(scrollRetryRef.current);
+      let attempts = 0;
+      const tryScroll = () => {
+        scrollRetryRef.current = null;
+        const section = document.getElementById("token-management");
+        if (section) {
+          section.scrollIntoView({ behavior: "smooth", block: "start" });
+          return;
+        }
+        if (attempts < 20) {
+          attempts += 1;
+          scrollRetryRef.current = window.setTimeout(tryScroll, 60);
+        }
+      };
+      tryScroll();
     }
-    readHash();
-    window.addEventListener("hashchange", readHash);
+    handleHash();
+    window.addEventListener("hashchange", handleHash);
     return () => {
-      window.removeEventListener("hashchange", readHash);
+      window.removeEventListener("hashchange", handleHash);
       if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+      if (scrollRetryRef.current) window.clearTimeout(scrollRetryRef.current);
     };
-  }, []);
+    // Re-run once loading flips to false: the #token-management section is
+    // gated on !loading, so a cold mount with a hash attempts scrolling
+    // against a skeleton-only DOM and the 1.2s retry window can lapse before
+    // data arrives on slower networks. Re-triggering on loading transitions
+    // guarantees the scroll fires against the real section.
+  }, [loading]);
 
   const poolNameMap = useMemo(
     () => Object.fromEntries(pools.map((pool) => [pool.id, pool.label])),
@@ -750,7 +778,7 @@ export default function SettingsPage() {
         }
       />
 
-      <section className="surface-section px-5 py-5 sm:px-6">
+      <section id="token-management" className="surface-section px-5 py-5 sm:px-6 scroll-mt-6">
         <SectionHeading
           title="Token Management"
           description="集中管理全局与 Pool 访问凭证。"
