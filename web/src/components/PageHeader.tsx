@@ -36,7 +36,7 @@ export default function PageHeader({
           {ornament}
         </div>
       )}
-      <div className="min-w-0 space-y-3">
+      <div className="min-w-0 flex-1 space-y-3">
         {eyebrow && (
           <p className="eyebrow-label">
             {eyebrow}

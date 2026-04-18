@@ -545,13 +545,14 @@ export default function PoolDetailPage() {
         metaEnd={
           <>
             {primaryPoolToken ? (
-              // inline-flex flex-wrap + basis-full on the disabled link lets the
-              // "已禁用 · ..." warning drop onto its own visual row tucked under
-              // the token, instead of pushing Env/QR off-line or forcing the
-              // whole metaEnd group to wrap as a single orphaned block.
-              <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+              // Keep the token chip single-line so Env/QR buttons sit cleanly
+              // beside it. Disabled state is compressed into a short pill with
+              // a tooltip carrying the full guidance; this avoids the previous
+              // attempt where basis-full forced the chip into two lines and
+              // left the icon buttons floating at vertical mid-height.
+              <span className="inline-flex items-center gap-1.5">
                 <span
-                  className={`size-2 rounded-full ${
+                  className={`size-2 shrink-0 rounded-full ${
                     primaryPoolToken.enabled ? "bg-status-green" : "bg-moon-400"
                   }`}
                   aria-hidden
@@ -566,9 +567,10 @@ export default function PoolDetailPage() {
                   <button
                     type="button"
                     onClick={() => jumpToTokenInSettings(primaryPoolToken.id)}
-                    className="basis-full text-status-yellow hover:underline"
+                    title="Token 已禁用 · 前往 Settings 启用"
+                    className="shrink-0 rounded-full border border-status-yellow/55 bg-status-yellow/10 px-2 py-0.5 text-[11px] font-medium text-status-yellow hover:bg-status-yellow/18"
                   >
-                    已禁用 · 前往 Settings 启用 →
+                    已禁用 ↗
                   </button>
                 ) : null}
               </span>
