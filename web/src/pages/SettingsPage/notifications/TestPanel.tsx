@@ -17,9 +17,10 @@ type TestPanelProps = {
   onRun: () => void;
 };
 
-// TestPanel renders a self-contained card meant to sit in the top two-column
-// strip next to the "启用通知" switch; it owns the action button plus the
-// latest result line.
+// Inline test row: action button + result/hint text, laid out horizontally.
+// Meant to sit as the last element in the "渠道" tab, under a divider. The
+// old card wrapper was dropped when Notifications was split into tabs — the
+// button no longer needs to visually match a sibling "启用" card.
 export default function TestPanel({
   loading,
   result,
@@ -28,7 +29,7 @@ export default function TestPanel({
   onRun,
 }: TestPanelProps) {
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-[1rem] border border-white/75 bg-white/75 px-4 py-3">
+    <div className="flex flex-wrap items-center gap-3">
       <Button
         className="rounded-full bg-lunar-500 text-white hover:bg-lunar-600 focus-visible:ring-2 focus-visible:ring-lunar-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
         onClick={onRun}

@@ -10,10 +10,12 @@ import { ArrowUpRight } from "lucide-react";
 import { toast } from "@/components/Feedback";
 import SectionHeading from "@/components/SectionHeading";
 import { api, ApiError } from "@/lib/api";
+import { Switch } from "@/components/ui/switch";
 
 import ExpiringDaysInput from "./ExpiringDaysInput";
 import SettingsForm from "./SettingsForm";
 import SubscriptionsTable from "./SubscriptionsTable";
+import Tabs from "./Tabs";
 import TestPanel, { type TestResult } from "./TestPanel";
 import type {
   NotificationEventType,
@@ -31,6 +33,13 @@ type NotificationsSectionProps = {
   initialExpiringDays: number;
   onExpiringDaysChange: (value: number) => void;
 };
+
+type TabKey = "channel" | "subscriptions";
+
+const TABS = [
+  { key: "channel" as const, label: "渠道" },
+  { key: "subscriptions" as const, label: "订阅事件" },
+];
 
 export default function NotificationsSection({
   initialExpiringDays,
@@ -60,6 +69,7 @@ export default function NotificationsSection({
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [expiringDays, setExpiringDays] = useState(initialExpiringDays);
   const [expiringDaysError, setExpiringDaysError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabKey>("channel");
 
   // Sequence guards: rapid PUT bursts can return out of order, and we must
   // not let an older response stomp newer state. Each commit path owns its
@@ -349,64 +359,121 @@ export default function NotificationsSection({
           ) : null}
 
           {settings ? (
-            <SettingsForm
-              settings={settings}
-              webhookUrlDraft={webhookUrlDraft}
-              onWebhookUrlDraftChange={setWebhookUrlDraft}
-              saving={settingsSaving}
-              urlError={settingsUrlError}
-              onChange={setSettings}
-              onCommit={(next) => {
-                // Swallow here — commitSettings already surfaced the toast and
-                // reloaded server truth. We re-throw inside so `runTest` can
-                // short-circuit, but SettingsForm doesn't need to know.
-                commitSettings(next).catch(() => {});
-              }}
-              testSlot={
-                <TestPanel
-                  loading={testLoading}
-                  result={testResult}
-                  disabled={!canTest}
-                  disabledReason={testDisabledReason}
-                  onRun={() => void runTest()}
-                />
-              }
-            />
-          ) : null}
-
-          {eventTypes.length ? (
-            <SubscriptionsTable
-              subscriptions={subscriptions}
-              eventTypes={eventTypes}
-              savingField={rowSavingField}
-              fieldErrors={rowErrors}
-              onCommit={(event, field, next) =>
-                void commitSubscription(event, field, next)
-              }
-              onClearFieldError={clearSingleFieldError}
-              renderExtra={(event) =>
-                event === "account_expiring" ? (
-                  <ExpiringDaysInput
-                    value={expiringDays}
-                    error={expiringDaysError}
-                    onCommit={(next) => void saveExpiringDays(next)}
-                    onClearError={() => setExpiringDaysError(null)}
+            <>
+              {/* Top strip: global enable switch (stays outside Tabs because
+                  it applies to both tabs) + the "view deliveries" shortcut.
+                  Mirroring the pre-tab layout's 2-col grid keeps the switch
+                  visually anchored where users expect it. */}
+              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                <div className="flex items-center justify-between gap-4 rounded-[1rem] border border-white/75 bg-white/75 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-moon-800">启用通知</p>
+                    <p className="text-xs leading-5 text-moon-400">
+                      关闭后所有事件都不再投递，已配置的企微信息保留。
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.enabled}
+                    disabled={settingsSaving}
+                    onCheckedChange={(checked) => {
+                      // Fold any pending URL draft into this commit so toggling
+                      // the switch never silently re-validates against a stale
+                      // URL.
+                      const trimmedUrl = webhookUrlDraft.trim();
+                      const next = {
+                        ...settings,
+                        enabled: checked,
+                        webhook_url: trimmedUrl,
+                      };
+                      setSettings(next);
+                      commitSettings(next).catch(() => {});
+                    }}
                   />
-                ) : null
-              }
-            />
-          ) : null}
+                </div>
+                <a
+                  href="/admin/settings#notification-history"
+                  onClick={jumpToDeliveries}
+                  className="inline-flex items-center justify-end gap-1.5 text-sm font-medium text-lunar-600 hover:text-lunar-700 sm:justify-start"
+                >
+                  查看最近投递
+                  <ArrowUpRight className="size-3.5" />
+                </a>
+              </div>
 
-          <div className="flex justify-end">
-            <a
-              href="/admin/settings#notification-history"
-              onClick={jumpToDeliveries}
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-lunar-600 hover:text-lunar-700"
-            >
-              查看最近投递
-              <ArrowUpRight className="size-3.5" />
-            </a>
-          </div>
+              {!settings.enabled ? (
+                <div className="rounded-[0.9rem] border border-amber-200/70 bg-amber-50/85 px-3 py-2 text-xs text-amber-800">
+                  通知已关闭。订阅和模板仍可编辑，开启后立刻生效。
+                </div>
+              ) : null}
+
+              <Tabs<TabKey>
+                tabs={TABS}
+                active={activeTab}
+                onChange={setActiveTab}
+                ariaLabel="通知配置"
+                panels={{
+                  channel: (
+                    <div className="space-y-5">
+                      <SettingsForm
+                        settings={settings}
+                        webhookUrlDraft={webhookUrlDraft}
+                        onWebhookUrlDraftChange={setWebhookUrlDraft}
+                        saving={settingsSaving}
+                        urlError={settingsUrlError}
+                        onChange={setSettings}
+                        onCommit={(next) => {
+                          // Swallow here — commitSettings already surfaced the
+                          // toast and reloaded server truth.
+                          commitSettings(next).catch(() => {});
+                        }}
+                      />
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3">
+                          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-moon-400">
+                            测试
+                          </span>
+                          <div className="h-px flex-1 bg-moon-200/55" />
+                        </div>
+                        <TestPanel
+                          loading={testLoading}
+                          result={testResult}
+                          disabled={!canTest}
+                          disabledReason={testDisabledReason}
+                          onRun={() => void runTest()}
+                        />
+                      </div>
+                    </div>
+                  ),
+                  subscriptions: eventTypes.length ? (
+                    <SubscriptionsTable
+                      subscriptions={subscriptions}
+                      eventTypes={eventTypes}
+                      savingField={rowSavingField}
+                      fieldErrors={rowErrors}
+                      onCommit={(event, field, next) =>
+                        void commitSubscription(event, field, next)
+                      }
+                      onClearFieldError={clearSingleFieldError}
+                      renderExtra={(event) =>
+                        event === "account_expiring" ? (
+                          <ExpiringDaysInput
+                            value={expiringDays}
+                            error={expiringDaysError}
+                            onCommit={(next) => void saveExpiringDays(next)}
+                            onClearError={() => setExpiringDaysError(null)}
+                          />
+                        ) : null
+                      }
+                    />
+                  ) : (
+                    <div className="rounded-[1.25rem] border border-dashed border-moon-200/55 px-5 py-6 text-sm text-moon-450">
+                      还没有可订阅的事件类型。
+                    </div>
+                  ),
+                }}
+              />
+            </>
+          ) : null}
         </div>
       </div>
     </section>
