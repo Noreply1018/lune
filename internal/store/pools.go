@@ -120,6 +120,56 @@ func (s *Store) CreatePool(label string, priority int, enabled bool) (int64, err
 	return res.LastInsertId()
 }
 
+// CreatePoolWithDefaultToken creates a pool and a default pool-scoped access
+// token in the same transaction. The token name is derived from `label` with a
+// `-default` suffix so listings in Settings stay legible. Returns the new pool
+// ID and token ID. Note: `access_tokens.name` is NOT unique, and for a brand
+// new pool there is no pre-existing token to collide with, so this always
+// succeeds for the happy path. The only real failure modes are the usual
+// transaction errors (I/O, token-value UNIQUE collision from rand failure).
+func (s *Store) CreatePoolWithDefaultToken(label string, priority int, enabled bool) (poolID, tokenID int64, err error) {
+	tok, err := generateToken()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	poolRes, err := tx.Exec(
+		`INSERT INTO pools (label, priority, enabled) VALUES (?, ?, ?)`,
+		label, priority, enabled,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	poolID, err = poolRes.LastInsertId()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	tokenName := label + "-default"
+	tokRes, err := tx.Exec(
+		`INSERT INTO access_tokens (name, token, pool_id, enabled) VALUES (?, ?, ?, ?)`,
+		tokenName, tok, poolID, true,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	tokenID, err = tokRes.LastInsertId()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return poolID, tokenID, nil
+}
+
 func (s *Store) UpdatePool(id int64, label string, priority int, enabled bool) error {
 	_, err := s.db.Exec(
 		`UPDATE pools SET label=?, priority=?, enabled=?, updated_at=datetime('now') WHERE id=?`,

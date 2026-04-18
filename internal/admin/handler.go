@@ -456,7 +456,7 @@ func (h *Handler) createPool(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "label is required")
 		return
 	}
-	id, err := h.store.CreatePool(req.Label, req.Priority, true)
+	id, _, err := h.store.CreatePoolWithDefaultToken(req.Label, req.Priority, true)
 	if err != nil {
 		h.internalError(w, err)
 		return

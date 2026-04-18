@@ -3,6 +3,7 @@ import { KeyRound, QrCode, ShieldCheck } from "lucide-react";
 import AccountCard from "@/components/AccountCard";
 import AccountDetailSheet from "@/components/AccountDetailSheet";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import CopyButton from "@/components/CopyButton";
 import DragSortArea from "@/components/DragSortArea";
 import EmptyState from "@/components/EmptyState";
 import EnvSnippetsDialog from "@/components/EnvSnippetsDialog";
@@ -60,6 +61,7 @@ export default function PoolDetailPage() {
   const hasLoadedRef = useRef(false);
   const flashTimersRef = useRef<Map<number, number>>(new Map());
   const selfCheckingRef = useRef(false);
+  const revealInFlightRef = useRef<Set<number>>(new Set());
 
   const load = useCallback(() => {
     if (!hasValidPoolId) {
@@ -111,7 +113,14 @@ export default function PoolDetailPage() {
   const stats = detail?.stats;
   const poolTokens = ensureArray(detail?.tokens);
   const statsByAccount = ensureArray(stats?.by_account);
-  const primaryPoolTokenId = poolTokens.find((token) => token.enabled)?.id ?? null;
+  // Prefer the first enabled pool-scoped token; if every token is disabled we
+  // still surface the first one so the user sees the masked value plus a
+  // warning, rather than an empty slot that looks like "nothing configured".
+  const primaryPoolToken = useMemo(
+    () => poolTokens.find((t) => t.enabled) ?? poolTokens[0] ?? null,
+    [poolTokens],
+  );
+  const primaryPoolTokenId = primaryPoolToken?.id ?? null;
   const poolTokenCacheKey = useMemo(
     () => poolTokens.map((token) => `${token.id}:${token.enabled ? 1 : 0}`).join("|"),
     [poolTokens],
@@ -160,8 +169,11 @@ export default function PoolDetailPage() {
 
   const baseUrl = getApiBaseUrl();
   const hasConnectToken = Boolean(primaryPoolTokenId) || Boolean(overview?.global_token_id);
-  const maskedConnectToken = primaryPoolTokenId
-    ? poolTokens.find((t) => t.id === primaryPoolTokenId)?.token_masked ?? "—"
+  const primaryTokenRevealed = primaryPoolTokenId
+    ? revealedTokenCache[primaryPoolTokenId] ?? null
+    : null;
+  const primaryTokenDisplay = primaryPoolToken
+    ? primaryTokenRevealed ?? primaryPoolToken.token_masked
     : overview?.global_token_masked ?? "未配置全局 Token";
   const firstPoolModel = useMemo(() => {
     for (const member of enabledMembers) {
@@ -171,10 +183,42 @@ export default function PoolDetailPage() {
     return ensureArray(pool?.models)[0];
   }, [enabledMembers, pool]);
 
+  // When the set of tokens or their enabled flags change, drop the "connect"
+  // choice so the next Env Snippets / QR open re-picks a still-enabled token.
+  // We do NOT wipe revealedTokenCache — entries are keyed by token id and
+  // remain valid across enabled-toggles (toggling doesn't change the value).
+  // Wiping would create a cross-effect stale-state trap: the reveal effect
+  // below, reading its own render's closure, would see the pre-wipe cache
+  // and skip re-fetch while the UI falls back to masked.
   useEffect(() => {
     setConnectTokenValue(null);
-    setRevealedTokenCache({});
   }, [poolTokenCacheKey]);
+
+  // Auto-reveal the primary token so the meta row shows the full value without
+  // an extra gesture. Fires when primaryPoolTokenId changes (including initial
+  // mount). revealInFlightRef de-duplicates the React.StrictMode double-mount.
+  useEffect(() => {
+    if (!primaryPoolTokenId) return;
+    if (revealedTokenCache[primaryPoolTokenId]) return;
+    if (revealInFlightRef.current.has(primaryPoolTokenId)) return;
+    const tokenId = primaryPoolTokenId;
+    revealInFlightRef.current.add(tokenId);
+    let cancelled = false;
+    revealPoolToken(tokenId)
+      .catch((err) => {
+        if (cancelled) return;
+        toast(err instanceof Error ? err.message : "读取 Token 失败", "error");
+      })
+      .finally(() => {
+        revealInFlightRef.current.delete(tokenId);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // revealPoolToken is a new closure each render but the in-flight ref and
+    // cache checks above make re-invocation safe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primaryPoolTokenId]);
 
   useEffect(() => {
     setRevealedGlobalToken(null);
@@ -445,14 +489,7 @@ export default function PoolDetailPage() {
     return <ErrorState message="Pool 不存在或已被删除。" onRetry={load} />;
   }
 
-  if (!members.length) {
-    return (
-      <EmptyState
-        title={`${pool.label} 还没有账号。`}
-        description="当前页面已经收敛为账号编排面。先从全局入口添加账号，再回来排序、停用和调整优先级。"
-      />
-    );
-  }
+  const isEmpty = members.length === 0;
 
   return (
     <div className="space-y-7 pb-6">
@@ -513,13 +550,39 @@ export default function PoolDetailPage() {
             <span>{pool.routable_account_count} 可用</span>
             <span>24h 请求 {compact(stats?.total_requests ?? 0)}</span>
             <span>成功率 {pct(stats?.success_rate ?? 0)}</span>
-            <span className="truncate text-moon-400" title={maskedConnectToken}>
-              Token {maskedConnectToken}
-            </span>
+            {primaryPoolToken ? (
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  className={`size-2 rounded-full ${
+                    primaryPoolToken.enabled ? "bg-status-green" : "bg-moon-400"
+                  }`}
+                  aria-hidden
+                />
+                <code className="rounded bg-moon-100/80 px-1.5 py-0.5 font-mono text-[12px] text-moon-700">
+                  {primaryTokenDisplay}
+                </code>
+                {primaryTokenRevealed ? (
+                  <CopyButton value={primaryTokenRevealed} />
+                ) : null}
+                {!primaryPoolToken.enabled ? (
+                  <span className="text-status-yellow">已禁用 · 前往 Settings 启用</span>
+                ) : null}
+              </span>
+            ) : (
+              <span className="truncate text-moon-400" title={primaryTokenDisplay}>
+                Token {primaryTokenDisplay}
+              </span>
+            )}
           </>
         }
       />
 
+      {isEmpty ? (
+        <EmptyState
+          title={`${pool.label} 还没有账号。`}
+          description="当前页面已经收敛为账号编排面。先从全局入口添加账号，再回来排序、停用和调整优先级。"
+        />
+      ) : (
       <DragSortArea
         members={members}
         onReorder={reorderMembers}
@@ -546,6 +609,7 @@ export default function PoolDetailPage() {
           );
         }}
       />
+      )}
 
       <AccountDetailSheet
         member={detailMember}

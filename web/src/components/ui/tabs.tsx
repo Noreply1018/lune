@@ -30,7 +30,7 @@ function TabsTab({ className, ...props }: TabsPrimitive.Tab.Props) {
     <TabsPrimitive.Tab
       data-slot="tabs-tab"
       className={cn(
-        "relative z-10 inline-flex h-8 items-center justify-center rounded-full px-3.5 text-[12.5px] font-medium text-moon-500 transition-colors hover:text-moon-700 focus-visible:outline-none data-[selected]:text-moon-800 data-disabled:cursor-not-allowed data-disabled:opacity-55",
+        "relative z-10 inline-flex h-8 items-center justify-center rounded-full px-3.5 text-[12.5px] font-medium text-moon-500 transition-colors hover:text-moon-700 focus-visible:outline-none data-[selected]:text-moon-800 data-[selected]:font-semibold data-disabled:cursor-not-allowed data-disabled:opacity-55",
         className,
       )}
       {...props}
@@ -43,7 +43,7 @@ function TabsIndicator({ className, ...props }: TabsPrimitive.Indicator.Props) {
     <TabsPrimitive.Indicator
       data-slot="tabs-indicator"
       className={cn(
-        "absolute left-0 top-0 z-0 h-[var(--active-tab-height)] w-[var(--active-tab-width)] translate-x-[var(--active-tab-left)] translate-y-[var(--active-tab-top)] rounded-full bg-white shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_14px_30px_-22px_rgba(33,40,63,0.25)] transition-[transform,width,height] duration-200 ease-out",
+        "absolute left-0 top-0 z-0 h-[var(--active-tab-height)] w-[var(--active-tab-width)] translate-x-[var(--active-tab-left)] translate-y-[var(--active-tab-top)] rounded-full bg-lunar-200/40 shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_10px_24px_-20px_rgba(134,125,193,0.45)] transition-[transform,width,height] duration-200 ease-out",
         className,
       )}
       {...props}
