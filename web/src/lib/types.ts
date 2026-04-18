@@ -26,6 +26,10 @@ export interface Account {
   cpa_disabled: boolean;
   codex_quota_json?: string;
   codex_quota_fetched_at?: string;
+  probe_models: string[];
+  last_probe_status?: "" | "healthy" | "degraded" | "error";
+  last_probe_at?: string | null;
+  last_probe_error?: string;
   runtime: {
     base_url: string;
     auth_mode: string;

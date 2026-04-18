@@ -74,6 +74,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("POST /admin/api/accounts/{id}/discover-models", h.discoverModels)
 	handle("GET /admin/api/accounts/{id}/models", h.getAccountModels)
 
+	// Self-check configuration + result (direct accounts)
+	handle("PUT /admin/api/accounts/{id}/probe-models", h.updateProbeModels)
+	handle("POST /admin/api/accounts/{id}/probe-result", h.recordProbeResult)
+
 	// Pools
 	handle("GET /admin/api/pools", h.listPools)
 	handle("POST /admin/api/pools", h.createPool)
@@ -343,6 +347,89 @@ func (h *Handler) getAccountModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	webutil.WriteData(w, 200, map[string]any{"models": models})
+}
+
+// updateProbeModels replaces the user-configured probe-model list on an
+// account. The frontend sends the entire desired list every save, so we do a
+// simple overwrite — no append/remove semantics.
+func (h *Handler) updateProbeModels(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Models []string `json:"models"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	acc, err := h.store.GetAccount(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if acc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "account not found")
+		return
+	}
+	// De-duplicate and strip blanks so the stored list is canonical; the UI is
+	// free to send noisy input.
+	seen := make(map[string]bool, len(req.Models))
+	cleaned := make([]string, 0, len(req.Models))
+	for _, m := range req.Models {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		cleaned = append(cleaned, m)
+	}
+	if err := h.store.UpdateAccountProbeModels(id, cleaned); err != nil {
+		h.internalError(w, err)
+		return
+	}
+	h.cache.Invalidate()
+	webutil.WriteData(w, 200, map[string]any{"probe_models": cleaned})
+}
+
+// recordProbeResult is written to by the Pool-detail self-check button. The
+// frontend ran the actual probe(s) against /v1/chat/completions and we only
+// persist the summary so StatusBadge + DirectAccountSignal can reflect it.
+func (h *Handler) recordProbeResult(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Status  string `json:"status"`
+		LastErr string `json:"last_error"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	switch req.Status {
+	case "healthy", "degraded", "error":
+	default:
+		webutil.WriteAdminError(w, 400, "bad_request", "status must be healthy|degraded|error")
+		return
+	}
+	acc, err := h.store.GetAccount(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if acc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "account not found")
+		return
+	}
+	if err := h.store.UpdateAccountProbeResult(id, req.Status, req.LastErr); err != nil {
+		h.internalError(w, err)
+		return
+	}
+	h.cache.Invalidate()
+	webutil.WriteData(w, 200, map[string]any{"ok": true})
 }
 
 // --- Pools ---

@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select";
 import StatusBadge from "@/components/StatusBadge";
 import { CodexQuotaBarsFull } from "@/components/CodexQuotaBars";
+import ProbeModelChipPicker from "@/components/ProbeModelChipPicker";
 import { api } from "@/lib/api";
 import { parseCodexQuota, type CodexQuota } from "@/lib/codexQuota";
 import { compact, latency, relativeTime } from "@/lib/fmt";
@@ -319,7 +320,67 @@ function OverviewPanel({
           ) : null}
         </section>
       )}
+
+      {account.source_kind !== "cpa" ? (
+        <ProbeConfigSection accountId={account.id} account={account} availableModels={models} />
+      ) : null}
     </div>
+  );
+}
+
+// ProbeConfigSection edits `account.probe_models` — the list of models the
+// Pool-detail self-check button will try. Empty list means "fall back to the
+// latest discovered model" on the client. Changes persist immediately via the
+// /probe-models endpoint; there's no separate save button because the chip
+// input already has explicit add/remove actions.
+function ProbeConfigSection({
+  accountId,
+  account,
+  availableModels,
+}: {
+  accountId: number;
+  account: Account;
+  availableModels: string[];
+}) {
+  const [models, setModels] = useState<string[]>(() => ensureArray(account.probe_models));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setModels(ensureArray(account.probe_models));
+  }, [account.probe_models, accountId]);
+
+  async function persist(next: string[]) {
+    setModels(next);
+    setSaving(true);
+    setError(null);
+    try {
+      await api.put(`/accounts/${accountId}/probe-models`, { models: next });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="space-y-2.5 rounded-[1.2rem] border border-moon-200/55 bg-white/60 px-4 py-4">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">自检配置</p>
+        <p className="text-[11px] text-moon-400">
+          {saving ? "保存中…" : models.length > 0 ? `${models.length} 个模型` : "默认最新模型"}
+        </p>
+      </div>
+      <ProbeModelChipPicker
+        value={models}
+        available={availableModels}
+        onChange={persist}
+      />
+      <p className="text-[11px] text-moon-400">
+        Pool 详情页的“自检”按钮会按列表顺序测试，只要有一个通过就记为健康；留空时将使用最后发现的模型。
+      </p>
+      {error ? <p className="text-xs text-status-red">{error}</p> : null}
+    </section>
   );
 }
 

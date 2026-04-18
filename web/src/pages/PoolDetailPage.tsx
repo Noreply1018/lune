@@ -296,13 +296,21 @@ export default function PoolDetailPage() {
         toast("没有全局 Token，自检改用 Pool Token，结果反映整个 Pool 而非单账号", "error");
       }
 
+      // Each target can probe multiple models in parallel and passes when any
+      // single model succeeds. Codex accounts ship with `gpt-5-codex` as the
+      // first model but that endpoint is rejected by CPA for ChatGPT auth;
+      // letting the user override via probe_models (or falling back to the
+      // last discovered model, which is usually the plain chat model) avoids
+      // spurious failures. Accounts with no usable model at all are skipped.
       const targets = enabledMembers
         .map((member) => {
           const accountModels = ensureArray(member.account?.models);
-          const model = accountModels[0] ?? firstPoolModel;
-          return { member, model };
+          const configured = ensureArray(member.account?.probe_models);
+          const fallback = accountModels[accountModels.length - 1] ?? firstPoolModel;
+          const models = configured.length > 0 ? configured : fallback ? [fallback] : [];
+          return { member, models };
         })
-        .filter((t): t is { member: PoolMember; model: string } => Boolean(t.model));
+        .filter((t) => t.models.length > 0);
       if (targets.length === 0) {
         toast("没有可测模型", "error");
         return;
@@ -316,37 +324,67 @@ export default function PoolDetailPage() {
       setFlashMap(initial);
 
       const results = await Promise.all(
-        targets.map(async ({ member, model }) => {
-          const controller = new AbortController();
-          const timer = window.setTimeout(() => controller.abort(), SELF_CHECK_TIMEOUT_MS);
+        targets.map(async ({ member, models }) => {
+          const attempts = await Promise.all(
+            models.map(async (model) => {
+              const controller = new AbortController();
+              const timer = window.setTimeout(() => controller.abort(), SELF_CHECK_TIMEOUT_MS);
+              try {
+                const res = await fetch("/v1/chat/completions", {
+                  method: "POST",
+                  signal: controller.signal,
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                    "X-Lune-Account-Id": String(member.account_id),
+                  },
+                  body: JSON.stringify({
+                    model,
+                    messages: [{ role: "user", content: SELF_CHECK_MESSAGE }],
+                    stream: false,
+                  }),
+                });
+                if (res.ok) return { model, ok: true as const };
+                // Consume the error body best-effort so we can surface
+                // a meaningful reason in the detail drawer.
+                let msg = `HTTP ${res.status}`;
+                try {
+                  const txt = await res.text();
+                  if (txt) msg = txt.slice(0, 240);
+                } catch { /* ignore */ }
+                return { model, ok: false as const, err: msg };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : "request failed";
+                return { model, ok: false as const, err: msg };
+              } finally {
+                window.clearTimeout(timer);
+              }
+            }),
+          );
+          const passed = attempts.find((a) => a.ok);
+          const ok = Boolean(passed);
+          setFlash(member.id, ok ? "success" : "error");
+          // Persist so the card badge (getAccountHealth) reflects the verdict.
+          // Any individual model failure is aggregated into a compact message;
+          // success leaves last_probe_error empty. Awaited so the refreshData
+          // below observes the new probe state instead of racing past it.
+          const status: "healthy" | "error" = ok ? "healthy" : "error";
+          const last_error = ok
+            ? ""
+            : attempts
+                .filter((a) => !a.ok)
+                .map((a) => `${a.model}: ${("err" in a && a.err) || "failed"}`)
+                .join(" | ");
           try {
-            const res = await fetch("/v1/chat/completions", {
-              method: "POST",
-              signal: controller.signal,
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-                "X-Lune-Account-Id": String(member.account_id),
-              },
-              body: JSON.stringify({
-                model,
-                messages: [{ role: "user", content: SELF_CHECK_MESSAGE }],
-                stream: false,
-              }),
-            });
-            const ok = res.ok;
-            setFlash(member.id, ok ? "success" : "error");
-            return { memberId: member.id, ok };
-          } catch {
-            setFlash(member.id, "error");
-            return { memberId: member.id, ok: false };
-          } finally {
-            window.clearTimeout(timer);
-          }
+            await api.post(`/accounts/${member.account_id}/probe-result`, { status, last_error });
+          } catch { /* best-effort — flash + toast still reflect the outcome */ }
+          return { memberId: member.id, ok };
         }),
       );
       const successCount = results.filter((r) => r.ok).length;
       const failCount = results.length - successCount;
+      // Refresh account data so new last_probe_* propagates to cards+drawer.
+      refreshData();
       if (failCount === 0) {
         toast(`自检全部通过（${successCount}/${results.length}）`);
       } else {

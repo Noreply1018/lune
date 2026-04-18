@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"time"
 )
 
 var accountColumns = `id, label, source_kind, base_url, api_key, provider,
@@ -162,6 +163,37 @@ func (s *Store) UpdateAccountCodexQuota(id int64, quotaJSON, fetchedAt string) e
 	_, err := s.db.Exec(
 		`UPDATE accounts SET codex_quota_json=?, codex_quota_fetched_at=? WHERE id=?`,
 		quotaJSON, fetchedAt, id,
+	)
+	return err
+}
+
+// UpdateAccountProbeModels persists the user's probe-model selection.
+// A nil slice is stored as "[]" so the column never holds NULL or an empty
+// string — scanAccountRow relies on that invariant.
+func (s *Store) UpdateAccountProbeModels(id int64, models []string) error {
+	if models == nil {
+		models = []string{}
+	}
+	buf, err := json.Marshal(models)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`UPDATE accounts SET probe_models=?, updated_at=datetime('now') WHERE id=?`,
+		string(buf), id,
+	)
+	return err
+}
+
+// UpdateAccountProbeResult writes the outcome of a self-check run. `status`
+// mirrors the health-badge vocabulary ("healthy" | "degraded" | "error"), and
+// `errMsg` is persisted verbatim so the detail drawer can surface the raw
+// upstream error.
+func (s *Store) UpdateAccountProbeResult(id int64, status, errMsg string) error {
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_, err := s.db.Exec(
+		`UPDATE accounts SET last_probe_status=?, last_probe_error=?, last_probe_at=?, updated_at=datetime('now') WHERE id=?`,
+		status, errMsg, now, id,
 	)
 	return err
 }

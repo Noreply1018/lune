@@ -144,6 +144,17 @@ export function getAccountHealth(
   account: Account,
 ): "unknown" | "healthy" | "degraded" | "error" | "disabled" {
   if (!account.enabled) return "disabled";
+  // Direct accounts surface the user's self-check verdict when one exists, so
+  // the badge on the card matches whatever the Pool-detail self-check reported.
+  // Fall back to the health-loop status (models endpoint probe) when there's
+  // been no self-check yet. CPA accounts stay on `status` — their health is
+  // measured at the CPA service layer, not per-account.
+  if (account.source_kind !== "cpa" && account.last_probe_status) {
+    const probe = account.last_probe_status;
+    if (probe === "healthy" || probe === "degraded" || probe === "error") {
+      return probe;
+    }
+  }
   if (account.status === "healthy" || account.status === "error" || account.status === "unknown") {
     return account.status;
   }
