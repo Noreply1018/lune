@@ -15,8 +15,7 @@ import ManualPruneCard from "./ManualPruneCard";
 type DataRetentionSectionProps = {
   retentionDays: number;
   savingRetention: boolean;
-  onRetentionDaysChange: (value: number) => void;
-  onRetentionDaysCommit: () => void;
+  onRetentionDaysCommit: (value: number) => void;
   summary: DataRetentionSummary | null;
   onReloadSummary: () => Promise<void> | void;
 };
@@ -24,7 +23,6 @@ type DataRetentionSectionProps = {
 export default function DataRetentionSection({
   retentionDays,
   savingRetention,
-  onRetentionDaysChange,
   onRetentionDaysCommit,
   summary,
   onReloadSummary,
@@ -97,7 +95,6 @@ export default function DataRetentionSection({
         <AutoPruneCard
           retentionDays={retentionDays}
           savingRetention={savingRetention}
-          onRetentionDaysChange={onRetentionDaysChange}
           onRetentionDaysCommit={onRetentionDaysCommit}
           summary={summary}
         />

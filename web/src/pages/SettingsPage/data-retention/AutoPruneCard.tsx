@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { Clock3, RefreshCw } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
@@ -9,15 +9,13 @@ import type { DataRetentionSummary } from "@/lib/types";
 type AutoPruneCardProps = {
   retentionDays: number;
   savingRetention: boolean;
-  onRetentionDaysChange: (value: number) => void;
-  onRetentionDaysCommit: () => void;
+  onRetentionDaysCommit: (value: number) => void;
   summary: DataRetentionSummary | null;
 };
 
 export default function AutoPruneCard({
   retentionDays,
   savingRetention,
-  onRetentionDaysChange,
   onRetentionDaysCommit,
   summary,
 }: AutoPruneCardProps) {
@@ -31,11 +29,32 @@ export default function AutoPruneCard({
   const lastDeleted =
     lastDeletedLogs + lastDeletedDeliveries + lastDeletedOutbox;
 
+  const [draft, setDraft] = useState(`${retentionDays}`);
+
+  useEffect(() => {
+    setDraft(`${retentionDays}`);
+  }, [retentionDays]);
+
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Enter") {
       event.preventDefault();
       event.currentTarget.blur();
     }
+  }
+
+  function commit() {
+    const trimmed = draft.trim();
+    const parsed = Number(trimmed);
+    if (trimmed === "" || !Number.isFinite(parsed) || parsed < 0) {
+      // Empty / NaN / negative: roll back display rather than silently
+      // disabling auto-prune (0) or sending a bad value to the server.
+      setDraft(`${retentionDays}`);
+      return;
+    }
+    const normalized = Math.floor(parsed);
+    setDraft(`${normalized}`);
+    if (normalized === retentionDays) return;
+    onRetentionDaysCommit(normalized);
   }
 
   return (
@@ -63,13 +82,11 @@ export default function AutoPruneCard({
           <Input
             id="data-retention-days"
             type="number"
-            value={retentionDays}
+            value={draft}
             min={0}
             className="h-10 w-28 text-right text-base font-medium tabular-nums"
-            onChange={(event) =>
-              onRetentionDaysChange(Number(event.target.value))
-            }
-            onBlur={onRetentionDaysCommit}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
             onKeyDown={handleKeyDown}
           />
           <span className="text-sm text-moon-500">天</span>

@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { Activity, RefreshCw } from "lucide-react";
 
 import SectionHeading from "@/components/SectionHeading";
@@ -7,21 +7,40 @@ import { Input } from "@/components/ui/input";
 type SystemSectionProps = {
   healthCheckInterval: number;
   saving: boolean;
-  onChange: (value: number) => void;
-  onCommit: () => void;
+  onCommit: (value: number) => void;
 };
 
 export default function SystemSection({
   healthCheckInterval,
   saving,
-  onChange,
   onCommit,
 }: SystemSectionProps) {
+  const [draft, setDraft] = useState(`${healthCheckInterval}`);
+
+  useEffect(() => {
+    setDraft(`${healthCheckInterval}`);
+  }, [healthCheckInterval]);
+
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Enter") {
       event.preventDefault();
       event.currentTarget.blur();
     }
+  }
+
+  function commit() {
+    const trimmed = draft.trim();
+    const parsed = Number(trimmed);
+    if (trimmed === "" || !Number.isFinite(parsed) || parsed < 1) {
+      // Empty / NaN / out-of-range: roll back display to the last good value
+      // instead of silently committing 0 and triggering a server error toast.
+      setDraft(`${healthCheckInterval}`);
+      return;
+    }
+    const normalized = Math.floor(parsed);
+    setDraft(`${normalized}`);
+    if (normalized === healthCheckInterval) return;
+    onCommit(normalized);
   }
 
   return (
@@ -51,11 +70,11 @@ export default function SystemSection({
           <div className="flex items-center gap-2">
             <Input
               type="number"
-              value={healthCheckInterval}
+              value={draft}
               min={1}
               className="h-10 w-24 text-right text-base font-medium tabular-nums"
-              onChange={(event) => onChange(Number(event.target.value))}
-              onBlur={onCommit}
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={commit}
               onKeyDown={handleKeyDown}
             />
             <span className="text-sm text-moon-500">秒</span>

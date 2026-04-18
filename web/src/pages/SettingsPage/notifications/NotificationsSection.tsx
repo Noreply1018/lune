@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useState, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
 import { ArrowUpRight } from "lucide-react";
 
 import { toast } from "@/components/Feedback";
@@ -32,6 +38,10 @@ export default function NotificationsSection({
   onExpiringDaysChange,
 }: NotificationsSectionProps) {
   const [settings, setSettings] = useState<NotificationSettings | null>(null);
+  // Mirror of the webhook URL input. Lives here so the enable switch (in
+  // SettingsForm) and the Send Test button (in TestPanel) both see the same
+  // value the user is currently typing — even before they blur the input.
+  const [webhookUrlDraft, setWebhookUrlDraft] = useState("");
   const [subscriptions, setSubscriptions] = useState<NotificationSubscription[]>(
     [],
   );
@@ -52,6 +62,13 @@ export default function NotificationsSection({
   const [expiringDays, setExpiringDays] = useState(initialExpiringDays);
   const [expiringDaysError, setExpiringDaysError] = useState<string | null>(null);
 
+  // Sequence guards: rapid PUT bursts can return out of order, and we must
+  // not let an older response stomp newer state. Each commit path owns its
+  // own monotonic counter; only the latest seq writes back into React state.
+  const settingsSeqRef = useRef(0);
+  const subSeqRef = useRef<Record<string, number>>({});
+  const expiringDaysSeqRef = useRef(0);
+
   const { navigate } = useRouter();
 
   useEffect(() => {
@@ -62,6 +79,7 @@ export default function NotificationsSection({
     try {
       const data = await api.get<OverviewResponse>("/notifications");
       setSettings(data.settings);
+      setWebhookUrlDraft(data.settings.webhook_url);
       setSubscriptions(data.subscriptions ?? []);
       setEventTypes(data.event_types ?? []);
       setError(null);
@@ -77,6 +95,7 @@ export default function NotificationsSection({
   }, [reload]);
 
   async function commitSettings(next: NotificationSettings) {
+    const seq = ++settingsSeqRef.current;
     setSettingsSaving(true);
     setSettingsUrlError(null);
     try {
@@ -88,8 +107,13 @@ export default function NotificationsSection({
           mention_mobile_list: next.mention_mobile_list,
         },
       );
+      // Drop stale responses so a slow earlier PUT can't roll back the
+      // newer values the user just committed.
+      if (seq !== settingsSeqRef.current) return;
       setSettings(updated);
+      setWebhookUrlDraft(updated.webhook_url);
     } catch (err) {
+      if (seq !== settingsSeqRef.current) return;
       const message = err instanceof Error ? err.message : "保存通知设置失败";
       // Webhook URL errors surface inline under the input; everything else
       // only goes through the toast so we don't stack three redundant
@@ -105,8 +129,14 @@ export default function NotificationsSection({
       toast(message, "error");
       // Revert to the last-known server state so the UI reflects truth.
       void reload();
+      // Re-throw so callers that await commitSettings (e.g. runTest pre-save)
+      // can short-circuit on failure instead of racing ahead with a URL the
+      // server rejected.
+      throw err;
     } finally {
-      setSettingsSaving(false);
+      if (seq === settingsSeqRef.current) {
+        setSettingsSaving(false);
+      }
     }
   }
 
@@ -161,6 +191,9 @@ export default function NotificationsSection({
       return;
     }
     clearFieldErrors(event);
+    const seqKey = `${event}:${field}`;
+    const seq = (subSeqRef.current[seqKey] ?? 0) + 1;
+    subSeqRef.current[seqKey] = seq;
     setFieldSaving(event, field);
     try {
       const updated = await api.put<NotificationSubscription>(
@@ -170,11 +203,13 @@ export default function NotificationsSection({
           body_template: next.body_template,
         },
       );
+      if (seq !== subSeqRef.current[seqKey]) return;
       setSubscriptions((current) =>
         current.map((item) => (item.event === event ? updated : item)),
       );
       setBanner(null);
     } catch (err) {
+      if (seq !== subSeqRef.current[seqKey]) return;
       const message =
         err instanceof Error ? err.message : "保存订阅设置失败";
       if (err instanceof ApiError && err.status === 400) {
@@ -189,13 +224,30 @@ export default function NotificationsSection({
       toast(message, "error");
       void reload();
     } finally {
-      setFieldSaving(event, null);
+      if (seq === subSeqRef.current[seqKey]) {
+        setFieldSaving(event, null);
+      }
     }
   }
 
   async function runTest() {
     setTestLoading(true);
     try {
+      // If the user typed a new URL but hasn't blurred yet, persist the draft
+      // first so the test runs against the URL they can actually see — not
+      // the one still on the server. If the pre-save fails (e.g. server
+      // rejects the URL as 400), commitSettings already surfaced the toast —
+      // bail out instead of testing a URL we know isn't live.
+      if (settings && webhookUrlDraft.trim() !== settings.webhook_url) {
+        try {
+          await commitSettings({
+            ...settings,
+            webhook_url: webhookUrlDraft.trim(),
+          });
+        } catch {
+          return;
+        }
+      }
       const result = await api.post<TestResult>("/notifications/test", {});
       setTestResult(result);
       if (!result.ok) {
@@ -230,10 +282,13 @@ export default function NotificationsSection({
     const previous = expiringDays;
     setExpiringDays(value);
     setExpiringDaysError(null);
+    const seq = ++expiringDaysSeqRef.current;
     try {
       await api.put("/settings", { notification_expiring_days: value });
+      if (seq !== expiringDaysSeqRef.current) return;
       onExpiringDaysChange(value);
     } catch (err) {
+      if (seq !== expiringDaysSeqRef.current) return;
       const message = err instanceof Error ? err.message : "保存阈值失败";
       setExpiringDaysError(message);
       setExpiringDays(previous);
@@ -267,12 +322,13 @@ export default function NotificationsSection({
     tryScroll();
   }
 
-  const canTest = Boolean(
-    settings?.enabled && settings.webhook_url.trim().length > 0,
-  );
+  // Use the live draft, not the persisted value, so users see the test
+  // button enable as soon as they finish typing — no need to blur first.
+  const trimmedDraftUrl = webhookUrlDraft.trim();
+  const canTest = Boolean(settings?.enabled && trimmedDraftUrl.length > 0);
   const testDisabledReason = !settings?.enabled
     ? "开启顶部总开关后才能发送"
-    : !settings?.webhook_url.trim()
+    : trimmedDraftUrl.length === 0
       ? "请先填写 Webhook URL"
       : undefined;
 
@@ -310,10 +366,17 @@ export default function NotificationsSection({
           {settings ? (
             <SettingsForm
               settings={settings}
+              webhookUrlDraft={webhookUrlDraft}
+              onWebhookUrlDraftChange={setWebhookUrlDraft}
               saving={settingsSaving}
               urlError={settingsUrlError}
               onChange={setSettings}
-              onCommit={(next) => void commitSettings(next)}
+              onCommit={(next) => {
+                // Swallow here — commitSettings already surfaced the toast and
+                // reloaded server truth. We re-throw inside so `runTest` can
+                // short-circuit, but SettingsForm doesn't need to know.
+                commitSettings(next).catch(() => {});
+              }}
               testSlot={
                 <TestPanel
                   loading={testLoading}

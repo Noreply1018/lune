@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -8,6 +8,11 @@ import type { NotificationSettings } from "./types";
 
 type SettingsFormProps = {
   settings: NotificationSettings;
+  // webhookUrlDraft is the user's current input — may differ from
+  // settings.webhook_url when they haven't blurred yet. Lives in the parent
+  // so the enable switch and the Send Test button can both consult it.
+  webhookUrlDraft: string;
+  onWebhookUrlDraftChange: (next: string) => void;
   saving: boolean;
   urlError?: string | null;
   onChange: (next: NotificationSettings) => void;
@@ -17,20 +22,16 @@ type SettingsFormProps = {
 
 export default function SettingsForm({
   settings,
+  webhookUrlDraft,
+  onWebhookUrlDraftChange,
   saving,
   urlError,
   onChange,
   onCommit,
   testSlot,
 }: SettingsFormProps) {
-  const [localUrl, setLocalUrl] = useState(settings.webhook_url);
-
-  useEffect(() => {
-    setLocalUrl(settings.webhook_url);
-  }, [settings.webhook_url]);
-
   function commitUrl() {
-    const trimmed = localUrl.trim();
+    const trimmed = webhookUrlDraft.trim();
     if (trimmed === settings.webhook_url) {
       return;
     }
@@ -53,7 +54,14 @@ export default function SettingsForm({
             checked={settings.enabled}
             disabled={saving}
             onCheckedChange={(checked) => {
-              const next = { ...settings, enabled: checked };
+              // Fold any pending URL draft into this commit so toggling the
+              // switch never silently re-validates against a stale URL.
+              const trimmedUrl = webhookUrlDraft.trim();
+              const next = {
+                ...settings,
+                enabled: checked,
+                webhook_url: trimmedUrl,
+              };
               onChange(next);
               onCommit(next);
             }}
@@ -81,8 +89,8 @@ export default function SettingsForm({
             Webhook URL
           </label>
           <Input
-            value={localUrl}
-            onChange={(event) => setLocalUrl(event.target.value)}
+            value={webhookUrlDraft}
+            onChange={(event) => onWebhookUrlDraftChange(event.target.value)}
             onBlur={commitUrl}
             onKeyDown={(event) => {
               if (event.key === "Enter") {

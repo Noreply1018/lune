@@ -111,7 +111,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	// Settings
 	handle("GET /admin/api/settings", h.getSettings)
 	handle("PUT /admin/api/settings", h.updateSettings)
-	handle("GET /admin/api/settings/notifications", h.listNotifications)
 	handle("GET /admin/api/settings/data-retention", h.getDataRetention)
 	handle("GET /admin/api/settings/data-retention/preview", h.previewDataRetention)
 	handle("POST /admin/api/settings/data-retention/prune", h.pruneDataRetention)
@@ -1048,18 +1047,6 @@ func isDeprecatedNotificationSetting(key string) bool {
 	default:
 		return false
 	}
-}
-
-func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
-	notifications, err := h.store.ListSystemNotifications()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	if notifications == nil {
-		notifications = []store.SystemNotification{}
-	}
-	webutil.WriteList(w, notifications, len(notifications))
 }
 
 func (h *Handler) getDataRetention(w http.ResponseWriter, r *http.Request) {

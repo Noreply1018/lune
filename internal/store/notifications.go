@@ -41,12 +41,6 @@ type NotificationSubscription struct {
 	UpdatedAt    string `json:"updated_at"`
 }
 
-type NotificationDeliveryMeta struct {
-	Status       string  `json:"status"`
-	CreatedAt    string  `json:"created_at"`
-	UpstreamCode *string `json:"upstream_code,omitempty"`
-}
-
 type NotificationDelivery struct {
 	ID              int64  `json:"id"`
 	ChannelID       int64  `json:"channel_id"`
@@ -571,45 +565,6 @@ func (s *Store) ListNotificationDeliveries(filter NotificationDeliveryFilter) ([
 		deliveries = []NotificationDelivery{}
 	}
 	return deliveries, nil
-}
-
-// ListRecentNotificationDeliveryMeta returns the N most-recent deliveries for
-// the singleton channel. The API is kept for admin handlers that surface a
-// quick "last delivery" chip on the settings page.
-func (s *Store) ListRecentNotificationDeliveryMeta(limit int) ([]NotificationDeliveryMeta, error) {
-	if limit <= 0 {
-		limit = 5
-	}
-	rows, err := s.db.Query(
-		`SELECT status, created_at, upstream_code
-		 FROM notification_deliveries
-		 ORDER BY created_at DESC, id DESC
-		 LIMIT ?`,
-		limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]NotificationDeliveryMeta, 0, limit)
-	for rows.Next() {
-		var (
-			item         NotificationDeliveryMeta
-			upstreamCode sql.NullString
-		)
-		if err := rows.Scan(&item.Status, &item.CreatedAt, &upstreamCode); err != nil {
-			return nil, err
-		}
-		if upstreamCode.Valid && strings.TrimSpace(upstreamCode.String) != "" {
-			item.UpstreamCode = &upstreamCode.String
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 func (s *Store) PruneNotificationHistory(retentionDays int) (int64, int64, error) {

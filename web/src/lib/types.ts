@@ -192,25 +192,12 @@ export interface NotificationSubscription {
   updated_at?: string;
 }
 
-export interface NotificationDeliveryMeta {
-  status: "success" | "failed" | "dropped";
-  created_at: string;
-  upstream_code?: string | null;
-}
-
 export interface NotificationEventType {
   event: string;
   label: string;
   default_severity: NotificationSeverity;
   default_body_template: string;
   sample_vars: Record<string, unknown>;
-}
-
-export interface NotificationsOverview {
-  settings: NotificationSettings;
-  subscriptions: NotificationSubscription[];
-  event_types: NotificationEventType[];
-  last_delivery?: NotificationDeliveryMeta | null;
 }
 
 export interface NotificationDelivery {

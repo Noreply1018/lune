@@ -24,7 +24,6 @@ type notificationOverviewResponse struct {
 	Settings      store.NotificationSettings       `json:"settings"`
 	Subscriptions []store.NotificationSubscription `json:"subscriptions"`
 	EventTypes    []notify.EventType               `json:"event_types"`
-	LastDelivery  *store.NotificationDeliveryMeta  `json:"last_delivery,omitempty"`
 }
 
 type notificationSettingsRequest struct {
@@ -51,21 +50,10 @@ func (h *Handler) getNotifications(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
-	recent, err := h.store.ListRecentNotificationDeliveryMeta(1)
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	var last *store.NotificationDeliveryMeta
-	if len(recent) > 0 {
-		copied := recent[0]
-		last = &copied
-	}
 	resp := notificationOverviewResponse{
 		Settings:      settings,
 		Subscriptions: subs,
 		EventTypes:    notify.EventTypes(),
-		LastDelivery:  last,
 	}
 	webutil.WriteData(w, 200, resp)
 }

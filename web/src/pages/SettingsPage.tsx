@@ -174,6 +174,9 @@ export default function SettingsPage() {
   // itself so the section heading stays visible above the highlighted row.
   const highlightTimerRef = useRef<number | null>(null);
   const scrollRetryRef = useRef<number | null>(null);
+  // Per-field monotonic sequence so a slow PUT response can never overwrite
+  // state from a newer save against the same field.
+  const saveSeqRef = useRef<Record<string, number>>({});
   useEffect(() => {
     function handleHash() {
       const hash = window.location.hash;
@@ -245,9 +248,14 @@ export default function SettingsPage() {
           : 0
         : value.trim();
     const prevSettings = settingsRef.current;
+    const seq = (saveSeqRef.current[field] ?? 0) + 1;
+    saveSeqRef.current[field] = seq;
     setSavingField(field);
     try {
       await api.put("/settings", { [field]: payloadValue });
+      // Drop the response if a newer save against the same field has
+      // already started — its result must win.
+      if (saveSeqRef.current[field] !== seq) return;
       setSettings((current) =>
         current ? { ...current, [field]: payloadValue } : current,
       );
@@ -256,6 +264,7 @@ export default function SettingsPage() {
       }
       toast("设置已更新");
     } catch (err) {
+      if (saveSeqRef.current[field] !== seq) return;
       toast(err instanceof Error ? err.message : "保存设置失败", "error");
       if (prevSettings) {
         if (field === "health_check_interval") {
@@ -282,14 +291,10 @@ export default function SettingsPage() {
         }
       }
     } finally {
-      setSavingField(null);
-    }
-  }
-
-  function handleSettingKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      event.currentTarget.blur();
+      // Keep the spinner up while a newer save is still in flight.
+      if (saveSeqRef.current[field] === seq) {
+        setSavingField(null);
+      }
     }
   }
 
@@ -582,16 +587,13 @@ export default function SettingsPage() {
               suffix="秒"
               min={1}
               saving={savingField === "request_timeout"}
-              onChange={(value) =>
+              onCommit={(value) => {
                 setGatewayForm((current) => ({
                   ...current,
                   request_timeout: value,
-                }))
-              }
-              onBlur={() =>
-                void saveSetting("request_timeout", gatewayForm.request_timeout)
-              }
-              onKeyDown={handleSettingKeyDown}
+                }));
+                void saveSetting("request_timeout", value);
+              }}
             />
             <SettingsNumericRow
               label="Max Retry Attempts"
@@ -599,19 +601,13 @@ export default function SettingsPage() {
               suffix="次"
               min={1}
               saving={savingField === "max_retry_attempts"}
-              onChange={(value) =>
+              onCommit={(value) => {
                 setGatewayForm((current) => ({
                   ...current,
                   max_retry_attempts: value,
-                }))
-              }
-              onBlur={() =>
-                void saveSetting(
-                  "max_retry_attempts",
-                  gatewayForm.max_retry_attempts,
-                )
-              }
-              onKeyDown={handleSettingKeyDown}
+                }));
+                void saveSetting("max_retry_attempts", value);
+              }}
             />
           </div>
         </div>
@@ -735,17 +731,12 @@ export default function SettingsPage() {
       <DataRetentionSection
         retentionDays={settings?.data_retention_days ?? 0}
         savingRetention={savingField === "data_retention_days"}
-        onRetentionDaysChange={(value) =>
+        onRetentionDaysCommit={(value) => {
           setSettings((current) =>
             current ? { ...current, data_retention_days: value } : current,
-          )
-        }
-        onRetentionDaysCommit={() =>
-          void saveSetting(
-            "data_retention_days",
-            settings?.data_retention_days ?? 0,
-          )
-        }
+          );
+          void saveSetting("data_retention_days", value);
+        }}
         summary={retentionSummary}
         onReloadSummary={async () => {
           await loadRetentionSummary();
@@ -755,13 +746,10 @@ export default function SettingsPage() {
       <SystemSection
         healthCheckInterval={systemForm.health_check_interval}
         saving={savingField === "health_check_interval"}
-        onChange={(value) => setSystemForm({ health_check_interval: value })}
-        onCommit={() =>
-          void saveSetting(
-            "health_check_interval",
-            systemForm.health_check_interval,
-          )
-        }
+        onCommit={(value) => {
+          setSystemForm({ health_check_interval: value });
+          void saveSetting("health_check_interval", value);
+        }}
       />
 
       <ConfigTransferSection onImported={() => load(true)} />
@@ -919,9 +907,7 @@ export default function SettingsPage() {
 function SettingsNumericRow({
   label,
   value,
-  onChange,
-  onBlur,
-  onKeyDown,
+  onCommit,
   suffix,
   helper = "实时生效",
   saving,
@@ -929,14 +915,39 @@ function SettingsNumericRow({
 }: {
   label: string;
   value: number;
-  onChange: (value: number) => void;
-  onBlur: () => void;
-  onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+  onCommit: (value: number) => void;
   suffix?: string;
   helper?: string;
   saving?: boolean;
   min?: number;
 }) {
+  const [draft, setDraft] = useState(`${value}`);
+  useEffect(() => {
+    setDraft(`${value}`);
+  }, [value]);
+
+  function commit() {
+    const trimmed = draft.trim();
+    const parsed = Number(trimmed);
+    if (trimmed === "" || !Number.isFinite(parsed) || parsed < min) {
+      // Empty / NaN / below floor: roll back display rather than committing
+      // a sentinel value that the server will just bounce.
+      setDraft(`${value}`);
+      return;
+    }
+    const normalized = Math.floor(parsed);
+    setDraft(`${normalized}`);
+    if (normalized === value) return;
+    onCommit(normalized);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+    }
+  }
+
   return (
     <div className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="space-y-0.5">
@@ -946,12 +957,12 @@ function SettingsNumericRow({
       <div className="flex items-center gap-2 self-start sm:self-auto">
         <Input
           type="number"
-          value={value}
+          value={draft}
           min={min}
           className="h-9 w-24 text-right"
-          onChange={(event) => onChange(Number(event.target.value))}
-          onBlur={onBlur}
-          onKeyDown={onKeyDown}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={handleKeyDown}
         />
         <span className="w-5 text-sm text-moon-350">{suffix ?? ""}</span>
         {saving ? (
