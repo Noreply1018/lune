@@ -131,12 +131,8 @@ export default function TemplateEditor({
             size="sm"
             variant="ghost"
             className="h-8 rounded-full px-2 text-xs text-moon-450 hover:text-moon-700"
-            onClick={() => {
-              onChange(defaultValue);
-              onReset?.();
-              requestAnimationFrame(() => onCommit());
-            }}
-            disabled={disabled || !canReset}
+            onClick={() => onReset?.()}
+            disabled={disabled || !canReset || !onReset}
           >
             <RotateCcw className="size-3.5" />
             恢复默认

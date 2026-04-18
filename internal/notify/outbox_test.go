@@ -257,13 +257,13 @@ func TestAttemptOneDropsAfterFixedMaxAttempts(t *testing.T) {
 	registry := NewRegistry(driver)
 	outbox := NewOutbox(st, registry)
 
-	// Seed an item already on attempt 2 (0-indexed for this purpose): next fail => attempt=3 => dropped.
+	// Seed an item already on attempt 3: next fail => attempt=4 => dropped.
 	item := insertOutboxItem(t, st, Notification{
 		Event:    "account_error",
 		Severity: "critical",
 		Title:    "Broken",
 		Message:  "boom",
-	}, "drop-once", "retrying", 2)
+	}, "drop-once", "retrying", 3)
 
 	if err := outbox.AttemptOne(context.Background(), item, settings, sub, true); err != nil {
 		t.Fatalf("attempt one: %v", err)

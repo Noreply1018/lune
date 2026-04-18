@@ -12,13 +12,14 @@ import (
 	"lune/internal/store"
 )
 
-// fixedRetrySchedule is the hard-coded backoff between delivery attempts
-// (in seconds). Total span: ~30 min across 3 retries.
+// fixedRetrySchedule is the hard-coded backoff (seconds) between delivery
+// attempts. Indexed by attempt-1: the first retry waits 30s, the second 5m,
+// the third 30m. Total span across the 3 retries ≈ 30 min.
 var fixedRetrySchedule = []int{30, 300, 1800}
 
-// fixedMaxAttempts is the total attempts (initial + retries) allowed before
-// an outbox entry is marked dropped.
-const fixedMaxAttempts = 3
+// fixedMaxAttempts caps total attempts (1 initial + 3 retries = 4). On the
+// 4th failed attempt the outbox entry is marked dropped.
+const fixedMaxAttempts = 4
 
 type itemLock struct {
 	mu   sync.Mutex
@@ -87,6 +88,10 @@ func (o *Outbox) processDue(ctx context.Context) {
 			continue
 		}
 		if !sub.Subscribed {
+			// Event was unsubscribed after it entered the queue. Drop the pending
+			// row so re-enabling the subscription later doesn't resurface a stale
+			// alert, and so processDue doesn't keep re-reading the row forever.
+			_ = o.store.DeleteNotificationOutbox(item.ID)
 			continue
 		}
 		if err := o.AttemptOne(ctx, item, settings, sub, true); err != nil {

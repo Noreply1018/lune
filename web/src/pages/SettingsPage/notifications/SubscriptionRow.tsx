@@ -80,6 +80,30 @@ export default function SubscriptionRow({
     onCommit("body", { ...subscription, body_template: stored });
   }
 
+  function resetTitle() {
+    setTitleDisplay(defaultTitleDisplay);
+    onClearFieldError("title");
+    if (eventType.default_title_template === subscription.title_template) {
+      return;
+    }
+    onCommit("title", {
+      ...subscription,
+      title_template: eventType.default_title_template,
+    });
+  }
+
+  function resetBody() {
+    setBodyDisplay(defaultBodyDisplay);
+    onClearFieldError("body");
+    if (eventType.default_body_template === subscription.body_template) {
+      return;
+    }
+    onCommit("body", {
+      ...subscription,
+      body_template: eventType.default_body_template,
+    });
+  }
+
   const triggerDescription =
     EVENT_TRIGGER_DESCRIPTION[eventType.event] ?? "内置事件";
 
@@ -151,7 +175,7 @@ export default function SubscriptionRow({
             minRows={2}
             onChange={setTitleDisplay}
             onCommit={commitTitle}
-            onReset={() => onClearFieldError("title")}
+            onReset={resetTitle}
             error={titleError ?? null}
           />
           <TemplateEditor
@@ -163,7 +187,7 @@ export default function SubscriptionRow({
             minRows={3}
             onChange={setBodyDisplay}
             onCommit={commitBody}
-            onReset={() => onClearFieldError("body")}
+            onReset={resetBody}
             error={bodyError ?? null}
           />
         </div>
