@@ -84,7 +84,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, n Notification) error {
 		return err
 	}
 	item.ID = id
-	if err := d.outbox.AttemptOne(ctx, item, settings, *sub, false); err != nil {
+	if err := d.outbox.AttemptOne(ctx, item, settings, *sub); err != nil {
 		slog.Error("notification outbox immediate attempt failed", "outbox_id", item.ID, "event", n.Event, "err", err)
 	}
 	return nil

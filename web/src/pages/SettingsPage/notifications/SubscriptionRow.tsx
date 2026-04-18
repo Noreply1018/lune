@@ -46,7 +46,17 @@ export default function SubscriptionRow({
   );
 
   useEffect(() => {
-    setBodyDisplay(toDisplay(subscription.body_template, placeholders));
+    // Reconcile display with the server value, but preserve a mid-edit draft
+    // when the user has typed something the server has not yet seen. Without
+    // this guard a silent parent reload would wipe unsaved edits.
+    setBodyDisplay((current) => {
+      const serverDisplay = toDisplay(subscription.body_template, placeholders);
+      const currentStored = toStorage(current, placeholders);
+      if (currentStored === subscription.body_template) {
+        return serverDisplay;
+      }
+      return current;
+    });
   }, [subscription.body_template, placeholders]);
 
   const defaultBodyDisplay = useMemo(

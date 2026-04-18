@@ -18,13 +18,11 @@ type Result struct {
 }
 
 type ChannelRuntime struct {
-	ID        int64           `json:"id"`
-	Name      string          `json:"name"`
-	Type      string          `json:"type"`
-	Config    json.RawMessage `json:"config"`
-	TitleTpl  string          `json:"title_template"`
-	BodyTpl   string          `json:"body_template"`
-	Triggered string          `json:"triggered_by"`
+	ID        int64            `json:"id"`
+	Name      string           `json:"name"`
+	Type      string           `json:"type"`
+	Config    json.RawMessage  `json:"config"`
+	Triggered string           `json:"triggered_by"`
 	Rendered  *RenderedMessage `json:"rendered,omitempty"`
 }
 

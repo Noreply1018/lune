@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // SingletonChannelID is the synthetic channel id retained for historical
@@ -636,25 +635,6 @@ func (s *Store) PruneNotificationHistory(retentionDays int) (int64, int64, error
 	}
 	deletedOutbox, _ := res.RowsAffected()
 	return deletedDeliveries, deletedOutbox, nil
-}
-
-func truncateDeliverySummary(payload string, limit int) string {
-	if limit <= 0 || len(payload) <= limit {
-		return payload
-	}
-	// Walk back from the byte budget to the nearest rune boundary so we
-	// never write a partial UTF-8 sequence into the deliveries table.
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(payload[cut]) {
-		cut--
-	}
-	return payload[:cut]
-}
-
-// TruncateDeliverySummary exposes the internal summary truncator so notify
-// package callers can produce identical summaries.
-func TruncateDeliverySummary(payload string, limit int) string {
-	return truncateDeliverySummary(payload, limit)
 }
 
 func parseMentionMobileList(raw string) []string {

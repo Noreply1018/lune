@@ -352,7 +352,7 @@ func TestUpdateNotificationSettingsRejectsInvalidMobile(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/admin/api/notifications/settings",
-		strings.NewReader(`{"enabled":true,"webhook_url":"https://example.com/hook","mention_mobile_list":["12345"]}`),
+		strings.NewReader(`{"enabled":true,"webhook_url":"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcd1234","mention_mobile_list":["12345"]}`),
 	)
 	rr := httptest.NewRecorder()
 	handler.updateNotificationSettings(rr, req)
@@ -370,7 +370,7 @@ func TestUpdateNotificationSettingsPersistsValidPayload(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/admin/api/notifications/settings",
-		strings.NewReader(`{"enabled":true,"webhook_url":"https://example.com/hook","mention_mobile_list":["13800138000","@all","13800138000"]}`),
+		strings.NewReader(`{"enabled":true,"webhook_url":"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcd1234","mention_mobile_list":["13800138000","@all","13800138000"]}`),
 	)
 	rr := httptest.NewRecorder()
 	handler.updateNotificationSettings(rr, req)

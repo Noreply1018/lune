@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,7 +102,7 @@ func insertOutboxItem(t *testing.T, st *store.Store, n Notification, dedup, stat
 	}
 }
 
-func TestAttemptOneDoesNotRetryAfterSuccessfulSendWhenRenderFails(t *testing.T) {
+func TestAttemptOneFailsWhenRenderFails(t *testing.T) {
 	st := newNotifyTestStore(t)
 	settings := enableTestSettings(t, st)
 	if err := st.UpdateNotificationSubscription("account_error", true, "{{ .Missing"); err != nil {
@@ -120,36 +121,22 @@ func TestAttemptOneDoesNotRetryAfterSuccessfulSendWhenRenderFails(t *testing.T) 
 		Message:  "boom",
 	}, "dedup", "pending", 0)
 
-	if err := outbox.AttemptOne(context.Background(), item, settings, sub, false); err != nil {
+	if err := outbox.AttemptOne(context.Background(), item, settings, sub); err != nil {
 		t.Fatalf("attempt one: %v", err)
 	}
-	if driver.sendCount != 1 {
-		t.Fatalf("expected one send, got %d", driver.sendCount)
-	}
-	if expected := AutoTitle("account_error"); driver.lastTitle != expected {
-		t.Fatalf("expected driver title %q (auto-generated), got %q", expected, driver.lastTitle)
-	}
-
-	outboxItems, err := st.ListDueNotificationOutbox(10)
-	if err != nil {
-		t.Fatalf("list outbox: %v", err)
-	}
-	if len(outboxItems) != 0 {
-		t.Fatalf("expected outbox row to be deleted after success, got %d rows", len(outboxItems))
+	if driver.sendCount != 0 {
+		t.Fatalf("render failure must not call the driver; sendCount=%d", driver.sendCount)
 	}
 
 	deliveries, err := st.ListNotificationDeliveries(store.NotificationDeliveryFilter{Limit: 10})
 	if err != nil {
 		t.Fatalf("list deliveries: %v", err)
 	}
-	if len(deliveries) != 1 || deliveries[0].Status != "success" {
-		t.Fatalf("expected one successful delivery, got %+v", deliveries)
+	if len(deliveries) != 1 || deliveries[0].Status != "failed" {
+		t.Fatalf("expected one failed delivery, got %+v", deliveries)
 	}
-	outbox.locksMu.Lock()
-	_, stillLocked := outbox.locks[item.ID]
-	outbox.locksMu.Unlock()
-	if stillLocked {
-		t.Fatalf("expected item lock to be released after successful terminal state")
+	if !strings.Contains(deliveries[0].UpstreamMessage, "render body") {
+		t.Fatalf("expected render error in UpstreamMessage, got %q", deliveries[0].UpstreamMessage)
 	}
 }
 
@@ -178,7 +165,7 @@ func TestAttemptOnePassesFullRenderedBodyToDriver(t *testing.T) {
 		Message:  longMessage,
 	}, "dedup-body", "pending", 0)
 
-	if err := outbox.AttemptOne(context.Background(), item, settings, sub, false); err != nil {
+	if err := outbox.AttemptOne(context.Background(), item, settings, sub); err != nil {
 		t.Fatalf("attempt one: %v", err)
 	}
 	if len(driver.lastBody) <= 1024 {
@@ -209,7 +196,7 @@ func TestAttemptOneSkipsSendWhenOutboxRowAlreadyGone(t *testing.T) {
 		t.Fatalf("delete outbox: %v", err)
 	}
 
-	if err := outbox.AttemptOne(context.Background(), item, settings, sub, false); err != nil {
+	if err := outbox.AttemptOne(context.Background(), item, settings, sub); err != nil {
 		t.Fatalf("attempt one: %v", err)
 	}
 	if driver.sendCount != 0 {
@@ -233,7 +220,7 @@ func TestAttemptOneUsesFixedRetrySchedule(t *testing.T) {
 		Message:  "boom",
 	}, "retry-schedule", "pending", 0)
 
-	if err := outbox.AttemptOne(context.Background(), item, settings, sub, false); err != nil {
+	if err := outbox.AttemptOne(context.Background(), item, settings, sub); err != nil {
 		t.Fatalf("attempt one: %v", err)
 	}
 
@@ -272,7 +259,7 @@ func TestAttemptOneDropsAfterFixedMaxAttempts(t *testing.T) {
 		Message:  "boom",
 	}, "drop-once", "retrying", 3)
 
-	if err := outbox.AttemptOne(context.Background(), item, settings, sub, true); err != nil {
+	if err := outbox.AttemptOne(context.Background(), item, settings, sub); err != nil {
 		t.Fatalf("attempt one: %v", err)
 	}
 

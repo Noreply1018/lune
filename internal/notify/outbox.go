@@ -94,7 +94,7 @@ func (o *Outbox) processDue(ctx context.Context) {
 			_ = o.store.DeleteNotificationOutbox(item.ID)
 			continue
 		}
-		if err := o.AttemptOne(ctx, item, settings, sub, true); err != nil {
+		if err := o.AttemptOne(ctx, item, settings, sub); err != nil {
 			slog.Error("retry notification outbox attempt failed", "outbox_id", item.ID, "event", item.Event, "err", err)
 			continue
 		}
@@ -104,23 +104,26 @@ func (o *Outbox) processDue(ctx context.Context) {
 // AttemptOne delivers a single outbox entry using the singleton WeChat-Work
 // driver. On success the entry is cleared; on failure the entry is either
 // re-scheduled (up to fixedMaxAttempts) or dropped.
-func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, settings store.NotificationSettings, sub store.NotificationSubscription, retrying bool) error {
+func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, settings store.NotificationSettings, sub store.NotificationSubscription) error {
 	driver, ok := o.registry.Get(store.SingletonChannelType)
 	if !ok {
-		return o.fail(item, sub, Result{}, "wechat_work_bot driver is not registered", retrying)
+		return o.fail(item, Result{}, AutoTitle(item.Event), truncateString(item.Payload, 1024), "wechat_work_bot driver is not registered")
 	}
 	n, err := decodeNotificationPayload(item.Payload)
 	if err != nil {
-		return o.fail(item, sub, Result{}, err.Error(), retrying)
+		return o.fail(item, Result{}, AutoTitle(item.Event), truncateString(item.Payload, 1024), err.Error())
 	}
-	title := AutoTitle(item.Event)
-	renderedBody := item.Payload
-	payloadSummary := truncateString(item.Payload, 1024)
-	if rendered, err := RenderNotification(n, title, sub.BodyTemplate); err == nil {
-		title = rendered.Title
-		renderedBody = rendered.Body
-		payloadSummary = truncateString(rendered.Body, 1024)
+	// Render before sending. If the template fails to compile/execute, surface
+	// the error via fail() instead of falling back to the raw JSON payload —
+	// dumping internal struct shape to an end-user's WeChat is worse than a
+	// retry with a clear error.
+	rendered, renderErr := RenderNotification(n, AutoTitle(item.Event), sub.BodyTemplate)
+	if renderErr != nil {
+		return o.fail(item, Result{}, AutoTitle(item.Event), truncateString(item.Payload, 1024), "render body: "+renderErr.Error())
 	}
+	title := rendered.Title
+	renderedBody := rendered.Body
+	payloadSummary := truncateString(rendered.Body, 1024)
 	lk := o.acquireItemLock(item.ID)
 	defer o.releaseItemLock(item.ID, lk)
 	current, err := o.store.GetNotificationOutbox(item.ID)
@@ -133,11 +136,11 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 	item = *current
 	runtime, err := buildChannelRuntime(settings, sub, "system", &RenderedMessage{Title: title, Body: renderedBody})
 	if err != nil {
-		return o.fail(item, sub, Result{}, err.Error(), retrying)
+		return o.fail(item, Result{}, title, payloadSummary, err.Error())
 	}
 	result, sendErr := driver.Send(ctx, n, runtime)
 	if sendErr != nil || !result.OK {
-		return o.fail(item, sub, result, firstNonEmpty(result.UpstreamMessage, errorString(sendErr)), retrying)
+		return o.fail(item, result, title, payloadSummary, firstNonEmpty(result.UpstreamMessage, errorString(sendErr)))
 	}
 
 	return o.store.RecordNotificationAttemptSuccess(item.ID, &store.NotificationDelivery{
@@ -158,15 +161,10 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 	})
 }
 
-func (o *Outbox) fail(item store.NotificationOutbox, sub store.NotificationSubscription, result Result, message string, retrying bool) error {
-	title := AutoTitle(item.Event)
-	payloadSummary := truncateString(item.Payload, 1024)
-	if n, err := decodeNotificationPayload(item.Payload); err == nil {
-		if rendered, renderErr := RenderNotification(n, title, sub.BodyTemplate); renderErr == nil {
-			title = rendered.Title
-			payloadSummary = truncateString(rendered.Body, 1024)
-		}
-	}
+// fail records a failed delivery attempt. The caller passes title and
+// payloadSummary so fail() does not need to re-render (which would re-fail
+// on the very templates that caused AttemptOne to call it in the first place).
+func (o *Outbox) fail(item store.NotificationOutbox, result Result, title string, payloadSummary string, message string) error {
 	attempt := item.Attempt + 1
 	status := "failed"
 	if attempt >= fixedMaxAttempts {
@@ -252,8 +250,6 @@ func buildChannelRuntime(settings store.NotificationSettings, sub store.Notifica
 		Name:      store.SingletonChannelName,
 		Type:      store.SingletonChannelType,
 		Config:    cfg,
-		TitleTpl:  AutoTitle(sub.Event),
-		BodyTpl:   sub.BodyTemplate,
 		Triggered: triggered,
 		Rendered:  rendered,
 	}, nil

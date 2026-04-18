@@ -10,12 +10,32 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"lune/internal/notify"
 )
 
 type WeChatWorkBotDriver struct {
 	client *http.Client
+}
+
+// wecomTextLimit is the WeChat Work Bot `text.content` byte budget documented
+// in the WeCom bot API. Exceeding it returns errcode 45009 and aborts delivery,
+// so we truncate on rune boundaries before sending.
+const wecomTextLimit = 2048
+
+// truncateUTF8 trims s so its UTF-8 byte length is at most limit, snapping to
+// the nearest rune start so we never emit a partial multi-byte sequence. Used
+// to cap the WeChat Work Bot `text.content` at 2048 bytes.
+func truncateUTF8(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 func NewWeChatWorkBotDriver() *WeChatWorkBotDriver {
@@ -64,7 +84,7 @@ func (d *WeChatWorkBotDriver) Send(ctx context.Context, n notify.Notification, r
 	payload := map[string]any{
 		"msgtype": "text",
 		"text": map[string]any{
-			"content":               rendered.Title + "\n" + rendered.Body,
+			"content":               truncateUTF8(rendered.Title+"\n"+rendered.Body, wecomTextLimit),
 			"mentioned_mobile_list": cfg.MentionMobileList,
 		},
 	}

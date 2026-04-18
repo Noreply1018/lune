@@ -192,6 +192,13 @@ type SystemNotification struct {
 	Message   string `json:"message"`
 	AccountID *int64 `json:"account_id,omitempty"`
 	ServiceID *int64 `json:"service_id,omitempty"`
+	// Label carries the human-readable name of the source (account label or
+	// cpa_service label) so template placeholders like {{ .Vars.account_label }}
+	// and {{ .Vars.service_label }} can be populated by the dispatcher.
+	Label string `json:"label,omitempty"`
+	// LastError mirrors the source's last_error field for account_error and
+	// cpa_service_error so templates can surface the underlying cause.
+	LastError string `json:"last_error,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 

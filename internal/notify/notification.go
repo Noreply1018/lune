@@ -66,7 +66,7 @@ func EventTypes() []EventType {
 			DefaultBodyTemplate: `这是一条用于验证渠道可达性的真实消息，可忽略。`,
 			SampleVars: map[string]any{
 				"instance_id": "lune",
-				"admin_url":   "http://127.0.0.1:7788/admin",
+				"admin_url":   "/admin",
 			},
 		},
 	}

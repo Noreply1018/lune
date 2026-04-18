@@ -445,6 +445,23 @@ func (c *Checker) dispatchSystemNotifications(ctx context.Context) {
 		return
 	}
 	for _, item := range notifications {
+		vars := map[string]any{
+			"title":   item.Title,
+			"message": item.Message,
+		}
+		if item.Label != "" {
+			// Both account_* and cpa_service_error templates key off these
+			// Vars names; populating both aliases keeps templates simple
+			// regardless of the source type.
+			vars["account_label"] = item.Label
+			vars["service_label"] = item.Label
+		}
+		if item.LastError != "" {
+			vars["last_error"] = item.LastError
+		}
+		if item.ExpiresAt != "" {
+			vars["expires_at"] = item.ExpiresAt
+		}
 		n := notify.Notification{
 			Event:     item.Type,
 			Severity:  item.Severity,
@@ -455,13 +472,7 @@ func (c *Checker) dispatchSystemNotifications(ctx context.Context) {
 				AccountID: item.AccountID,
 				ServiceID: item.ServiceID,
 			},
-			Vars: map[string]any{
-				"title":   item.Title,
-				"message": item.Message,
-			},
-		}
-		if item.ExpiresAt != "" {
-			n.Vars["expires_at"] = item.ExpiresAt
+			Vars: vars,
 		}
 		if err := c.notifier.Dispatch(ctx, n); err != nil {
 			slog.Error("dispatch notification", "event", n.Event, "err", err)

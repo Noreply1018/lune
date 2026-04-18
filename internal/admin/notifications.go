@@ -6,12 +6,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"lune/internal/notify"
+	"lune/internal/notify/drivers"
 	"lune/internal/store"
 	"lune/internal/webutil"
 )
@@ -227,17 +227,15 @@ func (h *Handler) listNotificationEventTypes(w http.ResponseWriter, r *http.Requ
 }
 
 func validateWebhookURL(raw string) error {
-	parsed, err := url.Parse(raw)
+	// Delegate to the WeChat Work Bot driver so the admin surface and the
+	// delivery path agree on what a valid webhook URL looks like. Anything
+	// the driver would reject at send time is also rejected at save time,
+	// giving admins immediate feedback rather than a delayed delivery error.
+	cfg, err := json.Marshal(map[string]any{"webhook_url": raw})
 	if err != nil {
-		return errors.New("webhook_url must be a valid URL")
+		return errors.New("webhook_url must be a valid WeCom bot webhook URL")
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("webhook_url must start with http:// or https://")
-	}
-	if strings.TrimSpace(parsed.Host) == "" {
-		return errors.New("webhook_url must include a host")
-	}
-	return nil
+	return drivers.NewWeChatWorkBotDriver().ValidateConfig(cfg)
 }
 
 func isKnownEventType(event string) bool {

@@ -22,6 +22,7 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 		 FROM accounts
 		 WHERE source_kind = 'cpa'
 		   AND cpa_expired_at != ''
+		   AND enabled = 1
 		 ORDER BY cpa_expired_at ASC, id ASC`,
 	)
 	if err != nil {
@@ -57,6 +58,7 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 			Title:     title,
 			Message:   fmt.Sprintf("Account %q expires at %s", label, expiresAt),
 			AccountID: &accountIDCopy,
+			Label:     label,
 			ExpiresAt: expiresAt,
 		})
 	}
@@ -68,6 +70,7 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 		`SELECT id, label, last_error
 		 FROM accounts
 		 WHERE status = 'error'
+		   AND enabled = 1
 		 ORDER BY last_checked_at DESC, id DESC`,
 	)
 	if err != nil {
@@ -94,6 +97,8 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 			Title:     "Account health check failed",
 			Message:   fmt.Sprintf("Account %q is in error state: %s", label, lastError),
 			AccountID: &accountIDCopy,
+			Label:     label,
+			LastError: lastError,
 		})
 	}
 	if err := accountRows.Err(); err != nil {
@@ -104,6 +109,7 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 		`SELECT id, label, last_error
 		 FROM cpa_services
 		 WHERE status = 'error'
+		   AND enabled = 1
 		 ORDER BY last_checked_at DESC, id DESC`,
 	)
 	if err != nil {
@@ -130,6 +136,8 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 			Title:     "CPA service unhealthy",
 			Message:   fmt.Sprintf("CPA service %q is unhealthy: %s", label, lastError),
 			ServiceID: &serviceIDCopy,
+			Label:     label,
+			LastError: lastError,
 		})
 	}
 	if err := serviceRows.Err(); err != nil {
