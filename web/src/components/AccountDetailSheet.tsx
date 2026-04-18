@@ -55,6 +55,7 @@ export default function AccountDetailSheet({
   priorityIndex,
   poolId,
   resolveToken,
+  hasGlobalToken,
   onOpenChange,
 }: {
   member: PoolMember | null;
@@ -62,6 +63,11 @@ export default function AccountDetailSheet({
   priorityIndex?: number;
   poolId?: number;
   resolveToken: () => Promise<string>;
+  // Gateway honors X-Lune-Account-Id only for global tokens. When absent,
+  // Playground falls back to a pool-scoped token and the header is silently
+  // dropped — the Playground panel uses this flag to warn the user that the
+  // request may not actually hit the target account.
+  hasGlobalToken: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const account = member?.account ?? null;
@@ -168,6 +174,7 @@ export default function AccountDetailSheet({
                   models={models}
                   disabled={!member.enabled}
                   resolveToken={resolveToken}
+                  hasGlobalToken={hasGlobalToken}
                 />
               </TabsPanel>
               <TabsPanel value="debug">
@@ -388,11 +395,13 @@ function PlaygroundPanel({
   models,
   disabled,
   resolveToken,
+  hasGlobalToken,
 }: {
   accountId: number;
   models: string[];
   disabled: boolean;
   resolveToken: () => Promise<string>;
+  hasGlobalToken: boolean;
 }) {
   const [selectedModel, setSelectedModel] = useState<string | undefined>(models[0]);
   const [message, setMessage] = useState(PRESET_MESSAGES[0].value);
@@ -487,6 +496,15 @@ function PlaygroundPanel({
 
   return (
     <div className="space-y-5">
+      {!hasGlobalToken ? (
+        <div className="rounded-[1rem] border border-status-yellow/35 bg-status-yellow/10 px-4 py-3 text-[12.5px] leading-relaxed text-status-yellow">
+          没有全局 Token。当前测试使用 Pool Token，Gateway 会静默丢弃
+          <code className="mx-1 rounded bg-status-yellow/15 px-1 font-mono text-[11.5px]">
+            X-Lune-Account-Id
+          </code>
+          ，请求改走 Pool 权重，结果可能来自其他账号。
+        </div>
+      ) : null}
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Model</p>

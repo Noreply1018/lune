@@ -8,9 +8,10 @@ import (
 )
 
 var (
-	ErrNoRoute          = errors.New("no_route")
-	ErrPoolDisabled     = errors.New("pool_disabled")
-	ErrNoHealthyAccount = errors.New("no_healthy_account")
+	ErrNoRoute             = errors.New("no_route")
+	ErrPoolDisabled        = errors.New("pool_disabled")
+	ErrNoHealthyAccount    = errors.New("no_healthy_account")
+	ErrModelNotOnAccount   = errors.New("model_not_on_account")
 )
 
 type Router struct {
@@ -77,6 +78,30 @@ func (rt *Router) resolveToAccount(snap *store.CacheSnapshot, model string, acco
 	}
 	if !acc.Enabled {
 		return nil, ErrNoHealthyAccount
+	}
+	// Match resolveInPool / selectBestCandidate: refuse to force-route to an
+	// unhealthy account so MiniChat / probes get a clear signal instead of
+	// the upstream's opaque timeout or 5xx.
+	if acc.Status != "healthy" && acc.Status != "degraded" {
+		return nil, ErrNoHealthyAccount
+	}
+
+	// When the account has a discovered model list, reject models that are not
+	// on it so force-account probes fail fast with a clear error instead of
+	// surfacing an opaque upstream "model not found". Empty list means model
+	// discovery hasn't populated anything yet; pass through optimistically so
+	// we don't break accounts whose upstream lacks /v1/models.
+	if len(acc.Models) > 0 {
+		supported := false
+		for _, m := range acc.Models {
+			if m == model {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return nil, ErrModelNotOnAccount
+		}
 	}
 
 	// Find which pool this account belongs to

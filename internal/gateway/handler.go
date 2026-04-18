@@ -98,12 +98,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "")
 			return
 		}
+		if errors.Is(err, router.ErrModelNotOnAccount) {
+			var accID int64
+			if forceAccountID != nil {
+				accID = *forceAccountID
+			}
+			webutil.WriteGatewayError(w, 404, "model_not_on_account",
+				fmt.Sprintf("account %d does not list model: %s", accID, model))
+			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "")
+			return
+		}
 		webutil.WriteGatewayError(w, 500, "internal", err.Error())
 		return
 	}
 
-	// retry loop with exponential backoff
+	// retry loop with exponential backoff.
+	// When the client forces a specific account (X-Lune-Account-Id), retries
+	// would fall back to SelectNextAccount which ignores forceAccountID and
+	// could route the retry to a different account, masking real failures
+	// under a false "success" from an unrelated account. Single-shot in that
+	// case so MiniChat / per-account probes reflect the actual target.
 	maxRetries := h.getMaxRetries()
+	if forceAccountID != nil {
+		maxRetries = 1
+	}
 	var exclude []int64
 	var lastErr error
 	var lastStatusCode int

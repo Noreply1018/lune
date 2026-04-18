@@ -634,6 +634,7 @@ export default function PoolDetailPage() {
         priorityIndex={detailPriorityIndex}
         poolId={poolId}
         resolveToken={getTokenForAccountProbe}
+        hasGlobalToken={Boolean(overview?.global_token_id)}
         onOpenChange={(open) => {
           if (!open) setDetailMemberId(null);
         }}
