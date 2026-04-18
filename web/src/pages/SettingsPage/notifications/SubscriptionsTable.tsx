@@ -33,7 +33,7 @@ export default function SubscriptionsTable({
         <div>
           <p className="text-sm font-medium text-moon-800">订阅事件</p>
           <p className="text-xs leading-5 text-moon-400">
-            每行一个事件；订阅开关独立，正文保存即生效。标题固定为「Lune 通知：事件中文名」，展开后可查看具体标题。
+            每行一个事件；订阅开关独立，正文保存即生效。标题固定为「Lune 通知：事件中文名」，由系统自动生成。
           </p>
         </div>
       </header>

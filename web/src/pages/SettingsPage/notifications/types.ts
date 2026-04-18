@@ -27,9 +27,9 @@ export interface PlaceholderMeta {
 }
 
 const GENERIC_PLACEHOLDERS: PlaceholderMeta[] = [
-  { display: "[事件]", template: "{{ .Event }}", sample: "" },
-  { display: "[严重级别]", template: "{{ .Severity }}", sample: "" },
-  { display: "[时间]", template: "{{ .TriggeredAt }}", sample: "" },
+  { display: "【事件】", template: "{{ .Event }}", sample: "" },
+  { display: "【严重级别】", template: "{{ .Severity }}", sample: "" },
+  { display: "【时间】", template: "{{ .TriggeredAt }}", sample: "" },
 ];
 
 interface EventPlaceholderSpec {
@@ -42,48 +42,48 @@ interface EventPlaceholderSpec {
 const EVENT_PLACEHOLDERS: Record<string, EventPlaceholderSpec[]> = {
   account_expiring: [
     {
-      display: "[账号]",
+      display: "【账号】",
       template: "{{ .Vars.account_label }}",
       sampleKey: "account_label",
     },
     {
-      display: "[过期时间]",
+      display: "【过期时间】",
       template: "{{ .Vars.expires_at }}",
       sampleKey: "expires_at",
     },
   ],
   account_error: [
     {
-      display: "[账号]",
+      display: "【账号】",
       template: "{{ .Vars.account_label }}",
       sampleKey: "account_label",
     },
     {
-      display: "[最近错误]",
+      display: "【最近错误】",
       template: "{{ .Vars.last_error }}",
       sampleKey: "last_error",
     },
   ],
   cpa_service_error: [
     {
-      display: "[服务]",
+      display: "【服务】",
       template: "{{ .Vars.service_label }}",
       sampleKey: "service_label",
     },
     {
-      display: "[最近错误]",
+      display: "【最近错误】",
       template: "{{ .Vars.last_error }}",
       sampleKey: "last_error",
     },
   ],
   test: [
     {
-      display: "[实例]",
+      display: "【实例】",
       template: "{{ .Vars.instance_id }}",
       sampleKey: "instance_id",
     },
     {
-      display: "[管理后台]",
+      display: "【管理后台】",
       template: "{{ .Vars.admin_url }}",
       sampleKey: "admin_url",
     },

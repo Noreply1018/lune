@@ -100,9 +100,11 @@ export default function NotificationsSection({
         },
       );
       setSettings(updated);
-      setBanner(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : "保存通知设置失败";
+      // Webhook URL errors surface inline under the input; everything else
+      // only goes through the toast so we don't stack three redundant
+      // indicators on screen.
       if (err instanceof ApiError && err.status === 400) {
         if (
           message.toLowerCase().includes("webhook_url") ||
@@ -111,7 +113,6 @@ export default function NotificationsSection({
           setSettingsUrlError(message);
         }
       }
-      setBanner(message);
       toast(message, "error");
       // Revert to the last-known server state so the UI reflects truth.
       void reload({ silent: true });

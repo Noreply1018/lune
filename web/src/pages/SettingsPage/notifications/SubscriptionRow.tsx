@@ -86,7 +86,6 @@ export default function SubscriptionRow({
 
   const triggerDescription =
     EVENT_TRIGGER_DESCRIPTION[eventType.event] ?? "内置事件";
-  const autoTitle = `Lune 通知：${eventType.label}`;
 
   return (
     <div
@@ -121,14 +120,26 @@ export default function SubscriptionRow({
         >
           {eventType.default_severity}
         </span>
-        <Switch
-          checked={subscription.subscribed}
-          disabled={savingField === "subscribed"}
-          onClick={(event) => event.stopPropagation()}
-          onCheckedChange={(checked) =>
-            onCommit("subscribed", { ...subscription, subscribed: checked })
-          }
-        />
+        {eventType.event === "test" ? (
+          <span className="inline-flex items-center rounded-full bg-moon-100/90 px-2 py-0.5 text-[11px] text-moon-500">
+            手动触发
+          </span>
+        ) : (
+          <span
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            className="inline-flex"
+          >
+            <Switch
+              checked={subscription.subscribed}
+              disabled={savingField === "subscribed"}
+              onCheckedChange={(checked) =>
+                onCommit("subscribed", { ...subscription, subscribed: checked })
+              }
+            />
+          </span>
+        )}
         <ChevronDown
           className={cn(
             "size-4 text-moon-400 transition-transform",
@@ -142,20 +153,11 @@ export default function SubscriptionRow({
           <p className="text-xs leading-5 text-moon-400">
             触发时机：{triggerDescription}。严重级别由后端生成，无法在前端修改。
           </p>
-          {!subscription.subscribed ? (
+          {!subscription.subscribed && eventType.event !== "test" ? (
             <div className="rounded-[0.75rem] border border-amber-200/70 bg-amber-50/85 px-3 py-1.5 text-xs text-amber-800">
               当前未订阅：保存后该事件不会发送，但配置仍会保留。
             </div>
           ) : null}
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-moon-600">标题</span>
-            <div className="rounded-[0.8rem] border border-dashed border-moon-200/70 bg-white/80 px-3 py-2 text-sm text-moon-700">
-              {autoTitle}
-            </div>
-            <span className="text-[11px] text-moon-400">
-              标题由系统自动生成，不可修改。
-            </span>
-          </div>
           <TemplateEditor
             label="正文"
             value={bodyDisplay}
