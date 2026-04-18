@@ -1,11 +1,25 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Link2, RefreshCw, Search } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Link2,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import ErrorState from "@/components/ErrorState";
 import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
 import SideTOC, { type TOCSection } from "@/components/SideTOC";
 import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { compact, latency, pct, relativeTime, shortDate } from "@/lib/fmt";
@@ -31,6 +45,9 @@ type UsageBundle = {
 const PAGE_SIZE = 250;
 const MAX_PAGES = 12;
 const AUTO_REFRESH_MS = 30_000;
+// Rows per in-UI page of the Request Logs table. Deliberately small so an
+// expanded row + its neighbours fit one viewport without scrolling.
+const LOGS_PER_PAGE = 5;
 
 const DASH = "—";
 
@@ -1406,6 +1423,7 @@ export default function ActivityPage() {
   const [searchRequestId, setSearchRequestId] = useState("");
   const [expandedRowId, setExpandedRowId] = useState<number | null>(null);
   const [highlightedRequestId, setHighlightedRequestId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
   const loadRequestIdRef = useRef(0);
   const highlightTimerRef = useRef<number | null>(null);
   const autoRefreshTimerRef = useRef<number | null>(null);
@@ -1496,6 +1514,29 @@ export default function ActivityPage() {
   const buckets24h = useMemo(() => buildBuckets(logs24h, "24h"), [logs24h]);
   const buckets7d = useMemo(() => buildBuckets(logs7d, "7d"), [logs7d]);
   const buckets30d = useMemo(() => buildBuckets(logs30d, "30d"), [logs30d]);
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredLogs.length / LOGS_PER_PAGE),
+  );
+  // Clamp at read time so an auto-refresh that shrinks filteredLogs can't
+  // leave the table rendering page 5 of 3 (empty view, confusing).
+  const clampedPage = Math.min(Math.max(1, currentPage), totalPages);
+  const pagedLogs = useMemo(
+    () =>
+      filteredLogs.slice(
+        (clampedPage - 1) * LOGS_PER_PAGE,
+        clampedPage * LOGS_PER_PAGE,
+      ),
+    [filteredLogs, clampedPage],
+  );
+
+  // Any filter change or request-id deeplink lands the user on page 1.
+  // Without this, changing the pool filter while on page 3 keeps you on
+  // page 3 of the narrower result set — often empty.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterPool, filterStatus, filterModel, searchRequestId]);
 
   // Scroll + highlight a single log row. Used by #logs-<rid> deep-link and
   // the "跳到一次样本" action in TopErrors. Clears filters so a filtered
@@ -1649,56 +1690,90 @@ export default function ActivityPage() {
           description="顺着一条请求往下查问题。"
         />
 
-        <div className="mt-5 flex flex-wrap gap-3">
-          <select
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <Select
             value={filterPool}
-            onChange={(event) => setFilterPool(event.target.value)}
-            className="rounded-full border border-moon-200/70 bg-white/82 px-3 py-2 text-sm text-moon-600"
+            onValueChange={(value) => setFilterPool(value ?? "all")}
           >
-            <option value="all">全部 Pool</option>
-            {pools.map((pool) => (
-              <option key={pool.id} value={String(pool.id)}>
-                {pool.label}
-              </option>
-            ))}
-          </select>
-          <select
+            <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
+              <SelectValue placeholder="全部 Pool" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部 Pool</SelectItem>
+              {pools.map((pool) => (
+                <SelectItem key={pool.id} value={String(pool.id)}>
+                  {pool.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
             value={filterStatus}
-            onChange={(event) => setFilterStatus(event.target.value)}
-            className="rounded-full border border-moon-200/70 bg-white/82 px-3 py-2 text-sm text-moon-600"
+            onValueChange={(value) => setFilterStatus(value ?? "all")}
           >
-            <option value="all">全部状态</option>
-            <option value="success">成功</option>
-            <option value="error">失败</option>
-          </select>
-          <select
+            <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
+              <SelectValue placeholder="全部状态" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="success">成功</SelectItem>
+              <SelectItem value="error">失败</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
             value={filterModel}
-            onChange={(event) => setFilterModel(event.target.value)}
-            className="rounded-full border border-moon-200/70 bg-white/82 px-3 py-2 text-sm text-moon-600"
+            onValueChange={(value) => setFilterModel(value ?? "all")}
           >
-            <option value="all">全部模型</option>
-            {modelOptions.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-moon-400" />
-            <input
-              type="text"
-              value={searchRequestId}
-              onChange={(event) => setSearchRequestId(event.target.value)}
-              placeholder="搜 request_id"
-              className="w-60 rounded-full border border-moon-200/70 bg-white/82 py-2 pl-8 pr-3 text-sm text-moon-600 placeholder:text-moon-400"
-            />
-          </div>
+            <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
+              <SelectValue placeholder="全部模型" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部模型</SelectItem>
+              {modelOptions.map((model) => (
+                <SelectItem key={model} value={model}>
+                  {model}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {/* Active-request chip — shows only when the list is narrowed down
+              to a single request via TopErrors "跳到一次样本" or a
+              #logs-<rid> hash link. Gives the user a way to back out of
+              that single-row view without needing to wiggle another filter. */}
+          {searchRequestId ? (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchRequestId("");
+                window.history.replaceState(
+                  null,
+                  "",
+                  window.location.pathname + window.location.search,
+                );
+              }}
+              className="inline-flex items-center gap-1.5 rounded-full bg-lunar-100/80 px-3 py-1.5 text-xs text-lunar-700 transition-colors hover:bg-lunar-200/80"
+              title="清除单条请求过滤"
+            >
+              <span>
+                单条请求{" "}
+                <span className="font-mono">
+                  {searchRequestId.slice(0, 8)}
+                  {searchRequestId.length > 8 ? "…" : ""}
+                </span>
+              </span>
+              <X className="size-3" />
+            </button>
+          ) : null}
         </div>
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-moon-400">
           <p>
-            当前显示{" "}
-            {filteredLogs.length > 0 ? compact(filteredLogs.length) : DASH} 条请求。
+            匹配到{" "}
+            {filteredLogs.length > 0 ? compact(filteredLogs.length) : DASH} 条请求
+            {filteredLogs.length > LOGS_PER_PAGE
+              ? `，每页 ${LOGS_PER_PAGE} 条`
+              : ""}
+            。
           </p>
           {usage?.truncated ? (
             <p>
@@ -1724,8 +1799,8 @@ export default function ActivityPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-moon-200/50 bg-white/66">
-              {filteredLogs.length ? (
-                filteredLogs.map((item) => {
+              {pagedLogs.length ? (
+                pagedLogs.map((item) => {
                   const expanded = expandedRowId === item.id;
                   const totalTokens = getRequestTokens(item);
                   const highlighted = highlightedRequestId === item.request_id;
@@ -1936,6 +2011,45 @@ export default function ActivityPage() {
             </tbody>
           </table>
         </div>
+
+        {totalPages > 1 ? (
+          <div className="mt-4 flex items-center justify-between gap-3 text-sm text-moon-500">
+            <span className="text-xs text-moon-400">
+              第 {clampedPage} / {totalPages} 页
+            </span>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                disabled={clampedPage <= 1}
+                onClick={() =>
+                  // Base off clampedPage, not the raw currentPage. When
+                  // auto-refresh shrinks totalPages while the user is on a
+                  // late page, currentPage can sit above clampedPage; using
+                  // the raw value would make the first few Prev clicks
+                  // visually no-op until currentPage catches up.
+                  setCurrentPage(Math.max(1, clampedPage - 1))
+                }
+              >
+                <ChevronLeft className="size-4" />
+                上一页
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                disabled={clampedPage >= totalPages}
+                onClick={() =>
+                  setCurrentPage(Math.min(totalPages, clampedPage + 1))
+                }
+              >
+                下一页
+                <ChevronRight className="size-4" />
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </section>
     </div>
   );
