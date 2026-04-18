@@ -3,13 +3,13 @@ import { ChevronDown, Link2, RefreshCw, Search } from "lucide-react";
 import ErrorState from "@/components/ErrorState";
 import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
+import SideTOC, { type TOCSection } from "@/components/SideTOC";
 import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { compact, latency, pct, relativeTime, shortDate } from "@/lib/fmt";
 import type {
-  Overview,
   Pool,
   RequestLog,
   UsageLogPage,
@@ -94,7 +94,6 @@ async function loadUsage30d(): Promise<UsageBundle> {
   };
 }
 
-type TOCSection = { id: string; label: string };
 const TOC_SECTIONS: TOCSection[] = [
   { id: "digest", label: "日报" },
   { id: "trends", label: "趋势" },
@@ -103,150 +102,581 @@ const TOC_SECTIONS: TOCSection[] = [
   { id: "logs", label: "Logs" },
 ];
 
-function SideTOC({ active }: { active: string }) {
-  return (
-    <nav
-      aria-label="Section navigation"
-      className="fixed right-6 top-1/2 z-20 hidden -translate-y-1/2 flex-col gap-3 xl:flex"
-    >
-      {TOC_SECTIONS.map((section) => {
-        const isActive = section.id === active;
-        return (
-          <a
-            key={section.id}
-            href={`#${section.id}`}
-            title={section.label}
-            className="group relative flex items-center justify-end"
-            onClick={(event) => {
-              event.preventDefault();
-              const el = document.getElementById(section.id);
-              if (el) {
-                el.scrollIntoView({ behavior: "smooth", block: "start" });
-                window.history.replaceState(null, "", `#${section.id}`);
-              }
-            }}
-          >
-            <span
-              className={cn(
-                "absolute right-6 whitespace-nowrap rounded-full border border-moon-200/70 bg-white/92 px-2 py-0.5 text-[11px] text-moon-500 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100",
-              )}
-            >
-              {section.label}
-            </span>
-            <span
-              className={cn(
-                "size-2.5 rounded-full border transition-all duration-200",
-                isActive
-                  ? "border-lunar-500 bg-lunar-500 shadow-[0_0_0_4px_rgba(134,125,193,0.18)]"
-                  : "border-moon-300 bg-white/80 group-hover:border-lunar-400",
-              )}
-            />
-          </a>
-        );
-      })}
-    </nav>
-  );
-}
-
 function DigestLine({ children }: { children: React.ReactNode }) {
   return <p className="text-[0.97rem] leading-7 text-moon-700">{children}</p>;
 }
 
-function DailyDigest({
-  overview,
-  logs24h,
-}: {
-  overview: Overview | null;
-  logs24h: RequestLog[];
-}) {
-  const total = overview?.requests_today ?? 0;
-  const successRate = overview?.success_rate_today ?? 0;
-  const avg = overview?.avg_latency_today ?? 0;
-  const retriesSaved = logs24h.filter((l) => l.success && l.attempt_count > 1).length;
-  const failed = logs24h.filter((l) => !l.success).length;
-  const streamCount = logs24h.filter((l) => l.stream).length;
+// --- Daily Digest ----------------------------------------------------------
+// Digest window = rolling 24h ending now; comparison window = the 24h before that.
+// Everything below treats `logs30d` as the source of truth so we never mix
+// calendar-day metrics with rolling-window ones (the old overview/logs24h
+// split did exactly that and produced off-by-several numbers on some days).
 
-  const hasTraffic = total > 0;
+const DIGEST_MIN_SAMPLES = 5;
+const SUCCESS_GREEN = 0.98;
+const SUCCESS_YELLOW = 0.9;
+const CONCENTRATION_THRESHOLD = 0.6;
+const BUSY_HOUR_THRESHOLD = 0.4;
+const LATENCY_SLOW_MS = 8000;
+const LATENCY_IMPROVE_RATIO = 0.8;
 
-  const greeting = (() => {
-    const h = new Date().getHours();
-    if (h < 5) return "深夜好";
-    if (h < 11) return "早上好";
-    if (h < 14) return "午后";
-    if (h < 18) return "下午好";
-    if (h < 22) return "晚上好";
-    return "夜深了";
+type DigestFacts = {
+  total: number;
+  success: number;
+  failed: number;
+  successRate: number; // NaN when total === 0
+  avgLatencyMs: number;
+  p95LatencyMs: number;
+  streamCount: number;
+  retriesSaved: number;
+  routeRejected: number;
+  busiestHour: { hour: number; count: number } | null;
+  quietHours: number;
+  topError: { statusCode: number; message: string; count: number } | null;
+  topPool: { id: number; label: string; count: number; share: number } | null;
+  topModel: { name: string; count: number; share: number } | null;
+  prevTotal: number;
+  prevSuccessRate: number; // NaN when prevTotal < MIN
+  prevAvgLatencyMs: number;
+  prevP95LatencyMs: number;
+};
+
+type DigestLineSpec = {
+  key: string;
+  priority: number;
+  node: React.ReactNode;
+};
+
+// djb2 hash — picks a variant deterministically from a data-derived seed so
+// the digest stops reshuffling its wording on every 30s auto-refresh when the
+// underlying numbers didn't budge.
+function pickVariant<T>(seed: string, variants: T[]): T {
+  let h = 5381;
+  for (let i = 0; i < seed.length; i++) {
+    h = ((h << 5) + h) ^ seed.charCodeAt(i);
+  }
+  return variants[Math.abs(h) % variants.length];
+}
+
+function computeDigestFacts(
+  logs30d: RequestLog[],
+  poolMap: Map<number, string>,
+): DigestFacts {
+  const nowMs = Date.now();
+  const todayStartMs = nowMs - 24 * 3600_000;
+  const yesterdayStartMs = nowMs - 48 * 3600_000;
+
+  const today: RequestLog[] = [];
+  const yesterday: RequestLog[] = [];
+  for (const log of logs30d) {
+    const ts = parseAdminDate(log.created_at).getTime();
+    if (!Number.isFinite(ts)) continue;
+    if (ts >= todayStartMs && ts <= nowMs) today.push(log);
+    else if (ts >= yesterdayStartMs && ts < todayStartMs) yesterday.push(log);
+  }
+
+  const total = today.length;
+  const success = today.filter((l) => l.success).length;
+  const failed = total - success;
+  const successRate = total > 0 ? success / total : NaN;
+
+  const successLatencies = today
+    .filter((l) => l.success && l.latency_ms > 0)
+    .map((l) => l.latency_ms);
+  const avgLatencyMs =
+    successLatencies.length > 0
+      ? successLatencies.reduce((s, v) => s + v, 0) / successLatencies.length
+      : 0;
+  const sortedLatencies = [...successLatencies].sort((a, b) => a - b);
+  const p95LatencyMs = percentile(sortedLatencies, 0.95);
+
+  const streamCount = today.filter((l) => l.stream).length;
+  const retriesSaved = today.filter(
+    (l) => l.success && l.attempt_count > 1,
+  ).length;
+  const routeRejected = today.filter(
+    (l) => !l.success && l.attempt_count === 0,
+  ).length;
+
+  // Reuse buildBuckets for hour-granular stats. Its window is calendar-hour
+  // aligned (≈23-24h) rather than exact rolling 24h, but the shape we need
+  // (busiest single hour, number of quiet hours) is robust to that drift.
+  const buckets = buildBuckets(today, "24h");
+  let busiestHour: DigestFacts["busiestHour"] = null;
+  let quietHours = 0;
+  for (const b of buckets) {
+    if (b.total === 0) quietHours += 1;
+    if (busiestHour === null || b.total > busiestHour.count) {
+      busiestHour = { hour: parseInt(b.key, 10), count: b.total };
+    }
+  }
+  if (!busiestHour || busiestHour.count === 0) busiestHour = null;
+
+  // Top error bucketing — mirror the TopErrors component so the digest
+  // "失败里最多的一类是 X" and the Top Errors list agree on the #1 row.
+  const errorBuckets = new Map<
+    string,
+    { statusCode: number; message: string; count: number }
+  >();
+  today.forEach((log) => {
+    if (log.success) return;
+    const msg = log.error_message || `HTTP ${log.status_code}`;
+    const key = `${log.status_code}:${msg.slice(0, 120)}`;
+    const existing = errorBuckets.get(key);
+    if (existing) existing.count += 1;
+    else
+      errorBuckets.set(key, {
+        statusCode: log.status_code,
+        message: msg,
+        count: 1,
+      });
+  });
+  const topError =
+    errorBuckets.size > 0
+      ? Array.from(errorBuckets.values()).sort((a, b) => b.count - a.count)[0]
+      : null;
+
+  // Concentration: only worth calling out when one pool/model is dominant.
+  // Below CONCENTRATION_THRESHOLD we return null rather than produce a
+  // noisy "pool X has 42%" line that reads like filler on a normal day.
+  const poolCounts = new Map<number, number>();
+  today.forEach((log) => {
+    poolCounts.set(log.pool_id, (poolCounts.get(log.pool_id) ?? 0) + 1);
+  });
+  let topPool: DigestFacts["topPool"] = null;
+  if (poolCounts.size > 0 && total > 0) {
+    const sorted = Array.from(poolCounts.entries()).sort(
+      (a, b) => b[1] - a[1],
+    );
+    const [id, count] = sorted[0];
+    const share = count / total;
+    if (share >= CONCENTRATION_THRESHOLD) {
+      topPool = {
+        id,
+        label: poolMap.get(id) ?? `Pool #${id}`,
+        count,
+        share,
+      };
+    }
+  }
+
+  const modelCounts = new Map<string, number>();
+  today.forEach((log) => {
+    const name = log.model_actual || log.model_requested || "unknown";
+    modelCounts.set(name, (modelCounts.get(name) ?? 0) + 1);
+  });
+  let topModel: DigestFacts["topModel"] = null;
+  if (modelCounts.size > 0 && total > 0) {
+    const sorted = Array.from(modelCounts.entries()).sort(
+      (a, b) => b[1] - a[1],
+    );
+    const [name, count] = sorted[0];
+    const share = count / total;
+    if (share >= CONCENTRATION_THRESHOLD) {
+      topModel = { name, count, share };
+    }
+  }
+
+  const prevTotal = yesterday.length;
+  const prevSuccess = yesterday.filter((l) => l.success).length;
+  const prevSuccessRate =
+    prevTotal >= DIGEST_MIN_SAMPLES ? prevSuccess / prevTotal : NaN;
+  const prevSuccessLatencies = yesterday
+    .filter((l) => l.success && l.latency_ms > 0)
+    .map((l) => l.latency_ms);
+  const prevAvgLatencyMs =
+    prevSuccessLatencies.length > 0
+      ? prevSuccessLatencies.reduce((s, v) => s + v, 0) /
+        prevSuccessLatencies.length
+      : 0;
+  const prevSortedLatencies = [...prevSuccessLatencies].sort((a, b) => a - b);
+  const prevP95LatencyMs = percentile(prevSortedLatencies, 0.95);
+
+  return {
+    total,
+    success,
+    failed,
+    successRate,
+    avgLatencyMs,
+    p95LatencyMs,
+    streamCount,
+    retriesSaved,
+    routeRejected,
+    busiestHour,
+    quietHours,
+    topError,
+    topPool,
+    topModel,
+    prevTotal,
+    prevSuccessRate,
+    prevAvgLatencyMs,
+    prevP95LatencyMs,
+  };
+}
+
+function buildGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 5) return "深夜好";
+  if (h < 11) return "早上好";
+  if (h < 14) return "午后";
+  if (h < 18) return "下午好";
+  if (h < 22) return "晚上好";
+  return "夜深了";
+}
+
+function buildVolumeNode(
+  facts: DigestFacts,
+  greeting: string,
+  seed: string,
+): React.ReactNode {
+  const { total, streamCount, prevTotal, avgLatencyMs } = facts;
+
+  const deltaNote = (() => {
+    if (prevTotal < DIGEST_MIN_SAMPLES) return null;
+    const diff = total - prevTotal;
+    const ratio = total / Math.max(prevTotal, 1);
+    if (Math.abs(diff) < 3) return null; // too noisy, skip
+    if (ratio >= 1.5) {
+      return pickVariant(seed + "vol-up", [
+        `比昨天这会儿热闹（昨天 ${compact(prevTotal)}）`,
+        `比昨天多出一截（昨天 ${compact(prevTotal)}）`,
+      ]);
+    }
+    if (ratio <= 0.6) {
+      // Variants must be ratio-agnostic — the <=0.6 band covers both modest
+      // dips and near-empty days, so quantitative wording like "差不多一半"
+      // would mislead on the heavy-drop end.
+      return pickVariant(seed + "vol-down", [
+        `比昨天冷清（昨天 ${compact(prevTotal)}）`,
+        `比昨天少了不少（昨天 ${compact(prevTotal)}）`,
+      ]);
+    }
+    return null;
   })();
+
+  return (
+    <>
+      {greeting}，过去 24 小时已经跑过{" "}
+      <strong className="font-semibold text-moon-800">{compact(total)}</strong>{" "}
+      次请求
+      {avgLatencyMs > 0 ? (
+        <>
+          ，平均延迟{" "}
+          <strong className="font-semibold text-moon-800">
+            {latency(avgLatencyMs)}
+          </strong>
+        </>
+      ) : null}
+      {streamCount > 0 ? (
+        <>，其中 {compact(streamCount)} 条走了 stream</>
+      ) : null}
+      {deltaNote ? <>，{deltaNote}</> : null}。
+    </>
+  );
+}
+
+function buildRouteRejectedLine(
+  facts: DigestFacts,
+  seed: string,
+): DigestLineSpec | null {
+  if (facts.routeRejected === 0) return null;
+  const msg = pickVariant(seed + "route", [
+    `有 ${compact(facts.routeRejected)} 次请求连上游都没打到，被路由直接拒了`,
+    `${compact(facts.routeRejected)} 次请求卡在路由层就失败了`,
+    `看到 ${compact(facts.routeRejected)} 次路由拒绝，可能是模型没配或 pool 不健康`,
+  ]);
+  return {
+    key: "route-rejected",
+    priority: 100,
+    node: (
+      <>
+        <strong className="font-semibold text-status-red">{msg}</strong>
+        ，值得查一下路由配置。
+      </>
+    ),
+  };
+}
+
+function buildSuccessRateLine(
+  facts: DigestFacts,
+  seed: string,
+): DigestLineSpec | null {
+  if (facts.total < DIGEST_MIN_SAMPLES) return null;
+  const rate = pct(facts.successRate);
+  const diffNote = (() => {
+    if (!Number.isFinite(facts.prevSuccessRate)) return null;
+    const diff = facts.successRate - facts.prevSuccessRate;
+    if (diff >= 0.05) {
+      return pickVariant(seed + "rate-up", [
+        "比昨天更稳了",
+        "比昨天好一截",
+      ]);
+    }
+    if (diff <= -0.05) {
+      return pickVariant(seed + "rate-down", [
+        "比昨天明显差了一些",
+        "比昨天下滑了",
+      ]);
+    }
+    return null;
+  })();
+
+  if (facts.successRate >= SUCCESS_GREEN) {
+    const tail = pickVariant(seed + "rate-green", [
+      "几乎一路绿灯",
+      "挺省心的",
+      "今天状态不错",
+    ]);
+    return {
+      key: "success-rate",
+      priority: 40,
+      node: (
+        <>
+          成功率{" "}
+          <strong className="font-semibold text-status-green">{rate}</strong>
+          ，{tail}
+          {diffNote ? `，${diffNote}` : ""}。
+        </>
+      ),
+    };
+  }
+  if (facts.successRate >= SUCCESS_YELLOW) {
+    return {
+      key: "success-rate",
+      priority: 60,
+      node: (
+        <>
+          成功率{" "}
+          <strong className="font-semibold text-status-yellow">{rate}</strong>
+          {facts.failed > 0 ? `，有 ${compact(facts.failed)} 次最终失败` : ""}
+          {diffNote ? `，${diffNote}` : ""}，翻一下 Top Errors 看看。
+        </>
+      ),
+    };
+  }
+  return {
+    key: "success-rate",
+    priority: 95,
+    node: (
+      <>
+        成功率跌到{" "}
+        <strong className="font-semibold text-status-red">{rate}</strong>
+        {facts.failed > 0
+          ? `，${compact(facts.failed)} 次请求直接掉给了客户端`
+          : ""}
+        {diffNote ? `，${diffNote}` : ""}，Top Errors 是第一优先级。
+      </>
+    ),
+  };
+}
+
+function buildTopErrorLine(
+  facts: DigestFacts,
+  seed: string,
+): DigestLineSpec | null {
+  // Threshold aligned with SuccessRate's yellow/red branches, which both
+  // invite the user to "翻一下 Top Errors 看看". If we gated higher, that
+  // prompt could hang with no follow-up row when failed ∈ {1, 2}.
+  if (!facts.topError || facts.failed < 2) return null;
+  const { statusCode, message, count } = facts.topError;
+  const label = statusCode === 0 ? "网络故障" : `HTTP ${statusCode}`;
+  const trimmed = message.length > 52 ? message.slice(0, 52) + "…" : message;
+  const frame = pickVariant(seed + "top-err", [
+    `失败里出镜最多的是 ${label}`,
+    `最频繁的失败是 ${label}`,
+    `今天撞得最多的错是 ${label}`,
+  ]);
+  return {
+    key: "top-error",
+    priority: 70,
+    node: (
+      <>
+        {frame}（{compact(count)} 次），
+        <span className="text-moon-500">「{trimmed}」</span>
+        。
+      </>
+    ),
+  };
+}
+
+function buildLatencyLine(
+  facts: DigestFacts,
+  seed: string,
+): DigestLineSpec | null {
+  if (facts.p95LatencyMs > 0 && facts.p95LatencyMs >= LATENCY_SLOW_MS) {
+    const frame = pickVariant(seed + "lat-slow", [
+      "尾部延迟偏慢",
+      "慢请求比较明显",
+    ]);
+    return {
+      key: "latency",
+      priority: 50,
+      node: (
+        <>
+          {frame}，p95 已经到{" "}
+          <strong className="font-semibold text-status-yellow">
+            {latency(facts.p95LatencyMs)}
+          </strong>
+          ，看看是不是某个 account 拖后腿。
+        </>
+      ),
+    };
+  }
+  if (
+    facts.p95LatencyMs > 0 &&
+    facts.prevP95LatencyMs > 0 &&
+    // Gate on prevTotal so a single slow request yesterday can't masquerade
+    // as a full "p95" and trip the improvement line on a drive-by basis.
+    facts.prevTotal >= DIGEST_MIN_SAMPLES &&
+    facts.p95LatencyMs < facts.prevP95LatencyMs * LATENCY_IMPROVE_RATIO
+  ) {
+    const frame = pickVariant(seed + "lat-fast", [
+      "长尾延迟明显收敛",
+      "慢请求少了很多",
+    ]);
+    return {
+      key: "latency",
+      priority: 30,
+      node: (
+        <>
+          {frame}——p95 从 {latency(facts.prevP95LatencyMs)} 降到{" "}
+          <strong className="font-semibold text-status-green">
+            {latency(facts.p95LatencyMs)}
+          </strong>
+          。
+        </>
+      ),
+    };
+  }
+  return null;
+}
+
+function buildConcentrationLine(
+  facts: DigestFacts,
+  seed: string,
+): DigestLineSpec | null {
+  if (facts.topPool) {
+    const frame = pickVariant(seed + "conc-pool", [
+      `流量压在了 ${facts.topPool.label} 一个 pool 上，占 ${pct(facts.topPool.share)}`,
+      `${facts.topPool.label} 扛了 ${pct(facts.topPool.share)} 的量`,
+    ]);
+    return {
+      key: "concentration",
+      priority: 25,
+      node: (
+        <>
+          {frame}
+          {facts.topPool.share >= 0.85 ? "，别的 pool 基本在睡" : ""}。
+        </>
+      ),
+    };
+  }
+  if (facts.topModel) {
+    const frame = pickVariant(seed + "conc-model", [
+      `${facts.topModel.name} 一个模型就吃掉 ${pct(facts.topModel.share)}`,
+      `${pct(facts.topModel.share)} 的请求都打在 ${facts.topModel.name} 上`,
+    ]);
+    return {
+      key: "concentration",
+      priority: 20,
+      node: <>{frame}。</>,
+    };
+  }
+  return null;
+}
+
+function buildBusyHourLine(
+  facts: DigestFacts,
+  seed: string,
+): DigestLineSpec | null {
+  const { busiestHour, total } = facts;
+  if (!busiestHour || total === 0) return null;
+  const share = busiestHour.count / total;
+  if (share < BUSY_HOUR_THRESHOLD) return null;
+  const hh = `${busiestHour.hour}:00`;
+  const frame = pickVariant(seed + "busy", [
+    `${hh} 那小时占了今天 ${pct(share)}`,
+    `有个明显的尖峰在 ${hh}，占了 ${pct(share)}`,
+  ]);
+  return {
+    key: "busy-hour",
+    priority: 15,
+    node: <>{frame}。</>,
+  };
+}
+
+function buildRetriesLine(
+  facts: DigestFacts,
+  seed: string,
+): DigestLineSpec | null {
+  if (facts.retriesSaved === 0) return null;
+  const frame = pickVariant(seed + "retry", [
+    `重试救回了 ${compact(facts.retriesSaved)} 次请求`,
+    `${compact(facts.retriesSaved)} 次请求是靠重试才成的`,
+    `今天有 ${compact(facts.retriesSaved)} 次请求踩了坑但被重试捞回`,
+  ]);
+  return {
+    key: "retries",
+    priority: 10,
+    node: (
+      <>
+        <strong className="font-semibold text-lunar-700">{frame}</strong>
+        ——用户侧看到的是成功，背后确实抖了一下。
+      </>
+    ),
+  };
+}
+
+function DailyDigest({
+  logs30d,
+  poolMap,
+}: {
+  logs30d: RequestLog[];
+  poolMap: Map<number, string>;
+}) {
+  const facts = useMemo(
+    () => computeDigestFacts(logs30d, poolMap),
+    [logs30d, poolMap],
+  );
+  const greeting = buildGreeting();
+  // Seed is a fingerprint of the numbers a variant could reasonably depend on.
+  // Same numbers → same wording across refreshes; different numbers → maybe
+  // a different phrasing. Keep it stable (don't mix in Date.now()).
+  const seed = `${facts.total}:${facts.success}:${facts.failed}:${Math.round(
+    (Number.isFinite(facts.successRate) ? facts.successRate : 0) * 1000,
+  )}`;
 
   const lines: React.ReactNode[] = [];
 
-  if (!hasTraffic) {
+  if (facts.total === 0) {
     lines.push(
       <DigestLine key="idle">
-        {greeting}，今日还没有请求经过 Lune，先把 token 或客户端配好试一条吧。
+        {greeting}，过去 24 小时还没有请求经过 Lune，先把 token 或客户端配好试一条吧。
       </DigestLine>,
     );
   } else {
     lines.push(
       <DigestLine key="volume">
-        {greeting}，今天已经跑过{" "}
-        <strong className="font-semibold text-moon-800">
-          {compact(total)}
-        </strong>{" "}
-        次请求
-        {avg > 0 ? (
-          <>
-            ，平均延迟{" "}
-            <strong className="font-semibold text-moon-800">
-              {latency(avg)}
-            </strong>
-          </>
-        ) : null}
-        {streamCount > 0 ? (
-          <>，其中 {compact(streamCount)} 条走了 stream</>
-        ) : null}
-        。
+        {buildVolumeNode(facts, greeting, seed)}
       </DigestLine>,
     );
 
-    if (total >= 5) {
-      const rate = pct(successRate);
-      if (successRate >= 0.995) {
-        lines.push(
-          <DigestLine key="rate-green">
-            成功率 <strong className="font-semibold text-status-green">{rate}</strong>
-            ，几乎无事发生，挺省心的。
-          </DigestLine>,
-        );
-      } else if (successRate >= 0.95) {
-        lines.push(
-          <DigestLine key="rate-ok">
-            成功率 <strong className="font-semibold text-moon-800">{rate}</strong>
-            {failed > 0 ? `，有 ${failed} 次是彻底失败的` : ""}
-            ，稍后如果不放心可以下拉翻翻 Logs。
-          </DigestLine>,
-        );
-      } else {
-        lines.push(
-          <DigestLine key="rate-warn">
-            成功率 <strong className="font-semibold text-status-red">{rate}</strong>
-            {failed > 0 ? `，有 ${failed} 次掉到了客户端` : ""}
-            ，值得下去看看 Top Errors 里第一条写的是什么。
-          </DigestLine>,
-        );
-      }
-    }
+    // Priority-ordered extras. We include at most two below the volume line
+    // so the digest stays 1-3 lines total — enough to read in one glance
+    // without turning into a bullet list.
+    const candidates: DigestLineSpec[] = [
+      buildRouteRejectedLine(facts, seed),
+      buildSuccessRateLine(facts, seed),
+      buildTopErrorLine(facts, seed),
+      buildLatencyLine(facts, seed),
+      buildConcentrationLine(facts, seed),
+      buildBusyHourLine(facts, seed),
+      buildRetriesLine(facts, seed),
+    ].filter((x): x is DigestLineSpec => x !== null);
 
-    if (retriesSaved > 0) {
-      lines.push(
-        <DigestLine key="retry">
-          重试救回了{" "}
-          <strong className="font-semibold text-lunar-700">
-            {compact(retriesSaved)}
-          </strong>{" "}
-          次请求——用户侧看到的都是成功，但后面确实踩了坑。
-        </DigestLine>,
-      );
+    candidates.sort((a, b) => b.priority - a.priority);
+    for (const spec of candidates.slice(0, 2)) {
+      lines.push(<DigestLine key={spec.key}>{spec.node}</DigestLine>);
     }
   }
 
@@ -255,7 +685,10 @@ function DailyDigest({
       id="digest"
       className="surface-section scroll-mt-6 px-5 py-5 sm:px-6 sm:py-6"
     >
-      <SectionHeading title="Daily Digest" description="一句话看懂今天的状态。" />
+      <SectionHeading
+        title="Daily Digest"
+        description="过去 24 小时的网关状态，一段话看完。"
+      />
       <div className="mt-4 space-y-2">{lines}</div>
     </section>
   );
@@ -364,7 +797,12 @@ function StackedTrendBars({
               <div
                 key={`${bucket.key}-${idx}`}
                 title={title}
-                className="group flex min-w-0 flex-1 items-end"
+                // h-full + flex-col + justify-end: the parent flex row uses
+                // items-end, which would collapse each cell to intrinsic height
+                // and break the bar's percentage height (no definite parent).
+                // Forcing h-full gives the inner bar a concrete base to scale
+                // against, then justify-end pins the bar to the baseline.
+                className="group flex h-full min-w-0 flex-1 flex-col justify-end"
               >
                 <div
                   className="w-full overflow-hidden rounded-t-[0.6rem] bg-moon-100/60 transition-opacity duration-200 group-hover:opacity-90"
@@ -957,7 +1395,6 @@ function LatencyCell({
 }
 
 export default function ActivityPage() {
-  const [overview, setOverview] = useState<Overview | null>(null);
   const [pools, setPools] = useState<Pool[]>([]);
   const [usage, setUsage] = useState<UsageBundle | null>(null);
   const [loading, setLoading] = useState(true);
@@ -968,7 +1405,6 @@ export default function ActivityPage() {
   const [filterModel, setFilterModel] = useState("all");
   const [searchRequestId, setSearchRequestId] = useState("");
   const [expandedRowId, setExpandedRowId] = useState<number | null>(null);
-  const [activeSection, setActiveSection] = useState<string>("digest");
   const [highlightedRequestId, setHighlightedRequestId] = useState<string | null>(null);
   const loadRequestIdRef = useRef(0);
   const highlightTimerRef = useRef<number | null>(null);
@@ -978,14 +1414,9 @@ export default function ActivityPage() {
     const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     setError(null);
-    Promise.all([
-      api.get<Overview>("/overview"),
-      api.get<Pool[]>("/pools"),
-      loadUsage30d(),
-    ])
-      .then(([overviewData, poolData, usageData]) => {
+    Promise.all([api.get<Pool[]>("/pools"), loadUsage30d()])
+      .then(([poolData, usageData]) => {
         if (requestId !== loadRequestIdRef.current) return;
-        setOverview(overviewData);
         setPools(poolData ?? []);
         setUsage(usageData);
         setLastUpdated(new Date().toISOString());
@@ -1065,36 +1496,6 @@ export default function ActivityPage() {
   const buckets24h = useMemo(() => buildBuckets(logs24h, "24h"), [logs24h]);
   const buckets7d = useMemo(() => buildBuckets(logs7d, "7d"), [logs7d]);
   const buckets30d = useMemo(() => buildBuckets(logs30d, "30d"), [logs30d]);
-
-  // Scrollspy: observe section visibility once the sections are actually in
-  // the DOM (post-skeleton). We mount the observer a single time — re-running
-  // this effect on every auto-refresh (30s) would cause the active dot to
-  // flicker to "digest" between disconnect and observe. The ref guards
-  // against React StrictMode's double-mount too.
-  const observerMountedRef = useRef(false);
-  useEffect(() => {
-    if (!usage || observerMountedRef.current) return;
-    observerMountedRef.current = true;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
-        if (visible[0]) {
-          setActiveSection(visible[0].target.id);
-        }
-      },
-      { rootMargin: "-20% 0px -55% 0px", threshold: [0, 0.3, 0.7, 1] },
-    );
-    TOC_SECTIONS.forEach((section) => {
-      const el = document.getElementById(section.id);
-      if (el) observer.observe(el);
-    });
-    return () => {
-      observer.disconnect();
-      observerMountedRef.current = false;
-    };
-  }, [usage]);
 
   // Scroll + highlight a single log row. Used by #logs-<rid> deep-link and
   // the "跳到一次样本" action in TopErrors. Clears filters so a filtered
@@ -1188,7 +1589,7 @@ export default function ActivityPage() {
 
   return (
     <div className="space-y-8">
-      <SideTOC active={activeSection} />
+      <SideTOC sections={TOC_SECTIONS} ready={Boolean(usage)} />
       <PageHeader
         title="Activity"
         description="查看最近请求与系统运行状态。"
@@ -1207,7 +1608,7 @@ export default function ActivityPage() {
         }
       />
 
-      <DailyDigest overview={overview} logs24h={logs24h} />
+      <DailyDigest logs30d={logs30d} poolMap={poolMap} />
 
       <section id="trends" className="scroll-mt-6">
         <div className="grid gap-6 xl:grid-cols-3">

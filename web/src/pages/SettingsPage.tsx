@@ -22,6 +22,7 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import ErrorState from "@/components/ErrorState";
 import PageHeader from "@/components/PageHeader";
 import SectionHeading from "@/components/SectionHeading";
+import SideTOC, { type TOCSection } from "@/components/SideTOC";
 import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
 import {
@@ -87,6 +88,16 @@ const INITIAL_TOKEN_DRAFT: TokenDraft = {
 const TOKEN_GRID_COLUMNS =
   "xl:grid-cols-[minmax(10rem,1fr)_minmax(0,4.8fr)_9.5rem_6.25rem_6.25rem_11.5rem]";
 const TOKEN_COLUMN_LABELS = ["名称", "Token", "创建时间", "状态", "归属"];
+
+const SETTINGS_SECTIONS: TOCSection[] = [
+  { id: "settings-gateway", label: "Gateway" },
+  { id: "notifications", label: "Notifications" },
+  { id: "token-management", label: "Tokens" },
+  { id: "data-retention", label: "Retention" },
+  { id: "system", label: "System" },
+  { id: "config-transfer", label: "Transfer" },
+  { id: "notification-history", label: "History" },
+];
 
 export default function SettingsPage() {
   const [service, setService] = useState<CpaService | null>(null);
@@ -572,12 +583,16 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-12 pb-8">
+      <SideTOC sections={SETTINGS_SECTIONS} ready={!loading} />
       <PageHeader
         title="Settings"
         description="管理网关行为、访问凭证与系统连接。"
       />
 
-      <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-stretch">
+      <section
+        id="settings-gateway"
+        className="scroll-mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-stretch"
+      >
         <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
           <SectionHeading
             title="Gateway Behavior"
@@ -669,16 +684,18 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      <NotificationsSection
-        initialExpiringDays={settings?.notification_expiring_days ?? 7}
-        onExpiringDaysChange={(value) =>
-          setSettings((current) =>
-            current
-              ? { ...current, notification_expiring_days: value }
-              : current,
-          )
-        }
-      />
+      <div id="notifications" className="scroll-mt-6">
+        <NotificationsSection
+          initialExpiringDays={settings?.notification_expiring_days ?? 7}
+          onExpiringDaysChange={(value) =>
+            setSettings((current) =>
+              current
+                ? { ...current, notification_expiring_days: value }
+                : current,
+            )
+          }
+        />
+      </div>
 
       <section id="token-management" className="surface-section px-5 py-5 sm:px-6 scroll-mt-6">
         <SectionHeading
@@ -731,31 +748,37 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      <DataRetentionSection
-        retentionDays={settings?.data_retention_days ?? 0}
-        savingRetention={savingField === "data_retention_days"}
-        onRetentionDaysCommit={(value) => {
-          setSettings((current) =>
-            current ? { ...current, data_retention_days: value } : current,
-          );
-          void saveSetting("data_retention_days", value);
-        }}
-        summary={retentionSummary}
-        onReloadSummary={async () => {
-          await loadRetentionSummary();
-        }}
-      />
+      <div id="data-retention" className="scroll-mt-6">
+        <DataRetentionSection
+          retentionDays={settings?.data_retention_days ?? 0}
+          savingRetention={savingField === "data_retention_days"}
+          onRetentionDaysCommit={(value) => {
+            setSettings((current) =>
+              current ? { ...current, data_retention_days: value } : current,
+            );
+            void saveSetting("data_retention_days", value);
+          }}
+          summary={retentionSummary}
+          onReloadSummary={async () => {
+            await loadRetentionSummary();
+          }}
+        />
+      </div>
 
-      <SystemSection
-        healthCheckInterval={systemForm.health_check_interval}
-        saving={savingField === "health_check_interval"}
-        onCommit={(value) => {
-          setSystemForm({ health_check_interval: value });
-          void saveSetting("health_check_interval", value);
-        }}
-      />
+      <div id="system" className="scroll-mt-6">
+        <SystemSection
+          healthCheckInterval={systemForm.health_check_interval}
+          saving={savingField === "health_check_interval"}
+          onCommit={(value) => {
+            setSystemForm({ health_check_interval: value });
+            void saveSetting("health_check_interval", value);
+          }}
+        />
+      </div>
 
-      <ConfigTransferSection onImported={() => load(true)} />
+      <div id="config-transfer" className="scroll-mt-6">
+        <ConfigTransferSection onImported={() => load(true)} />
+      </div>
 
       <NotificationHistorySection />
 
