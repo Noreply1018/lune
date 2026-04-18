@@ -39,6 +39,7 @@ type TabKey = "overview" | "playground" | "debug";
 const PRESET_MESSAGES = [
   { label: "你好", value: "你好，请用一句话回复我。" },
   { label: "你是什么模型？", value: "请告诉我你的模型名称和版本。" },
+  { label: "自定义", value: "" },
 ];
 
 type AccountStats = {
@@ -321,9 +322,7 @@ function OverviewPanel({
         </section>
       )}
 
-      {account.source_kind !== "cpa" ? (
-        <ProbeConfigSection accountId={account.id} account={account} availableModels={models} />
-      ) : null}
+      <ProbeConfigSection accountId={account.id} account={account} availableModels={models} />
     </div>
   );
 }
@@ -519,23 +518,24 @@ function PlaygroundPanel({
       <section className="space-y-3">
         <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Message</p>
         <div className="flex flex-wrap gap-2">
-          {PRESET_MESSAGES.map((preset) => (
-            <button
-              key={preset.label}
-              type="button"
-              onClick={() => {
-                setMessage(preset.value);
-                void runTest(preset.value);
-              }}
-              disabled={!canSend}
-              className={cn(
-                "rounded-full border border-moon-200/55 bg-white/75 px-3 py-1.5 text-[12.5px] text-moon-600 transition-colors hover:bg-white hover:text-moon-800",
-                !canSend && "cursor-not-allowed opacity-55 hover:bg-white/75 hover:text-moon-600",
-              )}
-            >
-              {preset.label}
-            </button>
-          ))}
+          {PRESET_MESSAGES.map((preset) => {
+            const presetDisabled = loading || disabled;
+            return (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => setMessage(preset.value)}
+                disabled={presetDisabled}
+                className={cn(
+                  "rounded-full border border-moon-200/55 bg-white/75 px-3 py-1.5 text-[12.5px] text-moon-600 transition-colors hover:bg-white hover:text-moon-800",
+                  presetDisabled &&
+                    "cursor-not-allowed opacity-55 hover:bg-white/75 hover:text-moon-600",
+                )}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
         </div>
         <textarea
           value={message}

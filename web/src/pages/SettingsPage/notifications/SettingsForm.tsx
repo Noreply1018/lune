@@ -41,22 +41,25 @@ export default function SettingsForm({
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between gap-4 rounded-[1rem] border border-white/75 bg-white/75 px-4 py-3">
-        <div>
-          <p className="text-sm font-medium text-moon-800">启用通知</p>
-          <p className="text-xs leading-5 text-moon-400">
-            关闭后所有事件都不再投递，已配置的企微信息保留。
-          </p>
+      <div className="grid gap-4 sm:grid-cols-2 sm:items-stretch">
+        <div className="flex items-center justify-between gap-4 rounded-[1rem] border border-white/75 bg-white/75 px-4 py-3">
+          <div>
+            <p className="text-sm font-medium text-moon-800">启用通知</p>
+            <p className="text-xs leading-5 text-moon-400">
+              关闭后所有事件都不再投递，已配置的企微信息保留。
+            </p>
+          </div>
+          <Switch
+            checked={settings.enabled}
+            disabled={saving}
+            onCheckedChange={(checked) => {
+              const next = { ...settings, enabled: checked };
+              onChange(next);
+              onCommit(next);
+            }}
+          />
         </div>
-        <Switch
-          checked={settings.enabled}
-          disabled={saving}
-          onCheckedChange={(checked) => {
-            const next = { ...settings, enabled: checked };
-            onChange(next);
-            onCommit(next);
-          }}
-        />
+        {testSlot ?? null}
       </div>
 
       {!settings.enabled ? (
@@ -114,8 +117,6 @@ export default function SettingsForm({
             企微会把 @手机号 链接到对应成员；@all 为 @所有人。
           </p>
         </div>
-
-        {testSlot ? <div className="pt-1">{testSlot}</div> : null}
       </section>
     </div>
   );

@@ -27,6 +27,7 @@ type FlashState = "success" | "error" | null;
 export default function AccountCard({
   member,
   requests,
+  successRate,
   variant,
   priorityIndex,
   dragging = false,
@@ -41,6 +42,7 @@ export default function AccountCard({
 }: {
   member: PoolMember;
   requests: number;
+  successRate: number | null;
   variant: Variant;
   priorityIndex?: number;
   dragging?: boolean;

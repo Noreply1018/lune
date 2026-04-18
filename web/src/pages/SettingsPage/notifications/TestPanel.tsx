@@ -17,8 +17,9 @@ type TestPanelProps = {
   onRun: () => void;
 };
 
-// TestPanel renders an inline row meant to sit inside the channel-config card;
-// it owns only the action button plus the latest result strip.
+// TestPanel renders a self-contained card meant to sit in the top two-column
+// strip next to the "启用通知" switch; it owns the action button plus the
+// latest result line.
 export default function TestPanel({
   loading,
   result,
@@ -27,7 +28,7 @@ export default function TestPanel({
   onRun,
 }: TestPanelProps) {
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-[0.9rem] border border-moon-200/45 bg-moon-50/40 px-3 py-2.5">
+    <div className="flex flex-wrap items-center gap-3 rounded-[1rem] border border-white/75 bg-white/75 px-4 py-3">
       <Button
         className="rounded-full bg-lunar-500 text-white hover:bg-lunar-600 focus-visible:ring-2 focus-visible:ring-lunar-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
         onClick={onRun}
