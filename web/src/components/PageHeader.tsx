@@ -7,6 +7,7 @@ export default function PageHeader({
   description,
   actions,
   meta,
+  metaEnd,
   ornament,
   className,
 }: {
@@ -15,6 +16,7 @@ export default function PageHeader({
   description?: ReactNode;
   actions?: ReactNode;
   meta?: ReactNode;
+  metaEnd?: ReactNode;
   ornament?: ReactNode;
   className?: string;
 }) {
@@ -57,9 +59,14 @@ export default function PageHeader({
             </div>
           )}
         </div>
-        {meta && (
-          <div className="flex flex-wrap gap-x-4 gap-y-2 text-[13px] text-moon-500">
+        {(meta || metaEnd) && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-moon-500">
             {meta}
+            {metaEnd && (
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {metaEnd}
+              </div>
+            )}
           </div>
         )}
       </div>

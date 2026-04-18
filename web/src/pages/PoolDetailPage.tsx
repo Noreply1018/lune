@@ -513,30 +513,10 @@ export default function PoolDetailPage() {
               size="sm"
               onClick={runSelfCheck}
               disabled={selfChecking || enabledMembers.length === 0}
-              className="rounded-full border-moon-200/55 bg-white/45"
+              className="rounded-full border-status-green/55 bg-status-green/10 text-status-green hover:bg-status-green/18 hover:text-status-green"
             >
               <ShieldCheck className="size-3.5" />
               {selfChecking ? "自检中" : "自检 Pool"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={openSnippetsWithToken}
-              disabled={!hasConnectToken}
-              className="rounded-full border-moon-200/55 bg-white/45"
-            >
-              <KeyRound className="size-3.5" />
-              Env Snippets
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={openQrWithToken}
-              disabled={!hasConnectToken}
-              className="rounded-full border-moon-200/55 bg-white/45"
-            >
-              <QrCode className="size-3.5" />
-              QR
             </Button>
           </div>
         }
@@ -560,8 +540,16 @@ export default function PoolDetailPage() {
             <span>{pool.routable_account_count} 可用</span>
             <span>24h 请求 {compact(stats?.total_requests ?? 0)}</span>
             <span>成功率 {pct(stats?.success_rate ?? 0)}</span>
+          </>
+        }
+        metaEnd={
+          <>
             {primaryPoolToken ? (
-              <span className="inline-flex items-center gap-1.5">
+              // inline-flex flex-wrap + basis-full on the disabled link lets the
+              // "已禁用 · ..." warning drop onto its own visual row tucked under
+              // the token, instead of pushing Env/QR off-line or forcing the
+              // whole metaEnd group to wrap as a single orphaned block.
+              <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                 <span
                   className={`size-2 rounded-full ${
                     primaryPoolToken.enabled ? "bg-status-green" : "bg-moon-400"
@@ -578,7 +566,7 @@ export default function PoolDetailPage() {
                   <button
                     type="button"
                     onClick={() => jumpToTokenInSettings(primaryPoolToken.id)}
-                    className="text-status-yellow hover:underline"
+                    className="basis-full text-status-yellow hover:underline"
                   >
                     已禁用 · 前往 Settings 启用 →
                   </button>
@@ -589,6 +577,28 @@ export default function PoolDetailPage() {
                 Token {primaryTokenDisplay}
               </span>
             )}
+            <Button
+              variant="outline"
+              size="icon-xs"
+              onClick={openSnippetsWithToken}
+              disabled={!hasConnectToken}
+              className="rounded-full border-moon-200/55 bg-white/45"
+              aria-label="Env Snippets"
+              title="Env Snippets"
+            >
+              <KeyRound className="size-3" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon-xs"
+              onClick={openQrWithToken}
+              disabled={!hasConnectToken}
+              className="rounded-full border-moon-200/55 bg-white/45"
+              aria-label="Token QR"
+              title="Token QR"
+            >
+              <QrCode className="size-3" />
+            </Button>
           </>
         }
       />
