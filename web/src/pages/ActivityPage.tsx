@@ -1698,7 +1698,13 @@ export default function ActivityPage() {
               onValueChange={(value) => setFilterPool(value ?? "all")}
             >
               <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
-                <SelectValue placeholder="全部" />
+                <SelectValue placeholder="全部">
+                  {(value: string | null) => {
+                    if (!value || value === "all") return "全部";
+                    const pool = pools.find((p) => String(p.id) === value);
+                    return pool?.label ?? `Pool #${value}`;
+                  }}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">全部</SelectItem>
@@ -1717,7 +1723,13 @@ export default function ActivityPage() {
               onValueChange={(value) => setFilterStatus(value ?? "all")}
             >
               <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
-                <SelectValue placeholder="全部" />
+                <SelectValue placeholder="全部">
+                  {(value: string | null) => {
+                    if (value === "success") return "成功";
+                    if (value === "error") return "失败";
+                    return "全部";
+                  }}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">全部</SelectItem>
@@ -1733,7 +1745,11 @@ export default function ActivityPage() {
               onValueChange={(value) => setFilterModel(value ?? "all")}
             >
               <SelectTrigger className="h-9 rounded-full border-moon-200/70 bg-white/82 px-3 text-sm text-moon-600">
-                <SelectValue placeholder="全部" />
+                <SelectValue placeholder="全部">
+                  {(value: string | null) =>
+                    !value || value === "all" ? "全部" : value
+                  }
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">全部</SelectItem>
