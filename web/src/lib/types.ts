@@ -101,6 +101,7 @@ export interface RequestLog {
   success: boolean;
   error_message: string | null;
   source_kind: string;
+  attempt_count: number;
   created_at: string;
 }
 
@@ -112,6 +113,7 @@ export interface Overview {
   models_total: number;
   requests_today: number;
   success_rate_today: number;
+  avg_latency_today: number;
   global_token_id: number | null;
   global_token_masked: string;
   alerts: OverviewAlert[];

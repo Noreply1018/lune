@@ -85,17 +85,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, router.ErrNoRoute) {
 			webutil.WriteGatewayError(w, 404, "no_route", fmt.Sprintf("no route for model: %s", model))
-			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "")
+			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "", 0)
 			return
 		}
 		if errors.Is(err, router.ErrPoolDisabled) {
 			webutil.WriteGatewayError(w, 503, "pool_disabled", "pool is disabled")
-			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "")
+			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "", 0)
 			return
 		}
 		if errors.Is(err, router.ErrNoHealthyAccount) {
 			webutil.WriteGatewayError(w, 503, "no_healthy_account", "no healthy account available")
-			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "")
+			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "", 0)
 			return
 		}
 		if errors.Is(err, router.ErrModelNotOnAccount) {
@@ -105,7 +105,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			webutil.WriteGatewayError(w, 404, "model_not_on_account",
 				fmt.Sprintf("account %d does not list model: %s", accID, model))
-			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "")
+			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "", 0)
 			return
 		}
 		webutil.WriteGatewayError(w, 500, "internal", err.Error())
@@ -125,8 +125,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var exclude []int64
 	var lastErr error
 	var lastStatusCode int
+	attemptsUsed := 0
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		attemptsUsed = attempt + 1
 		// Exponential backoff for retries
 		if attempt > 0 {
 			base := time.Duration(1<<(attempt-1)) * 200 * time.Millisecond
@@ -157,7 +159,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if !IsRetryable(result.Err) {
 				webutil.WriteGatewayError(w, 502, "upstream_failed", result.Err.Error())
-				h.logRequest(requestID, accessToken, model, resolved, 0, start, isStream, r, false, result.Err.Error(), Usage{}, resolved.Account.SourceKind)
+				h.logRequest(requestID, accessToken, model, resolved, 0, start, isStream, r, false, result.Err.Error(), Usage{}, resolved.Account.SourceKind, attemptsUsed)
 				return
 			}
 			continue
@@ -166,7 +168,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if IsRetryableStatus(result.StatusCode) && attempt < maxRetries-1 {
 			// streaming response already written, can't retry
 			if isStream {
-				h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, "upstream error", result.Usage, resolved.Account.SourceKind)
+				h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, "upstream error", result.Usage, resolved.Account.SourceKind, attemptsUsed)
 				return
 			}
 			exclude = append(exclude, resolved.AccountID)
@@ -197,7 +199,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, "", result.Usage, resolved.Account.SourceKind)
+		h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, "", result.Usage, resolved.Account.SourceKind, attemptsUsed)
 		return
 	}
 
@@ -209,7 +211,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errMsg = fmt.Sprintf("upstream returned HTTP %d", lastStatusCode)
 	}
 	webutil.WriteGatewayError(w, 502, "upstream_failed", errMsg)
-	h.logRequest(requestID, accessToken, model, nil, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, "")
+	h.logRequest(requestID, accessToken, model, nil, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, "", attemptsUsed)
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter) {
@@ -252,7 +254,7 @@ func (h *Handler) resolveTarget(account store.Account) UpstreamTarget {
 	}
 }
 
-func (h *Handler) logRequest(requestID string, token *store.AccessToken, model string, resolved *router.ResolvedRoute, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string) {
+func (h *Handler) logRequest(requestID string, token *store.AccessToken, model string, resolved *router.ResolvedRoute, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string, attemptCount int) {
 	tokenName := ""
 	if token != nil {
 		tokenName = token.Name
@@ -263,6 +265,11 @@ func (h *Handler) logRequest(requestID string, token *store.AccessToken, model s
 		modelActual = resolved.TargetModel
 		poolID = resolved.PoolID
 		accountID = resolved.AccountID
+	}
+	// attemptCount == 0 对应"还没跑进重试循环就失败"的路由拒绝场景。
+	// >=1 才是真正发过上游请求的次数。store 层只 clamp 负值。
+	if attemptCount < 0 {
+		attemptCount = 0
 	}
 
 	log := &store.RequestLog{
@@ -281,6 +288,7 @@ func (h *Handler) logRequest(requestID string, token *store.AccessToken, model s
 		Success:         success,
 		ErrorMessage:    errMsg,
 		SourceKind:      sourceKind,
+		AttemptCount:    attemptCount,
 	}
 	go func() {
 		if err := h.store.InsertLog(log); err != nil {

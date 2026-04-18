@@ -113,6 +113,7 @@ type RequestLog struct {
 	Success         bool   `json:"success"`
 	ErrorMessage    string `json:"error_message"`
 	SourceKind      string `json:"source_kind"`
+	AttemptCount    int    `json:"attempt_count"`
 	CreatedAt       string `json:"created_at"`
 }
 
@@ -180,6 +181,7 @@ type Overview struct {
 	ModelsTotal       int     `json:"models_total"`
 	RequestsToday     int64   `json:"requests_today"`
 	SuccessRateToday  float64 `json:"success_rate_today"`
+	AvgLatencyToday   float64 `json:"avg_latency_today"`
 	GlobalTokenID     *int64  `json:"global_token_id,omitempty"`
 	GlobalTokenMasked string  `json:"global_token_masked"`
 	Alerts            []Alert `json:"alerts"`

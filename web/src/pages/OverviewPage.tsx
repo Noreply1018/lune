@@ -77,7 +77,12 @@ function getStatusSentence(overview: Overview | null, poolSnapshots: PoolSnapsho
   }
 
   if (overview.requests_today > 0) {
-    parts.push(`今日 ${compact(overview.requests_today)} 次请求`);
+    const avg = overview.avg_latency_today;
+    if (avg > 0) {
+      parts.push(`今日 ${compact(overview.requests_today)} 次请求 · 平均 ${latency(avg)}`);
+    } else {
+      parts.push(`今日 ${compact(overview.requests_today)} 次请求`);
+    }
   } else {
     parts.push("今日暂无请求");
   }

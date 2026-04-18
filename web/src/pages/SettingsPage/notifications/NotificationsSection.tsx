@@ -10,7 +10,6 @@ import { ArrowUpRight } from "lucide-react";
 import { toast } from "@/components/Feedback";
 import SectionHeading from "@/components/SectionHeading";
 import { api, ApiError } from "@/lib/api";
-import { useRouter } from "@/lib/router";
 
 import ExpiringDaysInput from "./ExpiringDaysInput";
 import SettingsForm from "./SettingsForm";
@@ -68,8 +67,6 @@ export default function NotificationsSection({
   const settingsSeqRef = useRef(0);
   const subSeqRef = useRef<Record<string, number>>({});
   const expiringDaysSeqRef = useRef(0);
-
-  const { navigate } = useRouter();
 
   useEffect(() => {
     setExpiringDays(initialExpiringDays);
@@ -298,28 +295,16 @@ export default function NotificationsSection({
 
   function jumpToDeliveries(event: MouseEvent<HTMLAnchorElement>) {
     event.preventDefault();
-    navigate("/admin/activity");
-    // The custom router stores pathname without hash, so navigate() above
-    // writes /admin/activity. We then add the hash via replaceState so the
-    // URL is stateful (survives refresh / share) without confusing the
-    // pathname match in App.tsx routing.
-    window.history.replaceState(null, "", "/admin/activity#notifications");
-    // ActivityPage is lazy-loaded and its Notifications section renders
-    // after the first data fetch, so we retry scroll-into-view until the
-    // anchor appears.
-    let attempts = 0;
-    const tryScroll = () => {
-      const el = document.getElementById("notifications");
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "start" });
-        return;
-      }
-      if (attempts < 20) {
-        attempts += 1;
-        window.setTimeout(tryScroll, 60);
-      }
-    };
-    tryScroll();
+    // Notification history lives in an independent section on this same page.
+    // Setting window.location.hash both updates the URL and emits
+    // `hashchange`, which SettingsPage.handleHash already handles (retry loop
+    // + cleanup). Doing it there keeps scroll logic single-sourced.
+    if (window.location.hash === "#notification-history") {
+      // Same hash — no event fires. Manually kick the listener.
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    } else {
+      window.location.hash = "notification-history";
+    }
   }
 
   // Use the live draft, not the persisted value, so users see the test
@@ -414,7 +399,7 @@ export default function NotificationsSection({
 
           <div className="flex justify-end">
             <a
-              href="/admin/activity#notifications"
+              href="/admin/settings#notification-history"
               onClick={jumpToDeliveries}
               className="inline-flex items-center gap-1.5 text-xs font-medium text-lunar-600 hover:text-lunar-700"
             >

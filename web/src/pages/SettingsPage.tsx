@@ -61,6 +61,7 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import NotificationsSection from "./SettingsPage/notifications/NotificationsSection";
+import NotificationHistorySection from "./SettingsPage/notifications/NotificationHistorySection";
 import DataRetentionSection from "./SettingsPage/data-retention/DataRetentionSection";
 import ConfigTransferSection from "./SettingsPage/config-transfer/ConfigTransferSection";
 import SystemSection from "./SettingsPage/system/SystemSection";
@@ -182,8 +183,9 @@ export default function SettingsPage() {
       const hash = window.location.hash;
       const tokenMatch = hash.match(/^#access-token-(\d+)$/);
       const tokenId = tokenMatch ? Number(tokenMatch[1]) : null;
-      const wantsSection = hash === "#token-management" || tokenId != null;
-      if (!wantsSection) return;
+      const wantsTokens = hash === "#token-management" || tokenId != null;
+      const wantsHistory = hash === "#notification-history";
+      if (!wantsTokens && !wantsHistory) return;
 
       if (tokenId != null) {
         setHighlightedTokenId(tokenId);
@@ -194,11 +196,12 @@ export default function SettingsPage() {
         }, 2600);
       }
 
+      const targetId = wantsHistory ? "notification-history" : "token-management";
       if (scrollRetryRef.current) window.clearTimeout(scrollRetryRef.current);
       let attempts = 0;
       const tryScroll = () => {
         scrollRetryRef.current = null;
-        const section = document.getElementById("token-management");
+        const section = document.getElementById(targetId);
         if (section) {
           section.scrollIntoView({ behavior: "smooth", block: "start" });
           return;
@@ -753,6 +756,8 @@ export default function SettingsPage() {
       />
 
       <ConfigTransferSection onImported={() => load(true)} />
+
+      <NotificationHistorySection />
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md overflow-hidden rounded-[1.6rem] border border-white/75 bg-white/95 p-0 shadow-[0_26px_70px_-38px_rgba(74,68,108,0.34)]">

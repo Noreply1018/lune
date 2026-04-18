@@ -19,7 +19,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 11
+const v3SchemaVersion = 12
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
     success           INTEGER NOT NULL DEFAULT 1,
     error_message     TEXT NOT NULL DEFAULT '',
     source_kind       TEXT NOT NULL DEFAULT '',
+    attempt_count     INTEGER NOT NULL DEFAULT 1,
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -198,7 +199,7 @@ INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_templa
 `
 
 func New(dbPath string) (*Store, error) {
-	dsn := dbPath + "?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)"
+	dsn := dbPath + "?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -239,8 +240,8 @@ func (s *Store) migrateV3(dbPath string) error {
 		return nil // already at latest
 	}
 
-	if ver >= 3 && ver <= 10 {
-		slog.Info("migrating schema to v11 (probe models + last probe)", "from_version", ver)
+	if ver >= 3 && ver < v3SchemaVersion {
+		slog.Info("migrating schema", "from_version", ver, "to_version", v3SchemaVersion)
 		if ver < 8 {
 			if err := s.migrateCodexQuotaColumns(); err != nil {
 				return fmt.Errorf("migrate codex quota columns: %w", err)
@@ -256,8 +257,15 @@ func (s *Store) migrateV3(dbPath string) error {
 				return fmt.Errorf("migrate notification text-only: %w", err)
 			}
 		}
-		if err := s.migrateProbeColumns(); err != nil {
-			return fmt.Errorf("migrate probe columns: %w", err)
+		if ver < 11 {
+			if err := s.migrateProbeColumns(); err != nil {
+				return fmt.Errorf("migrate probe columns: %w", err)
+			}
+		}
+		if ver < 12 {
+			if err := s.migrateAttemptCountColumn(); err != nil {
+				return fmt.Errorf("migrate attempt_count column: %w", err)
+			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
 	}
@@ -501,6 +509,31 @@ func (s *Store) migrateProbeColumns() error {
 
 	s.schemaMu.Lock()
 	delete(s.schemaCache, "accounts")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+// migrateAttemptCountColumn adds the attempt_count column to request_logs so
+// the gateway can surface "retry saved the day" telemetry. Idempotent.
+func (s *Store) migrateAttemptCountColumn() error {
+	exists, err := s.tableExists("request_logs")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	has, err := s.hasColumn("request_logs", "attempt_count")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := s.db.Exec(`ALTER TABLE request_logs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return fmt.Errorf("add column attempt_count: %w", err)
+		}
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "request_logs")
 	s.schemaMu.Unlock()
 	return nil
 }

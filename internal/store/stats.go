@@ -70,6 +70,10 @@ func (s *Store) GetOverview() (*Overview, error) {
 		`SELECT COALESCE(CAST(SUM(success) AS REAL) / NULLIF(COUNT(*), 0), 0) FROM request_logs WHERE created_at >= ?`,
 		todayStart,
 	).Scan(&o.SuccessRateToday)
+	s.db.QueryRow(
+		`SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE created_at >= ? AND success = 1 AND latency_ms > 0`,
+		todayStart,
+	).Scan(&o.AvgLatencyToday)
 
 	// global token metadata (first token where pool_id IS NULL)
 	var tokenID int64
@@ -255,7 +259,7 @@ func (s *Store) GetUsage(f UsageFilter) ([]RequestLog, int, error) {
 
 	query := `SELECT rl.id, rl.request_id, rl.access_token_name, rl.model_requested, rl.model_actual, rl.pool_id, rl.account_id,
 		COALESCE(a.label, '') AS account_label, rl.status_code, rl.latency_ms, rl.input_tokens, rl.output_tokens,
-		rl.stream, rl.request_ip, rl.success, rl.error_message, rl.source_kind, rl.created_at
+		rl.stream, rl.request_ip, rl.success, rl.error_message, rl.source_kind, rl.attempt_count, rl.created_at
 		FROM request_logs rl
 		LEFT JOIN accounts a ON a.id = rl.account_id
 		WHERE ` + where + ` ORDER BY rl.id DESC LIMIT ? OFFSET ?`
@@ -271,7 +275,7 @@ func (s *Store) GetUsage(f UsageFilter) ([]RequestLog, int, error) {
 	for rows.Next() {
 		var l RequestLog
 		var stream, success int
-		if err := rows.Scan(&l.ID, &l.RequestID, &l.AccessTokenName, &l.ModelRequested, &l.ModelActual, &l.PoolID, &l.AccountID, &l.AccountLabel, &l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP, &success, &l.ErrorMessage, &l.SourceKind, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.RequestID, &l.AccessTokenName, &l.ModelRequested, &l.ModelActual, &l.PoolID, &l.AccountID, &l.AccountLabel, &l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP, &success, &l.ErrorMessage, &l.SourceKind, &l.AttemptCount, &l.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		l.Stream = stream != 0
