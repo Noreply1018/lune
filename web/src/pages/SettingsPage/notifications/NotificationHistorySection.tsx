@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useRef, useState } from "react";
-import { ChevronDown, RefreshCw } from "lucide-react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import SectionHeading from "@/components/SectionHeading";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -9,7 +9,15 @@ import { cn } from "@/lib/utils";
 
 type StatusFilter = "all" | "success" | "failed" | "dropped" | "test";
 
-const PAGE_SIZE = 40;
+// Capped at the backend's hard limit (ListNotificationDeliveries clamps
+// anything over 200). Notification volume is small — a handful per day in
+// normal operation plus auto-prune — so 200 easily covers the visible
+// history. If the list ever hits this cap, the `truncated` banner tells
+// the user that older rows exist but are not in view.
+const FETCH_LIMIT = 200;
+// Aligned with Request Logs in ActivityPage: 5 rows per page keeps an
+// expanded detail row + its neighbours inside one viewport.
+const PAGE_SIZE = 5;
 
 export default function NotificationHistorySection() {
   const [eventTypes, setEventTypes] = useState<NotificationEventType[]>([]);
@@ -17,10 +25,9 @@ export default function NotificationHistorySection() {
   const [filterEvent, setFilterEvent] = useState("all");
   const [filterStatus, setFilterStatus] = useState<StatusFilter>("all");
   const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
+  const [truncated, setTruncated] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
 
   useEffect(() => {
     api.get<NotificationEventType[]>("/notifications/event-types")
@@ -30,49 +37,76 @@ export default function NotificationHistorySection() {
       });
   }, []);
 
-  function load(reset = true) {
-    const requestId = ++requestIdRef.current;
-    const before = !reset && deliveries.length ? deliveries[deliveries.length - 1] : null;
-    const params = new URLSearchParams();
-    params.set("limit", String(PAGE_SIZE));
-    if (filterEvent !== "all") params.set("event", filterEvent);
-    if (filterStatus !== "all") {
-      if (filterStatus === "test") params.set("triggered_by", "test");
-      else params.set("status", filterStatus);
-    }
-    if (before) {
-      params.set("before", before.created_at);
-      params.set("before_id", String(before.id));
-    }
-    if (reset) setError(null);
-    else setLoadingMore(true);
-
-    api.get<NotificationDelivery[]>(`/notifications/deliveries?${params.toString()}`)
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    api.get<NotificationDelivery[]>(
+      `/notifications/deliveries?limit=${FETCH_LIMIT}`,
+    )
       .then((items) => {
-        if (requestId !== requestIdRef.current) return;
-        setDeliveries((current) => (reset ? (items ?? []) : [...current, ...(items ?? [])]));
-        setHasMore((items?.length ?? 0) >= PAGE_SIZE);
+        if (cancelled) return;
+        const list = items ?? [];
+        setDeliveries(list);
+        setTruncated(list.length >= FETCH_LIMIT);
       })
       .catch((err) => {
-        if (requestId !== requestIdRef.current) return;
+        if (cancelled) return;
         setError(err instanceof Error ? err.message : "通知历史加载失败");
-      })
-      .finally(() => {
-        if (requestId === requestIdRef.current) setLoadingMore(false);
       });
-  }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
+  // Reset to page 1 whenever filter flips — otherwise a filter change that
+  // shrinks the list to one page leaves currentPage pointing at page 5 of 1
+  // until clamping eventually catches up.
   useEffect(() => {
-    load(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setCurrentPage(1);
   }, [filterEvent, filterStatus]);
+
+  const filteredDeliveries = useMemo(() => {
+    return deliveries.filter((item) => {
+      if (filterEvent !== "all" && item.event !== filterEvent) return false;
+      if (filterStatus !== "all") {
+        if (filterStatus === "test") {
+          if (item.triggered_by !== "test") return false;
+        } else {
+          // Test-triggered rows get the "test" label in the table regardless
+          // of their raw status, so treat them as a separate bucket and
+          // exclude them from the success/failed/dropped filters to avoid
+          // surfacing rows whose visible label contradicts the active
+          // filter.
+          if (item.triggered_by === "test") return false;
+          if (item.status !== filterStatus) return false;
+        }
+      }
+      return true;
+    });
+  }, [deliveries, filterEvent, filterStatus]);
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredDeliveries.length / PAGE_SIZE),
+  );
+  // Clamp at read time in case the filtered set shrinks under the current
+  // page index (e.g. filter flip between renders).
+  const clampedPage = Math.min(Math.max(1, currentPage), totalPages);
+  const pagedDeliveries = useMemo(
+    () =>
+      filteredDeliveries.slice(
+        (clampedPage - 1) * PAGE_SIZE,
+        clampedPage * PAGE_SIZE,
+      ),
+    [filteredDeliveries, clampedPage],
+  );
 
   const events = eventTypes.map((item) => item.event);
 
   return (
     <section
       id="notification-history"
-      className="surface-section scroll-mt-6 px-5 py-5"
+      className="surface-section scroll-mt-6 px-5 py-5 sm:px-6"
     >
       <SectionHeading
         title="Notification History"
@@ -109,6 +143,21 @@ export default function NotificationHistorySection() {
         <p className="mt-4 text-sm text-status-red">{error}</p>
       ) : null}
 
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-moon-400">
+        <p>
+          匹配到 {filteredDeliveries.length.toLocaleString()} 条记录
+          {filteredDeliveries.length > PAGE_SIZE
+            ? `，每页 ${PAGE_SIZE} 条`
+            : ""}
+          。
+        </p>
+        {truncated ? (
+          <p>
+            为保证加载稳定，当前仅展示最近 {FETCH_LIMIT.toLocaleString()} 条。
+          </p>
+        ) : null}
+      </div>
+
       <div className="mt-4 overflow-x-auto rounded-[1.45rem] border border-moon-200/60">
         <table className="min-w-full text-left text-sm">
           <thead className="bg-moon-100/60 text-xs uppercase tracking-[0.16em] text-moon-400">
@@ -124,7 +173,7 @@ export default function NotificationHistorySection() {
             </tr>
           </thead>
           <tbody className="divide-y divide-moon-200/50 bg-white/66">
-            {deliveries.length ? deliveries.map((item) => {
+            {pagedDeliveries.length ? pagedDeliveries.map((item) => {
               const expanded = expandedId === item.id;
               return (
                 <Fragment key={item.id}>
@@ -220,12 +269,35 @@ export default function NotificationHistorySection() {
         </table>
       </div>
 
-      {hasMore ? (
-        <div className="mt-4 flex justify-center">
-          <Button variant="outline" onClick={() => load(false)} disabled={loadingMore}>
-            {loadingMore ? <RefreshCw className="size-4 animate-spin" /> : null}
-            Load More
-          </Button>
+      {totalPages > 1 ? (
+        <div className="mt-4 flex items-center justify-between gap-3 text-sm text-moon-500">
+          <span className="text-xs text-moon-400">
+            第 {clampedPage} / {totalPages} 页
+          </span>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full"
+              disabled={clampedPage <= 1}
+              onClick={() => setCurrentPage(Math.max(1, clampedPage - 1))}
+            >
+              <ChevronLeft className="size-4" />
+              上一页
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full"
+              disabled={clampedPage >= totalPages}
+              onClick={() =>
+                setCurrentPage(Math.min(totalPages, clampedPage + 1))
+              }
+            >
+              下一页
+              <ChevronRight className="size-4" />
+            </Button>
+          </div>
         </div>
       ) : null}
     </section>

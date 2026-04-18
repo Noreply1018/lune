@@ -117,7 +117,7 @@ export default function AutoPruneCard({
         </div>
         <p className="mt-1.5 text-xs leading-5 text-moon-500">
           {enabled
-            ? "每次健康检查 tick 都会触发一次清理。"
+            ? `保留最近 ${retentionDays} 天数据，每次健康检查会删掉超出窗口的记录。`
             : "保留天数归零后不会再自动清理任何数据。"}
         </p>
         <div className="mt-3 space-y-1 text-xs text-moon-500">

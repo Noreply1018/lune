@@ -65,7 +65,6 @@ import NotificationsSection from "./SettingsPage/notifications/NotificationsSect
 import NotificationHistorySection from "./SettingsPage/notifications/NotificationHistorySection";
 import DataRetentionSection from "./SettingsPage/data-retention/DataRetentionSection";
 import ConfigTransferSection from "./SettingsPage/config-transfer/ConfigTransferSection";
-import SystemSection from "./SettingsPage/system/SystemSection";
 
 type EditableSettingField =
   | "request_timeout"
@@ -87,14 +86,23 @@ const INITIAL_TOKEN_DRAFT: TokenDraft = {
 
 const TOKEN_GRID_COLUMNS =
   "xl:grid-cols-[minmax(10rem,1fr)_minmax(0,4.8fr)_9.5rem_6.25rem_6.25rem_11.5rem]";
-const TOKEN_COLUMN_LABELS = ["名称", "Token", "创建时间", "状态", "归属"];
+// `center` shifts the header visually toward the column middle without moving
+// the data row below. Requested by design: 状态 列窄所以偏移量小，操作 列宽所以
+//偏移量大，两者合起来让右侧表头不再贴着列的左缘。
+const TOKEN_COLUMNS: { label: string; center: boolean }[] = [
+  { label: "名称", center: false },
+  { label: "Token", center: false },
+  { label: "创建时间", center: false },
+  { label: "状态", center: true },
+  { label: "归属", center: false },
+  { label: "操作", center: true },
+];
 
 const SETTINGS_SECTIONS: TOCSection[] = [
-  { id: "settings-gateway", label: "Gateway" },
+  { id: "settings-gateway", label: "Runtime" },
   { id: "notifications", label: "Notifications" },
   { id: "token-management", label: "Tokens" },
   { id: "data-retention", label: "Retention" },
-  { id: "system", label: "System" },
   { id: "config-transfer", label: "Transfer" },
   { id: "notification-history", label: "History" },
 ];
@@ -111,8 +119,8 @@ export default function SettingsPage() {
   const [gatewayForm, setGatewayForm] = useState({
     request_timeout: 120,
     max_retry_attempts: 3,
+    health_check_interval: 60,
   });
-  const [systemForm, setSystemForm] = useState({ health_check_interval: 60 });
   const [savingField, setSavingField] = useState<EditableSettingField | null>(
     null,
   );
@@ -159,8 +167,6 @@ export default function SettingsPage() {
         setGatewayForm({
           request_timeout: settingsData.request_timeout,
           max_retry_attempts: settingsData.max_retry_attempts,
-        });
-        setSystemForm({
           health_check_interval: settingsData.health_check_interval,
         });
       })
@@ -281,13 +287,11 @@ export default function SettingsPage() {
       if (saveSeqRef.current[field] !== seq) return;
       toast(err instanceof Error ? err.message : "保存设置失败", "error");
       if (prevSettings) {
-        if (field === "health_check_interval") {
-          setSystemForm((current) => ({
-            ...current,
-            health_check_interval: prevSettings.health_check_interval,
-          }));
-        }
-        if (field === "request_timeout" || field === "max_retry_attempts") {
+        if (
+          field === "request_timeout" ||
+          field === "max_retry_attempts" ||
+          field === "health_check_interval"
+        ) {
           setGatewayForm((current) => ({
             ...current,
             [field]: prevSettings[field],
@@ -595,8 +599,8 @@ export default function SettingsPage() {
       >
         <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
           <SectionHeading
-            title="Gateway Behavior"
-            description="控制请求超时与重试行为。"
+            title="Runtime"
+            description="控制请求超时、重试与健康检查节奏。"
           />
           <div className="mt-4 flex-1 divide-y divide-moon-200/30">
             <SettingsNumericRow
@@ -625,6 +629,21 @@ export default function SettingsPage() {
                   max_retry_attempts: value,
                 }));
                 void saveSetting("max_retry_attempts", value);
+              }}
+            />
+            <SettingsNumericRow
+              label="Health Check Interval"
+              value={gatewayForm.health_check_interval}
+              suffix="秒"
+              min={1}
+              helper="健康检查跳动周期；越短越快发现故障。"
+              saving={savingField === "health_check_interval"}
+              onCommit={(value) => {
+                setGatewayForm((current) => ({
+                  ...current,
+                  health_check_interval: value,
+                }));
+                void saveSetting("health_check_interval", value);
               }}
             />
           </div>
@@ -761,17 +780,6 @@ export default function SettingsPage() {
           summary={retentionSummary}
           onReloadSummary={async () => {
             await loadRetentionSummary();
-          }}
-        />
-      </div>
-
-      <div id="system" className="scroll-mt-6">
-        <SystemSection
-          healthCheckInterval={systemForm.health_check_interval}
-          saving={savingField === "health_check_interval"}
-          onCommit={(value) => {
-            setSystemForm({ health_check_interval: value });
-            void saveSetting("health_check_interval", value);
           }}
         />
       </div>
@@ -1052,17 +1060,17 @@ function TokenGroup({
               TOKEN_GRID_COLUMNS,
             )}
           >
-            {TOKEN_COLUMN_LABELS.map((label) => (
+            {TOKEN_COLUMNS.map(({ label, center }) => (
               <p
                 key={label}
-                className="text-[11px] font-medium tracking-[0.16em] text-moon-300"
+                className={cn(
+                  "text-[11px] font-medium tracking-[0.16em] text-moon-300",
+                  center && "text-center",
+                )}
               >
                 {label}
               </p>
             ))}
-            <p className="text-[11px] font-medium tracking-[0.16em] text-moon-300">
-              操作
-            </p>
           </div>
           {tokens.map((token) => (
             <TokenRow
