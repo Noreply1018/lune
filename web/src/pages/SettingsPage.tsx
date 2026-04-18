@@ -654,30 +654,31 @@ export default function SettingsPage() {
             title="CPA Service"
             description="查看当前 CPA 通道状态。"
           />
-          <div className="mt-4 flex flex-1 flex-col gap-4">
+          <div className="mt-4 flex flex-1 flex-col">
             {service ? (
-              <>
-                <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-                  <InfoBlock
-                    label="Status"
-                    value={
-                      <StatusBadge ok={service.status === "healthy"}>
-                        {service.status === "healthy" ? "Healthy" : "Error"}
-                      </StatusBadge>
-                    }
-                  />
-                  <InfoBlock label="Label" value={service.label || "--"} />
-                  <InfoBlock label="Base URL" value={service.base_url || "--"} />
-                  <InfoBlock
-                    label="Last Checked"
-                    value={
-                      service.last_checked_at
-                        ? shortDate(service.last_checked_at)
-                        : "尚未检查"
-                    }
-                  />
-                </div>
-                <div className="mt-auto flex justify-end">
+              // 3-row grid: Status/Label, Base URL/Last Checked, [空 / Test Connection]。
+              // 按钮放进右列第三行，让它与上面的 InfoBlock 对齐同一列，而不是在
+              // 整块 grid 底下单起一行横跨两列。
+              <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+                <InfoBlock
+                  label="Status"
+                  value={
+                    <StatusBadge ok={service.status === "healthy"}>
+                      {service.status === "healthy" ? "Healthy" : "Error"}
+                    </StatusBadge>
+                  }
+                />
+                <InfoBlock label="Label" value={service.label || "--"} />
+                <InfoBlock label="Base URL" value={service.base_url || "--"} />
+                <InfoBlock
+                  label="Last Checked"
+                  value={
+                    service.last_checked_at
+                      ? shortDate(service.last_checked_at)
+                      : "尚未检查"
+                  }
+                />
+                <div className="flex items-end justify-end sm:col-start-2">
                   <Button
                     variant="outline"
                     size="sm"
@@ -693,7 +694,7 @@ export default function SettingsPage() {
                     Test Connection
                   </Button>
                 </div>
-              </>
+              </div>
             ) : (
               <div className="flex h-full flex-col gap-3 rounded-[1.35rem] border border-dashed border-moon-200/55 px-4 py-4 text-sm text-moon-500">
                 <p>请通过环境变量完成 CPA 配置</p>
