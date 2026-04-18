@@ -209,12 +209,31 @@ type SystemNotification struct {
 }
 
 type DataRetentionSummary struct {
-	RetentionDays               int     `json:"retention_days"`
-	TotalLogs                   int64   `json:"total_logs"`
-	OldestLogAt                 *string `json:"oldest_log_at"`
-	NewestLogAt                 *string `json:"newest_log_at"`
-	TotalNotificationDeliveries int64   `json:"total_notification_deliveries"`
-	TotalNotificationOutbox     int64   `json:"total_notification_outbox"`
+	RetentionDays                  int     `json:"retention_days"`
+	DatabaseSizeBytes              int64   `json:"database_size_bytes"`
+	TotalLogs                      int64   `json:"total_logs"`
+	OldestLogAt                    *string `json:"oldest_log_at"`
+	NewestLogAt                    *string `json:"newest_log_at"`
+	LogsSizeBytes                  int64   `json:"logs_size_bytes"`
+	TotalNotificationDeliveries    int64   `json:"total_notification_deliveries"`
+	NotificationDeliveriesOldestAt *string `json:"notification_deliveries_oldest_at"`
+	NotificationDeliveriesNewestAt *string `json:"notification_deliveries_newest_at"`
+	TotalNotificationOutbox        int64   `json:"total_notification_outbox"`
+	OutboxPendingCount             int64   `json:"outbox_pending_count"`
+	OutboxDroppedCount             int64   `json:"outbox_dropped_count"`
+	LastPruneAt                    *string `json:"last_prune_at"`
+	LastPruneDeletedLogs           int64   `json:"last_prune_deleted_logs"`
+	LastPruneDeletedDeliveries     int64   `json:"last_prune_deleted_deliveries"`
+	LastPruneDeletedOutbox         int64   `json:"last_prune_deleted_outbox"`
+}
+
+type DataRetentionPreview struct {
+	RetentionDays            int   `json:"retention_days"`
+	LogsToDelete             int64 `json:"logs_to_delete"`
+	LogsToDeleteSizeBytes    int64 `json:"logs_to_delete_size_bytes"`
+	DeliveriesToDelete       int64 `json:"deliveries_to_delete"`
+	OutboxToDelete           int64 `json:"outbox_to_delete"`
+	OutboxSafetyDays         int   `json:"outbox_safety_days"`
 }
 
 // LatencyBucket holds percentile latencies for a single time bucket.

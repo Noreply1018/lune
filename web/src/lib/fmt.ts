@@ -62,3 +62,16 @@ export function relativeTime(iso: string | null): string {
 export function tokenCount(n: number): string {
   return `${compact(n)} tokens`;
 }
+
+/** Format a byte count as a human-readable size, e.g. 1536 -> "1.5 KB" */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const exponent = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+  );
+  const value = bytes / Math.pow(1024, exponent);
+  const decimals = exponent === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(decimals)} ${units[exponent]}`;
+}

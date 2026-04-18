@@ -240,6 +240,20 @@ export interface ConfigImportResult {
   updated_settings: number;
 }
 
+export interface ConfigImportPreview {
+  schema_version: string;
+  source_host: string;
+  exported_at: string;
+  include_secrets: boolean;
+  created_pools: number;
+  updated_pools: number;
+  created_tokens: number;
+  skipped_tokens: number;
+  updated_settings: number;
+  ignored_accounts: number;
+  ignored_services: number;
+}
+
 export interface SystemNotification {
   type: string;
   severity: "warning" | "critical";
@@ -252,11 +266,30 @@ export interface SystemNotification {
 
 export interface DataRetentionSummary {
   retention_days: number;
+  database_size_bytes: number;
   total_logs: number;
   oldest_log_at: string | null;
   newest_log_at: string | null;
+  logs_size_bytes: number;
   total_notification_deliveries: number;
+  notification_deliveries_oldest_at: string | null;
+  notification_deliveries_newest_at: string | null;
   total_notification_outbox: number;
+  outbox_pending_count: number;
+  outbox_dropped_count: number;
+  last_prune_at: string | null;
+  last_prune_deleted_logs: number;
+  last_prune_deleted_deliveries: number;
+  last_prune_deleted_outbox: number;
+}
+
+export interface DataRetentionPreview {
+  retention_days: number;
+  logs_to_delete: number;
+  logs_to_delete_size_bytes: number;
+  deliveries_to_delete: number;
+  outbox_to_delete: number;
+  outbox_safety_days: number;
 }
 
 export interface CpaService {

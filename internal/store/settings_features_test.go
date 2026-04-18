@@ -128,6 +128,76 @@ func TestGetDataRetentionSummaryIncludesNotificationCounts(t *testing.T) {
 	}
 }
 
+func TestGetDataRetentionPreviewReturnsCountsAndBytes(t *testing.T) {
+	st := newTestStore(t)
+
+	// Two logs: one inside the retention window, one outside.
+	expired := time.Now().UTC().AddDate(0, 0, -31).Format("2006-01-02 15:04:05")
+	fresh := time.Now().UTC().AddDate(0, 0, -5).Format("2006-01-02 15:04:05")
+	if _, err := st.db.Exec(
+		`INSERT INTO request_logs (request_id, access_token_name, model_requested, model_actual, request_ip, error_message, source_kind, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"req-old", "token-old", "gpt-4", "gpt-4-actual", "127.0.0.1", "", "openai_compat", expired,
+		"req-new", "token-new", "gpt-4", "gpt-4-actual", "127.0.0.1", "", "openai_compat", fresh,
+	); err != nil {
+		t.Fatalf("seed request logs: %v", err)
+	}
+	if _, err := st.db.Exec(
+		`INSERT INTO notification_deliveries (channel_id, channel_name, channel_type, event, severity, title, payload_summary, status, attempt, triggered_by, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		SingletonChannelID, SingletonChannelName, SingletonChannelType,
+		"test", "info", "t", "b", "success", 1, "test", expired,
+	); err != nil {
+		t.Fatalf("seed delivery: %v", err)
+	}
+	if _, err := st.db.Exec(
+		`INSERT INTO notification_outbox (channel_id, event, severity, payload, status, created_at)
+		 VALUES (?, ?, ?, ?, 'dropped', ?)`,
+		SingletonChannelID, "account_error", "critical", `{"event":"account_error"}`,
+		time.Now().UTC().AddDate(0, 0, -60).Format("2006-01-02 15:04:05"),
+	); err != nil {
+		t.Fatalf("seed outbox: %v", err)
+	}
+
+	preview, err := st.GetDataRetentionPreview(30)
+	if err != nil {
+		t.Fatalf("get preview: %v", err)
+	}
+	if preview.LogsToDelete != 1 {
+		t.Fatalf("expected 1 log to delete, got %d", preview.LogsToDelete)
+	}
+	if preview.LogsToDeleteSizeBytes <= 0 {
+		t.Fatalf("expected positive estimated size, got %d", preview.LogsToDeleteSizeBytes)
+	}
+	if preview.DeliveriesToDelete != 1 {
+		t.Fatalf("expected 1 delivery to delete, got %d", preview.DeliveriesToDelete)
+	}
+	if preview.OutboxToDelete != 1 {
+		t.Fatalf("expected 1 outbox to delete, got %d", preview.OutboxToDelete)
+	}
+	if preview.OutboxSafetyDays < 7 {
+		t.Fatalf("expected outbox safety window >= 7 days, got %d", preview.OutboxSafetyDays)
+	}
+
+	// Preview must be non-mutating.
+	summary, err := st.GetDataRetentionSummary(30)
+	if err != nil {
+		t.Fatalf("get summary: %v", err)
+	}
+	if summary.TotalLogs != 2 {
+		t.Fatalf("preview mutated logs: expected 2 remaining, got %d", summary.TotalLogs)
+	}
+
+	// Disabled auto-prune short-circuits to zeros without running any SQL.
+	disabled, err := st.GetDataRetentionPreview(0)
+	if err != nil {
+		t.Fatalf("get preview (disabled): %v", err)
+	}
+	if disabled.LogsToDelete != 0 || disabled.LogsToDeleteSizeBytes != 0 {
+		t.Fatalf("expected zeros when disabled, got %+v", disabled)
+	}
+}
+
 func TestPruneNotificationHistoryRetentionZeroKeepsOutbox(t *testing.T) {
 	st := newTestStore(t)
 

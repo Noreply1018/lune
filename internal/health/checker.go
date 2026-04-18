@@ -412,11 +412,11 @@ func (c *Checker) getInterval() time.Duration {
 
 func (c *Checker) pruneRequestLogs() {
 	retentionDays := syscfg.ParseNonNegativeInt(c.cache.GetSetting("data_retention_days"), syscfg.DefaultDataRetentionDays)
-	deleted, err := c.store.PruneRequestLogs(retentionDays)
+	deletedLogs, err := c.store.PruneRequestLogs(retentionDays)
 	if err != nil {
 		slog.Error("prune request logs", "err", err)
-	} else if deleted > 0 {
-		slog.Info("pruned request logs", "deleted", deleted, "retention_days", retentionDays)
+	} else if deletedLogs > 0 {
+		slog.Info("pruned request logs", "deleted", deletedLogs, "retention_days", retentionDays)
 	}
 
 	deletedDeliveries, deletedOutbox, err := c.store.PruneNotificationHistory(retentionDays)
@@ -431,6 +431,15 @@ func (c *Checker) pruneRequestLogs() {
 			"deleted_outbox", deletedOutbox,
 			"retention_days", retentionDays,
 		)
+	}
+
+	// Record the run unconditionally so the UI can show a recent
+	// "last_prune_at" timestamp even when nothing was due for deletion —
+	// that's how the user knows auto-prune is alive.
+	if retentionDays > 0 {
+		if err := c.store.RecordPruneRun(deletedLogs, deletedDeliveries, deletedOutbox); err != nil {
+			slog.Error("record prune run", "err", err)
+		}
 	}
 }
 

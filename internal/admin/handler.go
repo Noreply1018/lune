@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -112,7 +113,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("PUT /admin/api/settings", h.updateSettings)
 	handle("GET /admin/api/settings/notifications", h.listNotifications)
 	handle("GET /admin/api/settings/data-retention", h.getDataRetention)
+	handle("GET /admin/api/settings/data-retention/preview", h.previewDataRetention)
 	handle("POST /admin/api/settings/data-retention/prune", h.pruneDataRetention)
+	handle("POST /admin/api/import/preview", h.importPreview)
 	handle("GET /admin/api/notifications", h.getNotifications)
 	handle("PUT /admin/api/notifications/settings", h.updateNotificationSettings)
 	handle("PUT /admin/api/notifications/subscriptions/{event}", h.updateNotificationSubscription)
@@ -1053,6 +1056,21 @@ func (h *Handler) getDataRetention(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteData(w, 200, summary)
 }
 
+func (h *Handler) previewDataRetention(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.store.GetSettings()
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	retentionDays := syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays)
+	preview, err := h.store.GetDataRetentionPreview(retentionDays)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteData(w, 200, preview)
+}
+
 func (h *Handler) pruneDataRetention(w http.ResponseWriter, r *http.Request) {
 	settings, err := h.store.GetSettings()
 	if err != nil {
@@ -1069,6 +1087,12 @@ func (h *Handler) pruneDataRetention(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.internalError(w, err)
 		return
+	}
+	if retentionDays > 0 {
+		if err := h.store.RecordPruneRun(deleted, deletedDeliveries, deletedOutbox); err != nil {
+			h.internalError(w, err)
+			return
+		}
 	}
 	summary, err := h.store.GetDataRetentionSummary(retentionDays)
 	if err != nil {
@@ -1199,13 +1223,19 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
+	includeSecrets := syscfg.ParseBool(r.URL.Query().Get("include_secrets"), false)
+
 	accounts, err := h.store.ListAccounts()
 	if err != nil {
 		h.internalError(w, err)
 		return
 	}
 	for i := range accounts {
-		h.fillAccountResponse(&accounts[i])
+		if includeSecrets {
+			h.fillAccountResponseKeepSecret(&accounts[i])
+		} else {
+			h.fillAccountResponse(&accounts[i])
+		}
 	}
 	pools, err := h.store.ListPools()
 	if err != nil {
@@ -1226,13 +1256,19 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 		if tokens[i].PoolID != nil {
 			tokens[i].PoolLabel = poolLabelByID[*tokens[i].PoolID]
 		}
-		tokens[i].Token = ""
+		if !includeSecrets {
+			tokens[i].Token = ""
+		}
 	}
 	settings, err := h.store.GetSettings()
 	if err != nil {
 		h.internalError(w, err)
 		return
 	}
+	// admin_token is the keys-to-the-kingdom for this gateway — it's
+	// intentionally masked even in "complete" exports. A leaked file then
+	// only leaks upstream provider/CPA credentials (which the user can
+	// rotate out-of-band), not the control plane itself.
 	if _, ok := settings["admin_token"]; ok {
 		settings["admin_token"] = maskKey(settings["admin_token"])
 	}
@@ -1244,19 +1280,59 @@ func (h *Handler) getExport(w http.ResponseWriter, r *http.Request) {
 	for i := range cpaServices {
 		cpaServices[i].APIKeyMasked = maskKey(cpaServices[i].APIKey)
 		cpaServices[i].APIKeySet = cpaServices[i].APIKey != ""
-		cpaServices[i].APIKey = ""
-		cpaServices[i].ManagementKey = ""
+		if !includeSecrets {
+			cpaServices[i].APIKey = ""
+			cpaServices[i].ManagementKey = ""
+		}
 	}
 
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "unknown"
+	}
+	now := time.Now().UTC()
+	stamp := now.Format("20060102T150405Z")
+	filename := fmt.Sprintf("lune-export-%s-%s.json", stamp, hostname)
+
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	webutil.WriteData(w, 200, map[string]any{
-		"exported_at":   time.Now().UTC().Format(time.RFC3339),
-		"accounts":      accounts,
-		"pools":         pools,
-		"access_tokens": tokens,
-		"settings":      settings,
-		"cpa_services":  cpaServices,
+		"schema_version":  exportSchemaVersion,
+		"source_host":     hostname,
+		"exported_at":     now.Format(time.RFC3339),
+		"include_secrets": includeSecrets,
+		"accounts":        accounts,
+		"pools":           pools,
+		"access_tokens":   tokens,
+		"settings":        settings,
+		"cpa_services":    cpaServices,
 	})
 }
+
+// fillAccountResponseKeepSecret mirrors fillAccountResponse but leaves the
+// plaintext APIKey in place so "complete" exports actually carry enough
+// state to restore openai_compat accounts on a new machine. Only the
+// export handler should use this — every other API path must scrub keys.
+func (h *Handler) fillAccountResponseKeepSecret(a *store.Account) {
+	a.APIKeyMasked = maskKey(a.APIKey)
+	a.APIKeySet = a.APIKey != ""
+
+	models, _ := h.store.ListAccountModels(a.ID)
+	a.Models = models
+	if a.Models == nil {
+		a.Models = []string{}
+	}
+	if a.SourceKind == "cpa" && a.CpaServiceID != nil {
+		svc := h.cache.GetCpaService(*a.CpaServiceID)
+		if svc != nil {
+			a.Runtime = &store.AccountRuntime{
+				BaseURL:  svc.BaseURL,
+				AuthMode: "cpa",
+			}
+		}
+	}
+}
+
+const exportSchemaVersion = "3"
 
 func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
 	var raw struct {
@@ -1271,6 +1347,13 @@ func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
 	payload := raw.ConfigImportPayload
 	if raw.Data != nil {
 		payload = *raw.Data
+	}
+	if payload.SchemaVersion != "" && payload.SchemaVersion != exportSchemaVersion {
+		webutil.WriteAdminError(
+			w, 400, "schema_mismatch",
+			fmt.Sprintf("file schema_version=%q is not compatible with %q", payload.SchemaVersion, exportSchemaVersion),
+		)
+		return
 	}
 	validatedSettings := make(map[string]string, len(payload.Settings))
 	for key, value := range payload.Settings {
@@ -1294,6 +1377,51 @@ func (h *Handler) importConfig(w http.ResponseWriter, r *http.Request) {
 
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, result)
+}
+
+func (h *Handler) importPreview(w http.ResponseWriter, r *http.Request) {
+	var raw struct {
+		Data *store.ConfigImportPayload `json:"data"`
+		store.ConfigImportPayload
+	}
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+
+	payload := raw.ConfigImportPayload
+	if raw.Data != nil {
+		payload = *raw.Data
+	}
+	if payload.SchemaVersion != "" && payload.SchemaVersion != exportSchemaVersion {
+		webutil.WriteAdminError(
+			w, 400, "schema_mismatch",
+			fmt.Sprintf("file schema_version=%q is not compatible with %q", payload.SchemaVersion, exportSchemaVersion),
+		)
+		return
+	}
+	// Preview runs the same validation pipeline as import, otherwise the
+	// numbers wouldn't match reality.
+	validatedSettings := make(map[string]string, len(payload.Settings))
+	for key, value := range payload.Settings {
+		if key == "admin_token" || !syscfg.IsAllowedSettingKey(key) {
+			continue
+		}
+		normalizedValue, err := normalizeImportedSettingValue(key, value)
+		if err != nil {
+			webutil.WriteAdminError(w, 400, "bad_request", err.Error())
+			return
+		}
+		validatedSettings[key] = normalizedValue
+	}
+	payload.Settings = validatedSettings
+
+	preview, err := h.store.PreviewImport(payload)
+	if err != nil {
+		webutil.WriteAdminError(w, 400, "preview_failed", err.Error())
+		return
+	}
+	webutil.WriteData(w, 200, preview)
 }
 
 func normalizeImportedSettingValue(key, value string) (string, error) {

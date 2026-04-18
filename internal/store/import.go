@@ -11,6 +11,20 @@ type ConfigImportPayload struct {
 	Pools        []Pool            `json:"pools"`
 	AccessTokens []AccessToken     `json:"access_tokens"`
 	Settings     map[string]string `json:"settings"`
+
+	// Metadata carried by exports. Read-only from the import path's
+	// perspective — ImportConfig never writes these back into the DB,
+	// they exist purely so Preview and the UI can surface "where did
+	// this file come from".
+	SchemaVersion  string `json:"schema_version,omitempty"`
+	SourceHost     string `json:"source_host,omitempty"`
+	ExportedAt     string `json:"exported_at,omitempty"`
+	IncludeSecrets bool   `json:"include_secrets,omitempty"`
+
+	// Fields that are present in export output but not imported today.
+	// Kept so the preview can report "N accounts ignored" accurately.
+	Accounts    []Account    `json:"accounts,omitempty"`
+	CpaServices []CpaService `json:"cpa_services,omitempty"`
 }
 
 type ConfigImportResult struct {
@@ -21,6 +35,20 @@ type ConfigImportResult struct {
 	UpdatedSettings int `json:"updated_settings"`
 }
 
+type ConfigImportPreview struct {
+	SchemaVersion   string `json:"schema_version"`
+	SourceHost      string `json:"source_host"`
+	ExportedAt      string `json:"exported_at"`
+	IncludeSecrets  bool   `json:"include_secrets"`
+	CreatedPools    int    `json:"created_pools"`
+	UpdatedPools    int    `json:"updated_pools"`
+	CreatedTokens   int    `json:"created_tokens"`
+	SkippedTokens   int    `json:"skipped_tokens"`
+	UpdatedSettings int    `json:"updated_settings"`
+	IgnoredAccounts int    `json:"ignored_accounts"`
+	IgnoredServices int    `json:"ignored_services"`
+}
+
 func (s *Store) ImportConfig(payload ConfigImportPayload) (*ConfigImportResult, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -28,6 +56,49 @@ func (s *Store) ImportConfig(payload ConfigImportPayload) (*ConfigImportResult, 
 	}
 	defer tx.Rollback()
 
+	result, err := runImport(tx, payload)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// PreviewImport runs the same logic as ImportConfig but always rolls back,
+// so the UI can show "will create 2 pools, skip 4 tokens, update 6 settings"
+// without touching the database.
+func (s *Store) PreviewImport(payload ConfigImportPayload) (*ConfigImportPreview, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	// Always roll back — preview must never mutate.
+	defer tx.Rollback()
+
+	result, err := runImport(tx, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	preview := &ConfigImportPreview{
+		SchemaVersion:   payload.SchemaVersion,
+		SourceHost:      payload.SourceHost,
+		ExportedAt:      payload.ExportedAt,
+		IncludeSecrets:  payload.IncludeSecrets,
+		CreatedPools:    result.CreatedPools,
+		UpdatedPools:    result.UpdatedPools,
+		CreatedTokens:   result.CreatedTokens,
+		SkippedTokens:   result.SkippedTokens,
+		UpdatedSettings: result.UpdatedSettings,
+		IgnoredAccounts: len(payload.Accounts),
+		IgnoredServices: len(payload.CpaServices),
+	}
+	return preview, nil
+}
+
+func runImport(tx *sql.Tx, payload ConfigImportPayload) (*ConfigImportResult, error) {
 	result := &ConfigImportResult{}
 	poolIDByLabel := make(map[string]int64, len(payload.Pools))
 
@@ -127,9 +198,6 @@ func (s *Store) ImportConfig(payload ConfigImportPayload) (*ConfigImportResult, 
 		result.UpdatedSettings++
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
 	return result, nil
 }
 
