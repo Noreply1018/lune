@@ -113,10 +113,10 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 	if err != nil {
 		return o.fail(item, sub, Result{}, err.Error(), retrying)
 	}
-	title := n.Event
+	title := AutoTitle(item.Event)
 	renderedBody := item.Payload
 	payloadSummary := truncateString(item.Payload, 1024)
-	if rendered, err := RenderNotification(n, sub.TitleTemplate, sub.BodyTemplate); err == nil {
+	if rendered, err := RenderNotification(n, title, sub.BodyTemplate); err == nil {
 		title = rendered.Title
 		renderedBody = rendered.Body
 		payloadSummary = truncateString(rendered.Body, 1024)
@@ -159,10 +159,10 @@ func (o *Outbox) AttemptOne(ctx context.Context, item store.NotificationOutbox, 
 }
 
 func (o *Outbox) fail(item store.NotificationOutbox, sub store.NotificationSubscription, result Result, message string, retrying bool) error {
-	title := item.Event
+	title := AutoTitle(item.Event)
 	payloadSummary := truncateString(item.Payload, 1024)
 	if n, err := decodeNotificationPayload(item.Payload); err == nil {
-		if rendered, renderErr := RenderNotification(n, sub.TitleTemplate, sub.BodyTemplate); renderErr == nil {
+		if rendered, renderErr := RenderNotification(n, title, sub.BodyTemplate); renderErr == nil {
 			title = rendered.Title
 			payloadSummary = truncateString(rendered.Body, 1024)
 		}
@@ -229,16 +229,12 @@ func (o *Outbox) releaseItemLock(id int64, lk *itemLock) {
 
 // buildChannelRuntime translates the singleton settings into a ChannelRuntime
 // understood by the WeChat Work Bot driver. The driver expects an embedded
-// JSON config with url / format / mention_mobile_list fields, so we marshal
-// those back up here.
+// JSON config with webhook_url / mention_mobile_list; format is hardcoded to
+// text so WeCom's native @ mention (via mentioned_mobile_list) works.
 func buildChannelRuntime(settings store.NotificationSettings, sub store.NotificationSubscription, triggered string, rendered *RenderedMessage) (ChannelRuntime, error) {
 	url := strings.TrimSpace(settings.WebhookURL)
 	if url == "" {
 		return ChannelRuntime{}, errors.New("webhook url is empty")
-	}
-	format := settings.Format
-	if format == "" {
-		format = "markdown"
 	}
 	mobiles := settings.MentionMobileList
 	if mobiles == nil {
@@ -246,7 +242,6 @@ func buildChannelRuntime(settings store.NotificationSettings, sub store.Notifica
 	}
 	cfg, err := json.Marshal(map[string]any{
 		"webhook_url":         url,
-		"format":              format,
 		"mention_mobile_list": mobiles,
 	})
 	if err != nil {
@@ -257,7 +252,7 @@ func buildChannelRuntime(settings store.NotificationSettings, sub store.Notifica
 		Name:      store.SingletonChannelName,
 		Type:      store.SingletonChannelType,
 		Config:    cfg,
-		TitleTpl:  sub.TitleTemplate,
+		TitleTpl:  AutoTitle(sub.Event),
 		BodyTpl:   sub.BodyTemplate,
 		Triggered: triggered,
 		Rendered:  rendered,

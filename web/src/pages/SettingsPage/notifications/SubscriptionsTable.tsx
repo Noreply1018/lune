@@ -8,13 +8,13 @@ type SubscriptionsTableProps = {
   subscriptions: NotificationSubscription[];
   eventTypes: NotificationEventType[];
   savingField: Record<string, string | null>;
-  fieldErrors: Record<string, { title?: string | null; body?: string | null }>;
+  fieldErrors: Record<string, { body?: string | null }>;
   onCommit: (
     event: string,
-    field: "subscribed" | "title" | "body",
+    field: "subscribed" | "body",
     next: NotificationSubscription,
   ) => void;
-  onClearFieldError: (event: string, field: "title" | "body") => void;
+  onClearFieldError: (event: string, field: "body") => void;
 };
 
 export default function SubscriptionsTable({
@@ -33,7 +33,7 @@ export default function SubscriptionsTable({
         <div>
           <p className="text-sm font-medium text-moon-800">订阅事件</p>
           <p className="text-xs leading-5 text-moon-400">
-            每行一个事件；订阅开关独立，标题/正文保存即生效。严重级别由后端决定。
+            每行一个事件；订阅开关独立，正文保存即生效。标题固定为「Lune 通知：事件中文名」，展开后可查看具体标题。
           </p>
         </div>
       </header>
@@ -49,7 +49,6 @@ export default function SubscriptionsTable({
               subscription={sub}
               eventType={eventType}
               savingField={savingField[eventType.event] ?? null}
-              titleError={fieldErrors[eventType.event]?.title ?? null}
               bodyError={fieldErrors[eventType.event]?.body ?? null}
               onCommit={(field, next) => onCommit(eventType.event, field, next)}
               onClearFieldError={(field) =>

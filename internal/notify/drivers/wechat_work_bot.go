@@ -53,48 +53,20 @@ func (d *WeChatWorkBotDriver) Send(ctx context.Context, n notify.Notification, r
 	var cfg struct {
 		WebhookURL        string   `json:"webhook_url"`
 		MentionMobileList []string `json:"mention_mobile_list"`
-		Format            string   `json:"format"`
 	}
 	if err := json.Unmarshal(runtime.Config, &cfg); err != nil {
 		return notify.Result{}, err
 	}
-	if cfg.Format == "" {
-		cfg.Format = "markdown"
+	if runtime.Rendered == nil {
+		return notify.Result{}, fmt.Errorf("wechat_work_bot: ChannelRuntime.Rendered must be populated by caller")
 	}
 	rendered := runtime.Rendered
-	if rendered == nil {
-		item, err := notify.RenderNotification(n, runtime.TitleTpl, runtime.BodyTpl)
-		if err != nil {
-			return notify.Result{}, err
-		}
-		rendered = &item
-	}
-	payload := map[string]any{}
-	if cfg.Format == "text" {
-		payload["msgtype"] = "text"
-		payload["text"] = map[string]any{
+	payload := map[string]any{
+		"msgtype": "text",
+		"text": map[string]any{
 			"content":               rendered.Title + "\n" + rendered.Body,
 			"mentioned_mobile_list": cfg.MentionMobileList,
-		}
-	} else {
-		// WeCom markdown doesn't render mobile-number @ mentions (only
-		// <@userid>, which this gateway doesn't surface), so mobiles get
-		// appended as plain "@13800138000" text — visible but non-clickable.
-		plain := make([]string, 0, len(cfg.MentionMobileList))
-		for _, item := range cfg.MentionMobileList {
-			item = strings.TrimSpace(item)
-			if item != "" {
-				plain = append(plain, "@"+item)
-			}
-		}
-		content := fmt.Sprintf("## %s\n\n%s", rendered.Title, rendered.Body)
-		if len(plain) > 0 {
-			content += "\n\n" + strings.Join(plain, " ")
-		}
-		payload["msgtype"] = "markdown"
-		payload["markdown"] = map[string]any{
-			"content": content,
-		}
+		},
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

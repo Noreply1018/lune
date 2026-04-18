@@ -46,7 +46,7 @@ export default function NotificationsSection({
     Record<string, string | null>
   >({});
   const [rowErrors, setRowErrors] = useState<
-    Record<string, { title?: string | null; body?: string | null }>
+    Record<string, { body?: string | null }>
   >({});
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
@@ -96,7 +96,6 @@ export default function NotificationsSection({
         {
           enabled: next.enabled,
           webhook_url: next.webhook_url.trim(),
-          format: next.format,
           mention_mobile_list: next.mention_mobile_list,
         },
       );
@@ -127,7 +126,7 @@ export default function NotificationsSection({
 
   function setFieldError(
     event: string,
-    patch: { title?: string | null; body?: string | null },
+    patch: { body?: string | null },
   ) {
     setRowErrors((current) => {
       const next = { ...current, [event]: { ...current[event], ...patch } };
@@ -146,7 +145,7 @@ export default function NotificationsSection({
     });
   }
 
-  function clearSingleFieldError(event: string, field: "title" | "body") {
+  function clearSingleFieldError(event: string, field: "body") {
     setRowErrors((current) => {
       const existing = current[event];
       if (!existing || existing[field] == null) {
@@ -159,25 +158,17 @@ export default function NotificationsSection({
 
   async function commitSubscription(
     event: string,
-    field: "subscribed" | "title" | "body",
+    field: "subscribed" | "body",
     next: NotificationSubscription,
   ) {
-    const title = next.title_template.trim();
     const body = next.body_template.trim();
-    if (field === "title" && title === "") {
-      setFieldError(event, { title: "标题模板不能为空" });
-      return;
-    }
     if (field === "body" && body === "") {
       setFieldError(event, { body: "正文模板不能为空" });
       return;
     }
-    if (title === "" || body === "") {
-      // A subscribed toggle shouldn't re-send an empty template body.
-      if (field === "subscribed") {
-        setBanner("请先补全标题/正文模板再切换订阅状态");
-        return;
-      }
+    if (body === "" && field === "subscribed") {
+      setBanner("请先补全正文模板再切换订阅状态");
+      return;
     }
     clearFieldErrors(event);
     setFieldSaving(event, field);
@@ -186,7 +177,6 @@ export default function NotificationsSection({
         `/notifications/subscriptions/${encodeURIComponent(event)}`,
         {
           subscribed: next.subscribed,
-          title_template: next.title_template,
           body_template: next.body_template,
         },
       );
@@ -198,9 +188,7 @@ export default function NotificationsSection({
       const message =
         err instanceof Error ? err.message : "保存订阅设置失败";
       if (err instanceof ApiError && err.status === 400) {
-        if (field === "title") {
-          setFieldError(event, { title: message });
-        } else if (field === "body") {
+        if (field === "body") {
           setFieldError(event, { body: message });
         } else {
           setBanner(message);

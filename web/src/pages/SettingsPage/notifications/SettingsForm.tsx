@@ -96,39 +96,6 @@ export default function SettingsForm({
 
         <div className="space-y-1.5">
           <label className="text-xs font-medium uppercase tracking-[0.18em] text-moon-450">
-            Format
-          </label>
-          <div className="flex gap-2">
-            {(["markdown", "text"] as const).map((option) => {
-              const active = settings.format === option;
-              return (
-                <button
-                  key={option}
-                  type="button"
-                  className={`rounded-full border px-3 py-1.5 text-xs transition ${
-                    active
-                      ? "border-moon-700 bg-moon-800 text-white"
-                      : "border-moon-200/70 bg-white/86 text-moon-500 hover:border-moon-400"
-                  }`}
-                  disabled={saving || active}
-                  onClick={() => {
-                    const next = { ...settings, format: option };
-                    onChange(next);
-                    onCommit(next);
-                  }}
-                >
-                  {option}
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] leading-4 text-moon-400">
-            markdown 支持企微的受限 markdown 子集；text 为纯文本。
-          </p>
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium uppercase tracking-[0.18em] text-moon-450">
             @手机号
           </label>
           <MobileChipInput
@@ -142,7 +109,7 @@ export default function SettingsForm({
             disabled={saving}
           />
           <p className="text-[11px] leading-4 text-moon-400">
-            markdown 格式下企微会把 @手机号 链接到对应成员；@all 为 @所有人。
+            企微会把 @手机号 链接到对应成员；@all 为 @所有人。
           </p>
         </div>
       </section>

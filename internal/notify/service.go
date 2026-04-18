@@ -85,19 +85,19 @@ func (s *Service) SendSingletonTest(ctx context.Context, n Notification) (Result
 		return Result{}, err
 	}
 	// For events that aren't in the built-in list we synthesize a passthrough
-	// subscription so the driver still receives a title/body pair.
+	// subscription so the driver still receives a body.
 	var effectiveSub store.NotificationSubscription
 	if sub != nil {
 		effectiveSub = *sub
 	} else {
 		effectiveSub = store.NotificationSubscription{
-			Event:         n.Event,
-			Subscribed:    true,
-			TitleTemplate: "{{ .Title }}",
-			BodyTemplate:  "{{ .Message }}",
+			Event:        n.Event,
+			Subscribed:   true,
+			BodyTemplate: "{{ .Message }}",
 		}
 	}
-	rendered, err := RenderNotification(n, effectiveSub.TitleTemplate, effectiveSub.BodyTemplate)
+	title := AutoTitle(n.Event)
+	rendered, err := RenderNotification(n, title, effectiveSub.BodyTemplate)
 	if err != nil {
 		return Result{}, err
 	}

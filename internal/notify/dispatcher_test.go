@@ -50,12 +50,11 @@ func TestDispatchSkipsOutboxWhenEventUnsubscribed(t *testing.T) {
 	if err := st.UpdateNotificationSettings(store.NotificationSettings{
 		Enabled:           true,
 		WebhookURL:        "https://example.com/hook",
-		Format:            "markdown",
 		MentionMobileList: []string{},
 	}); err != nil {
 		t.Fatalf("enable settings: %v", err)
 	}
-	if err := st.UpdateNotificationSubscription("account_error", false, "t", "b"); err != nil {
+	if err := st.UpdateNotificationSubscription("account_error", false, "b"); err != nil {
 		t.Fatalf("disable sub: %v", err)
 	}
 
@@ -85,7 +84,6 @@ func TestDispatchCreatesDeliveryWhenSubscribed(t *testing.T) {
 	if err := st.UpdateNotificationSettings(store.NotificationSettings{
 		Enabled:           true,
 		WebhookURL:        "https://example.com/hook",
-		Format:            "markdown",
 		MentionMobileList: []string{},
 	}); err != nil {
 		t.Fatalf("enable settings: %v", err)

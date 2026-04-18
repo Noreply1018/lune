@@ -75,7 +75,6 @@ func TestNotificationSingletonSettingsUpsert(t *testing.T) {
 	want := NotificationSettings{
 		Enabled:           true,
 		WebhookURL:        "https://example.com/hook",
-		Format:            "markdown",
 		MentionMobileList: []string{"13800138000", "@all"},
 	}
 	if err := st.UpdateNotificationSettings(want); err != nil {
@@ -85,7 +84,7 @@ func TestNotificationSingletonSettingsUpsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-read settings: %v", err)
 	}
-	if !got.Enabled || got.WebhookURL != want.WebhookURL || got.Format != want.Format {
+	if !got.Enabled || got.WebhookURL != want.WebhookURL {
 		t.Fatalf("settings did not persist: %+v", got)
 	}
 	if len(got.MentionMobileList) != 2 || got.MentionMobileList[0] != "13800138000" || got.MentionMobileList[1] != "@all" {
@@ -105,8 +104,8 @@ func TestNotificationSubscriptionsSeededAndUpdatable(t *testing.T) {
 	seen := map[string]bool{}
 	for _, sub := range subs {
 		seen[sub.Event] = true
-		if sub.TitleTemplate == "" || sub.BodyTemplate == "" {
-			t.Fatalf("expected seeded templates for %q, got empty", sub.Event)
+		if sub.BodyTemplate == "" {
+			t.Fatalf("expected seeded body for %q, got empty", sub.Event)
 		}
 	}
 	for _, want := range []string{"account_error", "account_expiring", "cpa_service_error", "test"} {
@@ -115,7 +114,7 @@ func TestNotificationSubscriptionsSeededAndUpdatable(t *testing.T) {
 		}
 	}
 
-	if err := st.UpdateNotificationSubscription("account_error", false, "Custom Title", "Custom Body"); err != nil {
+	if err := st.UpdateNotificationSubscription("account_error", false, "Custom Body"); err != nil {
 		t.Fatalf("update sub: %v", err)
 	}
 	updated, err := st.GetNotificationSubscription("account_error")
@@ -125,11 +124,11 @@ func TestNotificationSubscriptionsSeededAndUpdatable(t *testing.T) {
 	if updated == nil {
 		t.Fatalf("expected subscription to exist")
 	}
-	if updated.Subscribed || updated.TitleTemplate != "Custom Title" || updated.BodyTemplate != "Custom Body" {
+	if updated.Subscribed || updated.BodyTemplate != "Custom Body" {
 		t.Fatalf("subscription did not persist: %+v", updated)
 	}
 
-	if err := st.UpdateNotificationSubscription("unknown_event", true, "x", "y"); !errors.Is(err, sql.ErrNoRows) {
+	if err := st.UpdateNotificationSubscription("unknown_event", true, "y"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expected sql.ErrNoRows for unknown event, got %v", err)
 	}
 }

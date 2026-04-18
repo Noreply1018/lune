@@ -37,7 +37,6 @@ func configureWebhook(t *testing.T, st *store.Store, url string) {
 	if err := st.UpdateNotificationSettings(store.NotificationSettings{
 		Enabled:           true,
 		WebhookURL:        url,
-		Format:            "markdown",
 		MentionMobileList: []string{},
 	}); err != nil {
 		t.Fatalf("configure webhook: %v", err)

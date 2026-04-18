@@ -176,7 +176,6 @@ export type NotificationSeverity = "info" | "warning" | "critical";
 export interface NotificationSettings {
   enabled: boolean;
   webhook_url: string;
-  format: "text" | "markdown";
   mention_mobile_list: string[];
   created_at?: string;
   updated_at?: string;
@@ -185,7 +184,6 @@ export interface NotificationSettings {
 export interface NotificationSubscription {
   event: string;
   subscribed: boolean;
-  title_template: string;
   body_template: string;
   updated_at?: string;
 }
@@ -200,7 +198,6 @@ export interface NotificationEventType {
   event: string;
   label: string;
   default_severity: NotificationSeverity;
-  default_title_template: string;
   default_body_template: string;
   sample_vars: Record<string, unknown>;
 }

@@ -13,6 +13,7 @@ import (
 type stubChannelDriver struct {
 	sendCount int
 	lastBody  string
+	lastTitle string
 	failCount int
 }
 
@@ -28,6 +29,7 @@ func (d *stubChannelDriver) Send(ctx context.Context, n Notification, cfg Channe
 	}
 	if cfg.Rendered != nil {
 		d.lastBody = cfg.Rendered.Body
+		d.lastTitle = cfg.Rendered.Title
 	}
 	return Result{OK: true, UpstreamCode: "ok", UpstreamMessage: "ok"}, nil
 }
@@ -49,7 +51,6 @@ func enableTestSettings(t *testing.T, st *store.Store) store.NotificationSetting
 	settings := store.NotificationSettings{
 		Enabled:           true,
 		WebhookURL:        "https://example.com/hook",
-		Format:            "markdown",
 		MentionMobileList: []string{},
 	}
 	if err := st.UpdateNotificationSettings(settings); err != nil {
@@ -103,7 +104,7 @@ func insertOutboxItem(t *testing.T, st *store.Store, n Notification, dedup, stat
 func TestAttemptOneDoesNotRetryAfterSuccessfulSendWhenRenderFails(t *testing.T) {
 	st := newNotifyTestStore(t)
 	settings := enableTestSettings(t, st)
-	if err := st.UpdateNotificationSubscription("account_error", true, "{{ .Missing", "{{ .Message }}"); err != nil {
+	if err := st.UpdateNotificationSubscription("account_error", true, "{{ .Missing"); err != nil {
 		t.Fatalf("update sub: %v", err)
 	}
 	sub := getSub(t, st, "account_error")
@@ -124,6 +125,9 @@ func TestAttemptOneDoesNotRetryAfterSuccessfulSendWhenRenderFails(t *testing.T) 
 	}
 	if driver.sendCount != 1 {
 		t.Fatalf("expected one send, got %d", driver.sendCount)
+	}
+	if expected := AutoTitle("account_error"); driver.lastTitle != expected {
+		t.Fatalf("expected driver title %q (auto-generated), got %q", expected, driver.lastTitle)
 	}
 
 	outboxItems, err := st.ListDueNotificationOutbox(10)
@@ -162,7 +166,7 @@ func TestAttemptOnePassesFullRenderedBodyToDriver(t *testing.T) {
 	for i := 0; i < 1100; i++ {
 		longMessage += "x"
 	}
-	if err := st.UpdateNotificationSubscription("account_error", true, "Broken", longMessage); err != nil {
+	if err := st.UpdateNotificationSubscription("account_error", true, longMessage); err != nil {
 		t.Fatalf("update sub: %v", err)
 	}
 	sub = getSub(t, st, "account_error")
@@ -179,6 +183,9 @@ func TestAttemptOnePassesFullRenderedBodyToDriver(t *testing.T) {
 	}
 	if len(driver.lastBody) <= 1024 {
 		t.Fatalf("expected driver to receive full rendered body, got len=%d", len(driver.lastBody))
+	}
+	if expected := AutoTitle("account_error"); driver.lastTitle != expected {
+		t.Fatalf("expected driver title %q (auto-generated), got %q", expected, driver.lastTitle)
 	}
 }
 

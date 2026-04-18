@@ -19,7 +19,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 9
+const v3SchemaVersion = 10
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -134,7 +134,6 @@ CREATE TABLE IF NOT EXISTS notification_settings (
     id                  INTEGER PRIMARY KEY CHECK (id = 1),
     enabled             INTEGER NOT NULL DEFAULT 0,
     webhook_url         TEXT    NOT NULL DEFAULT '',
-    format              TEXT    NOT NULL DEFAULT 'markdown',
     mention_mobile_list TEXT    NOT NULL DEFAULT '[]',
     created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -143,7 +142,6 @@ CREATE TABLE IF NOT EXISTS notification_settings (
 CREATE TABLE IF NOT EXISTS notification_subscriptions (
     event           TEXT PRIMARY KEY,
     subscribed      INTEGER NOT NULL DEFAULT 1,
-    title_template  TEXT    NOT NULL,
     body_template   TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -188,11 +186,11 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_d
 
 INSERT OR IGNORE INTO notification_settings (id) VALUES (1);
 
-INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, title_template, body_template) VALUES
-    ('account_expiring',  1, 'Lune · {{ .Title }}', '{{ .Message }}'),
-    ('account_error',     1, 'Lune · {{ .Title }}', '{{ .Message }}'),
-    ('cpa_service_error', 1, 'Lune · {{ .Title }}', '{{ .Message }}'),
-    ('test',              1, 'Lune 测试消息',        '这是一条用于验证渠道可达性的真实消息，可忽略。');
+INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_template) VALUES
+    ('account_expiring',  1, '账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。'),
+    ('account_error',     1, '账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}'),
+    ('cpa_service_error', 1, 'CPA 服务 {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}'),
+    ('test',              1, '这是一条用于验证渠道可达性的真实消息，可忽略。');
 `
 
 func New(dbPath string) (*Store, error) {
@@ -237,15 +235,20 @@ func (s *Store) migrateV3(dbPath string) error {
 		return nil // already at latest
 	}
 
-	if ver >= 3 && ver <= 8 {
-		slog.Info("migrating schema to v9 (notification singleton)", "from_version", ver)
+	if ver >= 3 && ver <= 9 {
+		slog.Info("migrating schema to v10 (notification text-only simplify)", "from_version", ver)
 		if ver < 8 {
 			if err := s.migrateCodexQuotaColumns(); err != nil {
 				return fmt.Errorf("migrate codex quota columns: %w", err)
 			}
 		}
-		if err := s.migrateNotificationSingleton(); err != nil {
-			return fmt.Errorf("migrate notification singleton: %w", err)
+		if ver < 9 {
+			if err := s.migrateNotificationSingleton(); err != nil {
+				return fmt.Errorf("migrate notification singleton: %w", err)
+			}
+		}
+		if err := s.migrateNotificationTextOnly(); err != nil {
+			return fmt.Errorf("migrate notification text-only: %w", err)
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
 	}
@@ -344,7 +347,7 @@ func (s *Store) migrateNotificationSingleton() error {
 	// no-ops for tables that already exist, and the notification_* tables
 	// we just dropped get recreated with the new singleton shape.
 	if _, err := s.db.Exec(v3Schema); err != nil {
-		return fmt.Errorf("apply v9 notification schema: %w", err)
+		return fmt.Errorf("apply notification singleton schema: %w", err)
 	}
 
 	// Clear legacy legacy-webhook flag so the old path cannot reassert itself.
@@ -355,6 +358,59 @@ func (s *Store) migrateNotificationSingleton() error {
 	s.schemaMu.Lock()
 	delete(s.schemaCache, "notification_outbox")
 	delete(s.schemaCache, "notification_deliveries")
+	delete(s.schemaCache, "notification_settings")
+	delete(s.schemaCache, "notification_subscriptions")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+// migrateNotificationTextOnly drops the format and title_template columns
+// introduced by earlier iterations and promotes the body defaults to the new
+// concrete-field templates. Rows whose body_template still equals the old
+// `{{ .Message }}` passthrough are upgraded to the new default; any body the
+// admin has customised is preserved.
+func (s *Store) migrateNotificationTextOnly() error {
+	// Drop the format column if it's still present (requires SQLite 3.35+,
+	// which matches modernc.org/sqlite's bundled engine).
+	hasFormat, err := s.hasColumn("notification_settings", "format")
+	if err != nil {
+		return fmt.Errorf("probe notification_settings.format: %w", err)
+	}
+	if hasFormat {
+		if _, err := s.db.Exec(`ALTER TABLE notification_settings DROP COLUMN format`); err != nil {
+			return fmt.Errorf("drop notification_settings.format: %w", err)
+		}
+	}
+
+	hasTitle, err := s.hasColumn("notification_subscriptions", "title_template")
+	if err != nil {
+		return fmt.Errorf("probe notification_subscriptions.title_template: %w", err)
+	}
+	if hasTitle {
+		if _, err := s.db.Exec(`ALTER TABLE notification_subscriptions DROP COLUMN title_template`); err != nil {
+			return fmt.Errorf("drop notification_subscriptions.title_template: %w", err)
+		}
+	}
+
+	// Safely upgrade rows that still carry the old `{{ .Message }}` passthrough
+	// to the richer concrete-field defaults.
+	bodyUpgrades := []struct{ event, body string }{
+		{"account_expiring", "账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。"},
+		{"account_error", "账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}"},
+		{"cpa_service_error", "CPA 服务 {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}"},
+	}
+	for _, upgrade := range bodyUpgrades {
+		if _, err := s.db.Exec(
+			`UPDATE notification_subscriptions
+			 SET body_template = ?, updated_at = datetime('now')
+			 WHERE event = ? AND body_template = '{{ .Message }}'`,
+			upgrade.body, upgrade.event,
+		); err != nil {
+			return fmt.Errorf("upgrade %s body_template: %w", upgrade.event, err)
+		}
+	}
+
+	s.schemaMu.Lock()
 	delete(s.schemaCache, "notification_settings")
 	delete(s.schemaCache, "notification_subscriptions")
 	s.schemaMu.Unlock()

@@ -334,7 +334,7 @@ func TestUpdateNotificationSettingsRejectsInvalidWebhook(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/admin/api/notifications/settings",
-		strings.NewReader(`{"enabled":true,"webhook_url":"ftp://bad","format":"text","mention_mobile_list":[]}`),
+		strings.NewReader(`{"enabled":true,"webhook_url":"ftp://bad","mention_mobile_list":[]}`),
 	)
 	rr := httptest.NewRecorder()
 	handler.updateNotificationSettings(rr, req)
@@ -352,7 +352,7 @@ func TestUpdateNotificationSettingsRejectsInvalidMobile(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/admin/api/notifications/settings",
-		strings.NewReader(`{"enabled":true,"webhook_url":"https://example.com/hook","format":"text","mention_mobile_list":["12345"]}`),
+		strings.NewReader(`{"enabled":true,"webhook_url":"https://example.com/hook","mention_mobile_list":["12345"]}`),
 	)
 	rr := httptest.NewRecorder()
 	handler.updateNotificationSettings(rr, req)
@@ -370,7 +370,7 @@ func TestUpdateNotificationSettingsPersistsValidPayload(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/admin/api/notifications/settings",
-		strings.NewReader(`{"enabled":true,"webhook_url":"https://example.com/hook","format":"markdown","mention_mobile_list":["13800138000","@all","13800138000"]}`),
+		strings.NewReader(`{"enabled":true,"webhook_url":"https://example.com/hook","mention_mobile_list":["13800138000","@all","13800138000"]}`),
 	)
 	rr := httptest.NewRecorder()
 	handler.updateNotificationSettings(rr, req)
@@ -382,7 +382,7 @@ func TestUpdateNotificationSettingsPersistsValidPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load settings: %v", err)
 	}
-	if !stored.Enabled || stored.Format != "markdown" {
+	if !stored.Enabled {
 		t.Fatalf("settings did not persist: %+v", stored)
 	}
 	if len(stored.MentionMobileList) != 2 {
@@ -399,7 +399,7 @@ func TestUpdateNotificationSubscriptionRejectsUnknownEvent(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/admin/api/notifications/subscriptions/bogus",
-		strings.NewReader(`{"subscribed":true,"title_template":"t","body_template":"b"}`),
+		strings.NewReader(`{"subscribed":true,"body_template":"b"}`),
 	)
 	req.SetPathValue("event", "bogus")
 	rr := httptest.NewRecorder()
@@ -409,7 +409,7 @@ func TestUpdateNotificationSubscriptionRejectsUnknownEvent(t *testing.T) {
 	}
 }
 
-func TestUpdateNotificationSubscriptionRequiresTemplates(t *testing.T) {
+func TestUpdateNotificationSubscriptionRequiresBody(t *testing.T) {
 	t.Parallel()
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
@@ -418,7 +418,7 @@ func TestUpdateNotificationSubscriptionRequiresTemplates(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/admin/api/notifications/subscriptions/account_error",
-		strings.NewReader(`{"subscribed":true,"title_template":"","body_template":""}`),
+		strings.NewReader(`{"subscribed":true,"body_template":""}`),
 	)
 	req.SetPathValue("event", "account_error")
 	rr := httptest.NewRecorder()

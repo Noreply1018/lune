@@ -19,20 +19,18 @@ type SubscriptionRowProps = {
   subscription: NotificationSubscription;
   eventType: NotificationEventType;
   savingField: string | null;
-  titleError?: string | null;
   bodyError?: string | null;
   onCommit: (
-    field: "subscribed" | "title" | "body",
+    field: "subscribed" | "body",
     next: NotificationSubscription,
   ) => void;
-  onClearFieldError: (field: "title" | "body") => void;
+  onClearFieldError: (field: "body") => void;
 };
 
 export default function SubscriptionRow({
   subscription,
   eventType,
   savingField,
-  titleError,
   bodyError,
   onCommit,
   onClearFieldError,
@@ -43,34 +41,18 @@ export default function SubscriptionRow({
   );
 
   const [expanded, setExpanded] = useState(false);
-  const [titleDisplay, setTitleDisplay] = useState(() =>
-    toDisplay(subscription.title_template, placeholders),
-  );
   const [bodyDisplay, setBodyDisplay] = useState(() =>
     toDisplay(subscription.body_template, placeholders),
   );
 
   useEffect(() => {
-    setTitleDisplay(toDisplay(subscription.title_template, placeholders));
     setBodyDisplay(toDisplay(subscription.body_template, placeholders));
-  }, [subscription.title_template, subscription.body_template, placeholders]);
+  }, [subscription.body_template, placeholders]);
 
-  const defaultTitleDisplay = useMemo(
-    () => toDisplay(eventType.default_title_template, placeholders),
-    [eventType.default_title_template, placeholders],
-  );
   const defaultBodyDisplay = useMemo(
     () => toDisplay(eventType.default_body_template, placeholders),
     [eventType.default_body_template, placeholders],
   );
-
-  function commitTitle() {
-    const stored = toStorage(titleDisplay, placeholders);
-    if (stored === subscription.title_template) {
-      return;
-    }
-    onCommit("title", { ...subscription, title_template: stored });
-  }
 
   function commitBody() {
     const stored = toStorage(bodyDisplay, placeholders);
@@ -78,18 +60,6 @@ export default function SubscriptionRow({
       return;
     }
     onCommit("body", { ...subscription, body_template: stored });
-  }
-
-  function resetTitle() {
-    setTitleDisplay(defaultTitleDisplay);
-    onClearFieldError("title");
-    if (eventType.default_title_template === subscription.title_template) {
-      return;
-    }
-    onCommit("title", {
-      ...subscription,
-      title_template: eventType.default_title_template,
-    });
   }
 
   function resetBody() {
@@ -106,6 +76,7 @@ export default function SubscriptionRow({
 
   const triggerDescription =
     EVENT_TRIGGER_DESCRIPTION[eventType.event] ?? "内置事件";
+  const autoTitle = `Lune 通知：${eventType.label}`;
 
   return (
     <div
@@ -166,18 +137,15 @@ export default function SubscriptionRow({
               当前未订阅：保存后该事件不会发送，但配置仍会保留。
             </div>
           ) : null}
-          <TemplateEditor
-            label="标题"
-            value={titleDisplay}
-            defaultValue={defaultTitleDisplay}
-            placeholders={placeholders}
-            disabled={savingField === "title"}
-            minRows={2}
-            onChange={setTitleDisplay}
-            onCommit={commitTitle}
-            onReset={resetTitle}
-            error={titleError ?? null}
-          />
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-moon-600">标题</span>
+            <div className="rounded-[0.8rem] border border-dashed border-moon-200/70 bg-white/80 px-3 py-2 text-sm text-moon-700">
+              {autoTitle}
+            </div>
+            <span className="text-[11px] text-moon-400">
+              标题由系统自动生成，不可修改。
+            </span>
+          </div>
           <TemplateEditor
             label="正文"
             value={bodyDisplay}

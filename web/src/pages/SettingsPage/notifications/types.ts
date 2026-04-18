@@ -27,18 +27,6 @@ export interface PlaceholderMeta {
 }
 
 const GENERIC_PLACEHOLDERS: PlaceholderMeta[] = [
-  {
-    display: "[标题]",
-    template: "{{ .Title }}",
-    sample: "",
-    description: "后端生成的事件标题",
-  },
-  {
-    display: "[正文]",
-    template: "{{ .Message }}",
-    sample: "",
-    description: "后端生成的事件正文",
-  },
   { display: "[事件]", template: "{{ .Event }}", sample: "" },
   { display: "[严重级别]", template: "{{ .Severity }}", sample: "" },
   { display: "[时间]", template: "{{ .TriggeredAt }}", sample: "" },
@@ -113,22 +101,7 @@ export function placeholdersForEvent(
   event: NotificationEventType,
 ): PlaceholderMeta[] {
   const sampleVars = event.sample_vars ?? {};
-  const genericTitle = String(
-    sampleVars.__title ?? event.default_title_template ?? "",
-  );
-  const genericMessage = String(
-    sampleVars.__message ?? event.default_body_template ?? "",
-  );
   const generic = GENERIC_PLACEHOLDERS.map((item) => {
-    if (item.template === "{{ .Title }}") {
-      return { ...item, sample: sampleTitle(event, sampleVars, genericTitle) };
-    }
-    if (item.template === "{{ .Message }}") {
-      return {
-        ...item,
-        sample: sampleMessage(event, sampleVars, genericMessage),
-      };
-    }
     if (item.template === "{{ .Event }}") {
       return { ...item, sample: event.event };
     }
@@ -147,50 +120,6 @@ export function placeholdersForEvent(
     description: spec.description,
   }));
   return [...generic, ...perEvent];
-}
-
-function sampleTitle(
-  event: NotificationEventType,
-  sampleVars: Record<string, unknown>,
-  fallback: string,
-): string {
-  switch (event.event) {
-    case "account_expiring":
-      return `${String(sampleVars.account_label ?? "")} 账号即将过期`;
-    case "account_error":
-      return `${String(sampleVars.account_label ?? "")} 账号不可用`;
-    case "cpa_service_error":
-      return `${String(sampleVars.service_label ?? "")} CPA 服务异常`;
-    case "test":
-      return "Lune 测试消息";
-    default:
-      return fallback;
-  }
-}
-
-function sampleMessage(
-  event: NotificationEventType,
-  sampleVars: Record<string, unknown>,
-  fallback: string,
-): string {
-  switch (event.event) {
-    case "account_expiring":
-      return `账号 ${String(sampleVars.account_label ?? "")} 将在 ${String(
-        sampleVars.expires_at ?? "",
-      )} 过期。`;
-    case "account_error":
-      return `账号 ${String(sampleVars.account_label ?? "")} 最近错误：${String(
-        sampleVars.last_error ?? "",
-      )}`;
-    case "cpa_service_error":
-      return `CPA 服务 ${String(sampleVars.service_label ?? "")} 最近错误：${String(
-        sampleVars.last_error ?? "",
-      )}`;
-    case "test":
-      return "这是一条用于验证渠道可达性的真实消息，可忽略。";
-    default:
-      return fallback;
-  }
 }
 
 function sampleTimestamp(): string {

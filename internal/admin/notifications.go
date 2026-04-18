@@ -30,14 +30,12 @@ type notificationOverviewResponse struct {
 type notificationSettingsRequest struct {
 	Enabled           bool     `json:"enabled"`
 	WebhookURL        string   `json:"webhook_url"`
-	Format            string   `json:"format"`
 	MentionMobileList []string `json:"mention_mobile_list"`
 }
 
 type notificationSubscriptionRequest struct {
-	Subscribed    bool   `json:"subscribed"`
-	TitleTemplate string `json:"title_template"`
-	BodyTemplate  string `json:"body_template"`
+	Subscribed   bool   `json:"subscribed"`
+	BodyTemplate string `json:"body_template"`
 }
 
 var mobileNumberRegexp = regexp.MustCompile(`^\d{11}$`)
@@ -79,14 +77,6 @@ func (h *Handler) updateNotificationSettings(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	req.WebhookURL = strings.TrimSpace(req.WebhookURL)
-	req.Format = strings.TrimSpace(strings.ToLower(req.Format))
-	if req.Format == "" {
-		req.Format = "markdown"
-	}
-	if req.Format != "text" && req.Format != "markdown" {
-		webutil.WriteAdminError(w, 400, "bad_request", "format must be text or markdown")
-		return
-	}
 	mentions := make([]string, 0, len(req.MentionMobileList))
 	seen := make(map[string]struct{}, len(req.MentionMobileList))
 	for _, raw := range req.MentionMobileList {
@@ -125,7 +115,6 @@ func (h *Handler) updateNotificationSettings(w http.ResponseWriter, r *http.Requ
 	settings := store.NotificationSettings{
 		Enabled:           req.Enabled,
 		WebhookURL:        req.WebhookURL,
-		Format:            req.Format,
 		MentionMobileList: mentions,
 	}
 	if err := h.store.UpdateNotificationSettings(settings); err != nil {
@@ -155,17 +144,12 @@ func (h *Handler) updateNotificationSubscription(w http.ResponseWriter, r *http.
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
-	title := strings.TrimSpace(req.TitleTemplate)
 	body := strings.TrimSpace(req.BodyTemplate)
-	if title == "" {
-		webutil.WriteAdminError(w, 400, "bad_request", "title_template must not be empty")
-		return
-	}
 	if body == "" {
 		webutil.WriteAdminError(w, 400, "bad_request", "body_template must not be empty")
 		return
 	}
-	if err := h.store.UpdateNotificationSubscription(event, req.Subscribed, title, body); err != nil {
+	if err := h.store.UpdateNotificationSubscription(event, req.Subscribed, body); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			webutil.WriteAdminError(w, 404, "not_found", "subscription not found")
 			return

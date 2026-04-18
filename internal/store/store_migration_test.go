@@ -159,6 +159,123 @@ CREATE TABLE notification_deliveries (
 	if len(subs) != 4 {
 		t.Fatalf("expected 4 seeded subscriptions, got %d", len(subs))
 	}
+	// The v8→v9 path seeds fresh defaults directly; these must already be the
+	// new concrete-field templates, never the old `{{ .Message }}` passthrough.
+	wantBodies := map[string]string{
+		"account_expiring":  "账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。",
+		"account_error":     "账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}",
+		"cpa_service_error": "CPA 服务 {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}",
+		"test":              "这是一条用于验证渠道可达性的真实消息，可忽略。",
+	}
+	for _, sub := range subs {
+		want, ok := wantBodies[sub.Event]
+		if !ok {
+			t.Fatalf("unexpected seeded event %q", sub.Event)
+		}
+		if sub.BodyTemplate != want {
+			t.Fatalf("unexpected seeded body for %q:\nwant=%q\n got=%q", sub.Event, want, sub.BodyTemplate)
+		}
+	}
+}
+
+func TestMigrateV9ToV10DropsFormatAndUpgradesDefaultBodies(t *testing.T) {
+	// Seed a v9 database whose notification tables still carry `format` (on
+	// settings) and `title_template` (on subscriptions). Three subs sit on the
+	// old `{{ .Message }}` passthrough body — they must be upgraded. One sub
+	// carries an admin-customized body — it must survive untouched.
+	dbPath := filepath.Join(t.TempDir(), "legacy-v9.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '9');
+CREATE TABLE notification_settings (
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled             INTEGER NOT NULL DEFAULT 0,
+    webhook_url         TEXT    NOT NULL DEFAULT '',
+    format              TEXT    NOT NULL DEFAULT 'markdown',
+    mention_mobile_list TEXT    NOT NULL DEFAULT '[]',
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO notification_settings (id, enabled, webhook_url, format, mention_mobile_list)
+VALUES (1, 1, 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=seed', 'markdown', '[]');
+CREATE TABLE notification_subscriptions (
+    event           TEXT PRIMARY KEY,
+    subscribed      INTEGER NOT NULL DEFAULT 1,
+    title_template  TEXT    NOT NULL,
+    body_template   TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO notification_subscriptions (event, subscribed, title_template, body_template) VALUES
+    ('account_expiring',  1, 'Lune [{{ .Severity }}] {{ .Event }}', '{{ .Message }}'),
+    ('account_error',     1, 'Lune [{{ .Severity }}] {{ .Event }}', 'CUSTOM body kept as-is'),
+    ('cpa_service_error', 1, 'Lune [{{ .Severity }}] {{ .Event }}', '{{ .Message }}'),
+    ('test',              1, 'Lune [{{ .Severity }}] {{ .Event }}', '{{ .Message }}');
+`); err != nil {
+		t.Fatalf("seed v9 schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("open store with migration: %v", err)
+	}
+	defer st.Close()
+
+	if st.SchemaVersion() != v3SchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", v3SchemaVersion, st.SchemaVersion())
+	}
+
+	hasFormat, err := st.hasColumn("notification_settings", "format")
+	if err != nil {
+		t.Fatalf("probe format column: %v", err)
+	}
+	if hasFormat {
+		t.Fatalf("expected notification_settings.format to be dropped after v10 migration")
+	}
+	hasTitle, err := st.hasColumn("notification_subscriptions", "title_template")
+	if err != nil {
+		t.Fatalf("probe title_template column: %v", err)
+	}
+	if hasTitle {
+		t.Fatalf("expected notification_subscriptions.title_template to be dropped after v10 migration")
+	}
+
+	subs, err := st.ListNotificationSubscriptions()
+	if err != nil {
+		t.Fatalf("list subs: %v", err)
+	}
+	bodies := map[string]string{}
+	for _, sub := range subs {
+		bodies[sub.Event] = sub.BodyTemplate
+	}
+	wantUpgraded := map[string]string{
+		"account_expiring":  "账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。",
+		"cpa_service_error": "CPA 服务 {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}",
+	}
+	for event, want := range wantUpgraded {
+		if got := bodies[event]; got != want {
+			t.Fatalf("expected %q body upgraded to new default:\nwant=%q\n got=%q", event, want, got)
+		}
+	}
+	// Customized body must be preserved — migration only rewrites the old
+	// `{{ .Message }}` passthrough.
+	if got := bodies["account_error"]; got != "CUSTOM body kept as-is" {
+		t.Fatalf("expected customised body preserved, got %q", got)
+	}
+	// `test` body was `{{ .Message }}` in v9 and is *not* in the upgrade list
+	// (there is no concrete-field template for it), so the passthrough should
+	// survive unchanged — verifies the migration is selective.
+	if got := bodies["test"]; got != "{{ .Message }}" {
+		t.Fatalf("expected test body untouched (not in upgrade list), got %q", got)
+	}
 }
 
 func TestFreshDatabaseOpensAtCurrentSchema(t *testing.T) {

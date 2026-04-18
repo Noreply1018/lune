@@ -27,20 +27,19 @@ const (
 type NotificationSettings struct {
 	Enabled           bool     `json:"enabled"`
 	WebhookURL        string   `json:"webhook_url"`
-	Format            string   `json:"format"`
 	MentionMobileList []string `json:"mention_mobile_list"`
 	CreatedAt         string   `json:"created_at"`
 	UpdatedAt         string   `json:"updated_at"`
 }
 
 // NotificationSubscription captures whether a built-in event is delivered and
-// the per-event title/body templates the admin edited.
+// the per-event body template the admin edited. Titles are derived from the
+// event label at send time and are not user-configurable.
 type NotificationSubscription struct {
-	Event         string `json:"event"`
-	Subscribed    bool   `json:"subscribed"`
-	TitleTemplate string `json:"title_template"`
-	BodyTemplate  string `json:"body_template"`
-	UpdatedAt     string `json:"updated_at"`
+	Event        string `json:"event"`
+	Subscribed   bool   `json:"subscribed"`
+	BodyTemplate string `json:"body_template"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 type NotificationDeliveryMeta struct {
@@ -98,19 +97,18 @@ type NotificationDeliveryFilter struct {
 // is open.
 func (s *Store) GetNotificationSettings() (NotificationSettings, error) {
 	var (
-		settings    NotificationSettings
-		enabled     int
-		mentionRaw  string
+		settings   NotificationSettings
+		enabled    int
+		mentionRaw string
 	)
 	err := s.db.QueryRow(
-		`SELECT enabled, webhook_url, format, mention_mobile_list, created_at, updated_at
+		`SELECT enabled, webhook_url, mention_mobile_list, created_at, updated_at
 		 FROM notification_settings
 		 WHERE id = ?`,
 		SingletonChannelID,
 	).Scan(
 		&enabled,
 		&settings.WebhookURL,
-		&settings.Format,
 		&mentionRaw,
 		&settings.CreatedAt,
 		&settings.UpdatedAt,
@@ -120,9 +118,6 @@ func (s *Store) GetNotificationSettings() (NotificationSettings, error) {
 	}
 	settings.Enabled = enabled != 0
 	settings.MentionMobileList = parseMentionMobileList(mentionRaw)
-	if settings.Format == "" {
-		settings.Format = "markdown"
-	}
 	return settings, nil
 }
 
@@ -138,23 +133,17 @@ func (s *Store) UpdateNotificationSettings(settings NotificationSettings) error 
 	if err != nil {
 		return fmt.Errorf("marshal mention list: %w", err)
 	}
-	format := settings.Format
-	if format == "" {
-		format = "markdown"
-	}
 	_, err = s.db.Exec(
-		`INSERT INTO notification_settings (id, enabled, webhook_url, format, mention_mobile_list, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		`INSERT INTO notification_settings (id, enabled, webhook_url, mention_mobile_list, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
 		 ON CONFLICT(id) DO UPDATE SET
 		    enabled             = excluded.enabled,
 		    webhook_url         = excluded.webhook_url,
-		    format              = excluded.format,
 		    mention_mobile_list = excluded.mention_mobile_list,
 		    updated_at          = datetime('now')`,
 		SingletonChannelID,
 		boolToInt(settings.Enabled),
 		strings.TrimSpace(settings.WebhookURL),
-		format,
 		string(mentionJSON),
 	)
 	return err
@@ -165,7 +154,7 @@ func (s *Store) UpdateNotificationSettings(settings NotificationSettings) error 
 // can rely on a stable ordering.
 func (s *Store) ListNotificationSubscriptions() ([]NotificationSubscription, error) {
 	rows, err := s.db.Query(
-		`SELECT event, subscribed, title_template, body_template, updated_at
+		`SELECT event, subscribed, body_template, updated_at
 		 FROM notification_subscriptions
 		 ORDER BY event ASC`,
 	)
@@ -180,7 +169,7 @@ func (s *Store) ListNotificationSubscriptions() ([]NotificationSubscription, err
 			sub        NotificationSubscription
 			subscribed int
 		)
-		if err := rows.Scan(&sub.Event, &subscribed, &sub.TitleTemplate, &sub.BodyTemplate, &sub.UpdatedAt); err != nil {
+		if err := rows.Scan(&sub.Event, &subscribed, &sub.BodyTemplate, &sub.UpdatedAt); err != nil {
 			return nil, err
 		}
 		sub.Subscribed = subscribed != 0
@@ -203,11 +192,11 @@ func (s *Store) GetNotificationSubscription(event string) (*NotificationSubscrip
 		subscribed int
 	)
 	err := s.db.QueryRow(
-		`SELECT event, subscribed, title_template, body_template, updated_at
+		`SELECT event, subscribed, body_template, updated_at
 		 FROM notification_subscriptions
 		 WHERE event = ?`,
 		event,
-	).Scan(&sub.Event, &subscribed, &sub.TitleTemplate, &sub.BodyTemplate, &sub.UpdatedAt)
+	).Scan(&sub.Event, &subscribed, &sub.BodyTemplate, &sub.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -219,18 +208,16 @@ func (s *Store) GetNotificationSubscription(event string) (*NotificationSubscrip
 }
 
 // UpdateNotificationSubscription rewrites the subscription row for the given
-// event. Callers must validate that title/body are non-empty after trimming
-// before invoking.
-func (s *Store) UpdateNotificationSubscription(event string, subscribed bool, title, body string) error {
+// event. Callers must validate that body is non-empty after trimming before
+// invoking.
+func (s *Store) UpdateNotificationSubscription(event string, subscribed bool, body string) error {
 	res, err := s.db.Exec(
 		`UPDATE notification_subscriptions
-		 SET subscribed     = ?,
-		     title_template = ?,
-		     body_template  = ?,
-		     updated_at     = datetime('now')
+		 SET subscribed    = ?,
+		     body_template = ?,
+		     updated_at    = datetime('now')
 		 WHERE event = ?`,
 		boolToInt(subscribed),
-		title,
 		body,
 		event,
 	)
