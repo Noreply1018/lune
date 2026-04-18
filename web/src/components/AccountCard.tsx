@@ -9,6 +9,7 @@ import {
 import { Button } from "@/components/ui/button";
 import StatusBadge from "@/components/StatusBadge";
 import { CodexQuotaBarsCompact } from "@/components/CodexQuotaBars";
+import DirectAccountSignal from "@/components/DirectAccountSignal";
 import { isQuotaStale, parseCodexQuota } from "@/lib/codexQuota";
 import { compact, relativeTime } from "@/lib/fmt";
 import type { PoolMember } from "@/lib/types";
@@ -63,6 +64,9 @@ export default function AccountCard({
     [account?.cpa_provider, account?.codex_quota_json],
   );
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
+  // Every non-Codex account — direct as well as non-Codex CPA (e.g. Claude) —
+  // gets the dual-row signal strip so both card variants share the same height.
+  const showDirectSignal = !codexQuota && Boolean(account);
   const enabled = member.enabled;
 
   const toneClass = !enabled
@@ -154,6 +158,8 @@ export default function AccountCard({
 
         {codexQuota ? (
           <CodexQuotaBarsCompact quota={codexQuota} stale={codexQuotaStale} />
+        ) : showDirectSignal ? (
+          <DirectAccountSignal account={account} />
         ) : null}
 
         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-moon-500">
@@ -181,7 +187,7 @@ export default function AccountCard({
 
         <div className="mt-auto flex items-center justify-between gap-2 pt-1">
           <p className="truncate text-[10.5px] text-moon-400">
-            {relativeTime(account.last_checked_at ?? null)}
+            {showDirectSignal ? "" : relativeTime(account.last_checked_at ?? null)}
           </p>
           <div className="flex items-center gap-0.5">
             <Button

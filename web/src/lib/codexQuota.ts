@@ -86,9 +86,12 @@ function toNumber(v: unknown): number | null {
   return null;
 }
 
-export function windowTone(usedPercent: number): WindowTone {
-  if (usedPercent >= 80) return "danger";
-  if (usedPercent >= 50) return "warning";
+// Tone reflects how much headroom is left: a full green bar means plenty of
+// quota remaining; red means the window is almost exhausted. Callers pass the
+// "remaining" percentage (100 - used).
+export function windowTone(remainPercent: number): WindowTone {
+  if (remainPercent < 20) return "danger";
+  if (remainPercent < 50) return "warning";
   return "ok";
 }
 

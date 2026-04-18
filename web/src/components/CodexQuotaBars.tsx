@@ -12,10 +12,12 @@ import {
 import { relativeTime } from "@/lib/fmt";
 import { cn } from "@/lib/utils";
 
-// Track color keeps the bar visible against the card background; fill color is
-// the semantic signal (moon → warning → danger) that carries utilization state.
+// Bars encode *remaining* quota: a full green bar means lots of headroom,
+// shrinking and reddening as the window approaches its ceiling. The fill
+// stays as the semantic signal (green → yellow → red); the track is a muted
+// rail so a nearly-empty bar is still visible against the card background.
 const toneFill: Record<WindowTone, string> = {
-  ok: "bg-lunar-400",
+  ok: "bg-status-green",
   warning: "bg-status-yellow",
   danger: "bg-status-red",
 };
@@ -25,7 +27,7 @@ const toneTrack: Record<WindowTone, string> = {
   danger: "bg-status-red/15",
 };
 const toneText: Record<WindowTone, string> = {
-  ok: "text-moon-600",
+  ok: "text-status-green",
   warning: "text-status-yellow",
   danger: "text-status-red",
 };
@@ -54,9 +56,10 @@ function CompactRow({
   window: QuotaWindow;
   stale: boolean;
 }) {
-  const tone = stale ? "ok" : windowTone(w.usedPercent);
-  const pct = clampPercent(w.usedPercent);
-  const title = `${label} 窗口 · ${pct.toFixed(1)}% 已用 · ${formatResetIn(w.resetAfterSeconds)} 后重置`;
+  const remain = clampPercent(100 - w.usedPercent);
+  const used = clampPercent(w.usedPercent);
+  const tone = stale ? "ok" : windowTone(remain);
+  const title = `${label} 窗口 · 已用 ${used.toFixed(1)}% · ${formatResetIn(w.resetAfterSeconds)} 后重置`;
   return (
     <div className="flex items-center gap-2 text-[11px] tabular-nums" title={title}>
       <span className="w-5 shrink-0 text-moon-500">{label}</span>
@@ -71,11 +74,11 @@ function CompactRow({
             "absolute inset-y-0 left-0 rounded-full transition-[width]",
             stale ? "bg-moon-300" : toneFill[tone],
           )}
-          style={{ width: `${pct}%` }}
+          style={{ width: `${remain}%` }}
         />
       </div>
       <span className={cn("w-9 shrink-0 text-right", stale ? "text-moon-400" : toneText[tone])}>
-        {formatPercent(pct)}
+        {formatPercent(remain)}
       </span>
     </div>
   );
@@ -143,8 +146,9 @@ function WindowRow({
   window: QuotaWindow;
   stale: boolean;
 }) {
-  const tone = stale ? "ok" : windowTone(w.usedPercent);
-  const pct = clampPercent(w.usedPercent);
+  const remain = clampPercent(100 - w.usedPercent);
+  const used = clampPercent(w.usedPercent);
+  const tone = stale ? "ok" : windowTone(remain);
   const resetAbs = formatResetAt(w.resetAtMs);
 
   return (
@@ -152,7 +156,7 @@ function WindowRow({
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-[12px] font-medium text-moon-700">{label}</p>
         <p className={cn("text-[12px] font-semibold tabular-nums", stale ? "text-moon-500" : toneText[tone])}>
-          {formatPercent(pct)} 已用
+          {formatPercent(remain)} 剩余
         </p>
       </div>
       <div
@@ -166,11 +170,11 @@ function WindowRow({
             "absolute inset-y-0 left-0 rounded-full transition-[width]",
             stale ? "bg-moon-300" : toneFill[tone],
           )}
-          style={{ width: `${pct}%` }}
+          style={{ width: `${remain}%` }}
         />
       </div>
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px] text-moon-400">
-        <span>{formatResetIn(w.resetAfterSeconds)} 后重置</span>
+        <span>已用 {formatPercent(used)} · {formatResetIn(w.resetAfterSeconds)} 后重置</span>
         {resetAbs ? <span className="tabular-nums">{resetAbs}</span> : null}
       </div>
     </div>
