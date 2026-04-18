@@ -128,7 +128,7 @@ function SideTOC({ active }: { active: string }) {
           >
             <span
               className={cn(
-                "absolute right-6 whitespace-nowrap rounded-full border border-moon-200/70 bg-white/92 px-2 py-0.5 text-[11px] text-moon-500 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100",
+                "absolute right-6 whitespace-nowrap rounded-full border border-moon-200/70 bg-white/92 px-2 py-0.5 text-[11px] text-moon-500 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100",
               )}
             >
               {section.label}
@@ -373,11 +373,11 @@ function StackedTrendBars({
                   {bucket.total > 0 ? (
                     <div className="flex h-full w-full flex-col">
                       <div
-                        className="w-full bg-[linear-gradient(180deg,rgba(229,115,115,0.78),rgba(229,115,115,0.55))]"
+                        className="w-full bg-[linear-gradient(180deg,rgba(190,116,118,0.78),rgba(190,116,118,0.55))]"
                         style={{ height: `${100 - successPct}%` }}
                       />
                       <div
-                        className="w-full bg-[linear-gradient(180deg,rgba(113,175,139,0.78),rgba(113,175,139,0.45))]"
+                        className="w-full bg-[linear-gradient(180deg,rgba(93,159,135,0.78),rgba(93,159,135,0.45))]"
                         style={{ height: `${successPct}%` }}
                       />
                     </div>
@@ -484,10 +484,10 @@ function MoonDial({ buckets }: { buckets: TrendBucket[] }) {
               bucket.total > 0 ? bucket.success / bucket.total : 1;
             const color =
               successRate >= 0.98
-                ? "rgba(113,175,139,0.85)"
+                ? "rgba(93,159,135,0.85)"
                 : successRate >= 0.9
-                  ? "rgba(198,179,100,0.85)"
-                  : "rgba(229,115,115,0.85)";
+                  ? "rgba(192,154,85,0.85)"
+                  : "rgba(190,116,118,0.85)";
             const tooltip = `${bucket.label} · ${bucket.success} 成功 / ${bucket.fail} 失败 (${pct(
               successRate,
             )})`;
@@ -738,7 +738,7 @@ function SankeyDiagram({
                 width={layout.nodeWidth}
                 height={node.h}
                 rx={3}
-                fill="rgba(113,175,139,0.78)"
+                fill="rgba(93,159,135,0.78)"
               />
               <text
                 x={node.x + layout.nodeWidth + 6}
@@ -835,12 +835,12 @@ function TopErrors({
                   <span
                     className={cn(
                       "inline-flex rounded-full px-2 py-0.5 text-xs",
-                      row.statusCode >= 500
+                      row.statusCode === 0 || row.statusCode >= 500
                         ? "bg-status-red/12 text-status-red"
                         : "bg-status-yellow/12 text-status-yellow",
                     )}
                   >
-                    HTTP {row.statusCode || "--"}
+                    {row.statusCode === 0 ? "网络故障" : `HTTP ${row.statusCode}`}
                   </span>
                   <span className="text-sm font-semibold text-moon-700">
                     × {compact(row.count)}
@@ -1193,7 +1193,11 @@ export default function ActivityPage() {
         title="Activity"
         description="查看最近请求与系统运行状态。"
         actions={
-          <Button variant="outline" onClick={handleManualRefresh}>
+          <Button
+            variant="outline"
+            onClick={handleManualRefresh}
+            disabled={loading}
+          >
             <RefreshCw className={cn("size-4", loading && "animate-spin")} />
             刷新
           </Button>
@@ -1328,8 +1332,11 @@ export default function ActivityPage() {
                     <Fragment key={item.id}>
                       <tr
                         id={`logs-${item.request_id}`}
+                        tabIndex={0}
+                        role="button"
+                        aria-expanded={expanded}
                         className={cn(
-                          "cursor-pointer transition-colors hover:bg-white/55",
+                          "cursor-pointer transition-colors hover:bg-white/55 focus:outline-none focus-visible:bg-white/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-lunar-400",
                           expanded ? "bg-white/82" : "",
                           highlighted &&
                             "bg-lunar-100/55 ring-2 ring-inset ring-lunar-300/70",
@@ -1339,6 +1346,14 @@ export default function ActivityPage() {
                             current === item.id ? null : item.id,
                           )
                         }
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setExpandedRowId((current) =>
+                              current === item.id ? null : item.id,
+                            );
+                          }
+                        }}
                       >
                         <td className="px-4 py-3 text-moon-400">
                           {shortDate(item.created_at)}
@@ -1467,9 +1482,13 @@ export default function ActivityPage() {
                                   Attempts
                                 </p>
                                 <p className="text-sm text-moon-700">
-                                  {item.attempt_count > 1
-                                    ? `#${item.attempt_count}（重试救回）`
-                                    : `#${item.attempt_count}`}
+                                  {item.attempt_count === 0
+                                    ? "路由拒绝（未发起上游请求）"
+                                    : item.attempt_count > 1
+                                      ? item.success
+                                        ? `#${item.attempt_count}（重试救回）`
+                                        : `#${item.attempt_count}（重试仍失败）`
+                                      : `#${item.attempt_count}`}
                                 </p>
                               </div>
                             </div>

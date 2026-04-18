@@ -125,6 +125,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var exclude []int64
 	var lastErr error
 	var lastStatusCode int
+	// Remember the last account we actually forwarded to so that the
+	// "all retries exhausted" log below still carries pool/account context
+	// instead of an anonymous failure.
+	var lastResolved *router.ResolvedRoute
 	attemptsUsed := 0
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -144,6 +148,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
+		lastResolved = resolved
 
 		// resolve upstream target based on source_kind
 		target := h.resolveTarget(resolved.Account)
@@ -211,7 +216,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errMsg = fmt.Sprintf("upstream returned HTTP %d", lastStatusCode)
 	}
 	webutil.WriteGatewayError(w, 502, "upstream_failed", errMsg)
-	h.logRequest(requestID, accessToken, model, nil, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, "", attemptsUsed)
+	lastSourceKind := ""
+	if lastResolved != nil {
+		lastSourceKind = lastResolved.Account.SourceKind
+	}
+	h.logRequest(requestID, accessToken, model, lastResolved, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, lastSourceKind, attemptsUsed)
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter) {
