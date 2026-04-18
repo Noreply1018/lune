@@ -507,18 +507,40 @@ export default function PoolDetailPage() {
         title={pool.label}
         description="左边是 Active Pool，拖动卡片即可调整路由优先级；右侧停泊区收纳临时停用的账号。"
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={runSelfCheck}
-              disabled={selfChecking || enabledMembers.length === 0}
-              className="rounded-full border-status-green/55 bg-status-green/10 text-status-green hover:bg-status-green/18 hover:text-status-green"
-            >
-              <ShieldCheck className="size-3.5" />
-              {selfChecking ? "自检中" : "自检 Pool"}
-            </Button>
-          </div>
+          primaryPoolToken ? (
+            <div className="flex items-center gap-2.5">
+              <span className="inline-flex items-center gap-2">
+                <span className="text-[12.5px] text-moon-500">Pool Token：</span>
+                <span
+                  className={`size-2 shrink-0 rounded-full ${
+                    primaryPoolToken.enabled ? "bg-status-green" : "bg-moon-400"
+                  }`}
+                  aria-hidden
+                />
+                <code className="font-mono text-[12.5px] text-moon-700">
+                  {primaryTokenDisplay}
+                </code>
+              </span>
+              {!primaryPoolToken.enabled ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => jumpToTokenInSettings(primaryPoolToken.id)}
+                  title="Token 已禁用 · 前往 Settings 启用"
+                  className="rounded-full border-status-yellow/55 bg-status-yellow/10 text-status-yellow hover:bg-status-yellow/18 hover:text-status-yellow"
+                >
+                  已禁用 ↗
+                </Button>
+              ) : null}
+              {primaryTokenRevealed ? (
+                <InlineCopyIcon value={primaryTokenRevealed} />
+              ) : null}
+            </div>
+          ) : (
+            <span className="truncate text-[12.5px] text-moon-400" title={primaryTokenDisplay}>
+              Pool Token：{primaryTokenDisplay}
+            </span>
+          )
         }
         meta={
           <>
@@ -540,66 +562,39 @@ export default function PoolDetailPage() {
             <span>{pool.routable_account_count} 可用</span>
             <span>24h 请求 {compact(stats?.total_requests ?? 0)}</span>
             <span>成功率 {pct(stats?.success_rate ?? 0)}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={runSelfCheck}
+              disabled={selfChecking || enabledMembers.length === 0}
+              className="ml-1 rounded-full border-status-green/55 bg-status-green/10 text-status-green hover:bg-status-green/18 hover:text-status-green"
+            >
+              <ShieldCheck className="size-3.5" />
+              {selfChecking ? "自检中" : "自检 Pool"}
+            </Button>
           </>
         }
         metaEnd={
           <>
-            {primaryPoolToken ? (
-              // Keep the token chip single-line so Env/QR buttons sit cleanly
-              // beside it. Disabled state is compressed into a short pill with
-              // a tooltip carrying the full guidance; this avoids the previous
-              // attempt where basis-full forced the chip into two lines and
-              // left the icon buttons floating at vertical mid-height.
-              <span className="inline-flex items-center gap-1.5">
-                <span
-                  className={`size-2 shrink-0 rounded-full ${
-                    primaryPoolToken.enabled ? "bg-status-green" : "bg-moon-400"
-                  }`}
-                  aria-hidden
-                />
-                <code className="font-mono text-[12.5px] text-moon-700">
-                  {primaryTokenDisplay}
-                </code>
-                {primaryTokenRevealed ? (
-                  <InlineCopyIcon value={primaryTokenRevealed} />
-                ) : null}
-                {!primaryPoolToken.enabled ? (
-                  <button
-                    type="button"
-                    onClick={() => jumpToTokenInSettings(primaryPoolToken.id)}
-                    title="Token 已禁用 · 前往 Settings 启用"
-                    className="shrink-0 rounded-full border border-status-yellow/55 bg-status-yellow/10 px-2 py-0.5 text-[11px] font-medium text-status-yellow hover:bg-status-yellow/18"
-                  >
-                    已禁用 ↗
-                  </button>
-                ) : null}
-              </span>
-            ) : (
-              <span className="truncate text-moon-400" title={primaryTokenDisplay}>
-                Token {primaryTokenDisplay}
-              </span>
-            )}
             <Button
               variant="outline"
-              size="icon-xs"
+              size="sm"
               onClick={openSnippetsWithToken}
               disabled={!hasConnectToken}
               className="rounded-full border-moon-200/55 bg-white/45"
-              aria-label="Env Snippets"
-              title="Env Snippets"
             >
-              <KeyRound className="size-3" />
+              <KeyRound className="size-3.5" />
+              Env Snippets
             </Button>
             <Button
               variant="outline"
-              size="icon-xs"
+              size="sm"
               onClick={openQrWithToken}
               disabled={!hasConnectToken}
               className="rounded-full border-moon-200/55 bg-white/45"
-              aria-label="Token QR"
-              title="Token QR"
             >
-              <QrCode className="size-3" />
+              <QrCode className="size-3.5" />
+              QR
             </Button>
           </>
         }
@@ -679,9 +674,6 @@ export default function PoolDetailPage() {
   );
 }
 
-// Frameless copy affordance sized to sit on the meta-row text baseline; the
-// framed CopyButton (size-7) made the token chip visibly taller than sibling
-// text spans, throwing the whole "healthy · 3 账号 · token" row out of line.
 function InlineCopyIcon({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
   async function handle() {
@@ -695,14 +687,19 @@ function InlineCopyIcon({ value }: { value: string }) {
     }
   }
   return (
-    <button
-      type="button"
+    <Button
+      variant="outline"
+      size="icon-sm"
       onClick={handle}
-      className="text-moon-400 transition-colors hover:text-moon-700"
       aria-label="复制 Token"
       title="复制 Token"
+      className="rounded-full border-moon-200/55 bg-white/45"
     >
-      {copied ? <Check className="size-3 text-status-green" /> : <Copy className="size-3" />}
-    </button>
+      {copied ? (
+        <Check className="size-3.5 text-status-green" />
+      ) : (
+        <Copy className="size-3.5" />
+      )}
+    </Button>
   );
 }
