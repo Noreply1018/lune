@@ -8,7 +8,7 @@ const (
 	DefaultMaxRetryAttempts         = 3
 	DefaultNotificationExpiringDays = 7
 	DefaultDataRetentionDays        = 30
-	DefaultCodexQuotaFetchInterval  = 1800
+	DefaultCodexQuotaFetchInterval  = 600
 )
 
 var allowedSettingKeys = map[string]struct{}{

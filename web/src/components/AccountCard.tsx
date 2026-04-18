@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { GripVertical, Info, MoreHorizontal, Power, RefreshCw, Trash2 } from "lucide-react";
 import {
   DropdownMenu,
@@ -7,6 +8,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import StatusBadge from "@/components/StatusBadge";
+import { CodexQuotaBarsCompact } from "@/components/CodexQuotaBars";
+import { isQuotaStale, parseCodexQuota } from "@/lib/codexQuota";
 import { compact, relativeTime } from "@/lib/fmt";
 import type { PoolMember } from "@/lib/types";
 import {
@@ -53,6 +56,13 @@ export default function AccountCard({
   const health = account ? getAccountHealth(account) : "error";
   const expiry = getExpiryMeta(account?.cpa_expired_at ?? null);
   const quota = parseQuotaDisplay(account?.quota_display ?? "");
+  // Card re-renders on every drag tick; parsing the raw JSON each time is
+  // wasted work even though the payload is small.
+  const codexQuota = useMemo(
+    () => (account ? parseCodexQuota(account) : null),
+    [account?.cpa_provider, account?.codex_quota_json],
+  );
+  const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
   const enabled = member.enabled;
 
   const toneClass = !enabled
@@ -142,8 +152,14 @@ export default function AccountCard({
           </div>
         </div>
 
+        {codexQuota ? (
+          <CodexQuotaBarsCompact quota={codexQuota} stale={codexQuotaStale} />
+        ) : null}
+
         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-moon-500">
-          <span className="rounded-full bg-moon-100/80 px-2 py-0.5">{quota}</span>
+          {codexQuota ? null : (
+            <span className="rounded-full bg-moon-100/80 px-2 py-0.5">{quota}</span>
+          )}
           <span className="rounded-full bg-moon-100/80 px-2 py-0.5">
             今日 {compact(requests)}
           </span>

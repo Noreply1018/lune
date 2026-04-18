@@ -24,6 +24,8 @@ export interface Account {
   cpa_expired_at: string | null;
   cpa_last_refresh_at: string | null;
   cpa_disabled: boolean;
+  codex_quota_json?: string;
+  codex_quota_fetched_at?: string;
   runtime: {
     base_url: string;
     auth_mode: string;

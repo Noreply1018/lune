@@ -17,7 +17,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import StatusBadge from "@/components/StatusBadge";
+import { CodexQuotaBarsFull } from "@/components/CodexQuotaBars";
 import { api } from "@/lib/api";
+import { parseCodexQuota, type CodexQuota } from "@/lib/codexQuota";
 import { compact, latency, relativeTime } from "@/lib/fmt";
 import {
   ensureArray,
@@ -26,7 +28,7 @@ import {
   getExpiryMeta,
   parseQuotaDisplay,
 } from "@/lib/lune";
-import type { LatencyBucket, PoolMember } from "@/lib/types";
+import type { Account, LatencyBucket, PoolMember } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Tone = "default" | "success" | "warning" | "danger";
@@ -82,6 +84,7 @@ export default function AccountDetailSheet({
   const health = getAccountHealth(account);
   const expiry = getExpiryMeta(account.cpa_expired_at ?? null);
   const quota = parseQuotaDisplay(account.quota_display ?? "");
+  const codexQuota = parseCodexQuota(account);
   const models = ensureArray(account.models);
 
   return (
@@ -152,6 +155,8 @@ export default function AccountDetailSheet({
                   stats={stats}
                   models={models}
                   quota={quota}
+                  account={account}
+                  codexQuota={codexQuota}
                 />
               </TabsPanel>
               <TabsPanel value="playground">
@@ -186,12 +191,16 @@ function OverviewPanel({
   stats,
   models,
   quota,
+  account,
+  codexQuota,
 }: {
   accountId: number;
   poolId?: number;
   stats: AccountStats;
   models: string[];
   quota: string;
+  account: Account;
+  codexQuota: CodexQuota | null;
 }) {
   const [latencyState, setLatencyState] = useState<
     { status: "loading" } | { status: "ready"; p50: number | null; p95: number | null } | { status: "empty" } | { status: "error" }
@@ -293,13 +302,23 @@ function OverviewPanel({
         )}
       </section>
 
-      <section className="space-y-2.5 rounded-[1.2rem] border border-moon-200/55 bg-white/60 px-4 py-4">
-        <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Quota</p>
-        <p className="text-sm text-moon-700">{quota}</p>
-        <p className="text-xs text-moon-400">
-          当前只有 quota_display 手动字段，CPA 原生 5h / 周额度透传待实现。
-        </p>
-      </section>
+      {codexQuota ? (
+        <CodexQuotaBarsFull
+          quota={codexQuota}
+          fetchedAt={account.codex_quota_fetched_at}
+          planType={account.cpa_plan_type}
+        />
+      ) : (
+        <section className="space-y-2.5 rounded-[1.2rem] border border-moon-200/55 bg-white/60 px-4 py-4">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Quota</p>
+          <p className="text-sm text-moon-700">{quota}</p>
+          {account.cpa_provider === "codex" ? (
+            <p className="text-xs text-moon-400">
+              CPA 尚未返回配额快照，下次健康检查后会自动填充。
+            </p>
+          ) : null}
+        </section>
+      )}
     </div>
   );
 }
