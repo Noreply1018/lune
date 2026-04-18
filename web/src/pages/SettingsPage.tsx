@@ -86,16 +86,16 @@ const INITIAL_TOKEN_DRAFT: TokenDraft = {
 
 const TOKEN_GRID_COLUMNS =
   "xl:grid-cols-[minmax(10rem,1fr)_minmax(0,4.8fr)_9.5rem_6.25rem_6.25rem_11.5rem]";
-// `center` shifts the header visually toward the column middle without moving
-// the data row below. Requested by design: 状态 列窄所以偏移量小，操作 列宽所以
-//偏移量大，两者合起来让右侧表头不再贴着列的左缘。
-const TOKEN_COLUMNS: { label: string; center: boolean }[] = [
-  { label: "名称", center: false },
-  { label: "Token", center: false },
-  { label: "创建时间", center: false },
-  { label: "状态", center: true },
-  { label: "归属", center: false },
-  { label: "操作", center: true },
+// `align` shifts header label within its column without moving the data rows.
+// 操作 走完全居中，状态 用 pl-5 落在“左对齐和完全居中”之间——列本身窄，硬 center
+// 会让表头离值显得远；半偏一点既收紧又不贴边。
+const TOKEN_COLUMNS: { label: string; align?: string }[] = [
+  { label: "名称" },
+  { label: "Token" },
+  { label: "创建时间" },
+  { label: "状态", align: "pl-5" },
+  { label: "归属" },
+  { label: "操作", align: "text-center" },
 ];
 
 const SETTINGS_SECTIONS: TOCSection[] = [
@@ -653,47 +653,47 @@ export default function SettingsPage() {
           <SectionHeading
             title="CPA Service"
             description="查看当前 CPA 通道状态。"
-            action={
-              service ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full"
-                  onClick={testService}
-                  disabled={testingService}
-                >
-                  {testingService ? (
-                    <RefreshCw className="size-4 animate-spin" />
-                  ) : (
-                    <CircleDot className="size-4" />
-                  )}
-                  Test Connection
-                </Button>
-              ) : undefined
-            }
           />
           <div className="mt-4 flex flex-1 flex-col gap-4">
             {service ? (
-              <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-                <InfoBlock
-                  label="Status"
-                  value={
-                    <StatusBadge ok={service.status === "healthy"}>
-                      {service.status === "healthy" ? "Healthy" : "Error"}
-                    </StatusBadge>
-                  }
-                />
-                <InfoBlock label="Label" value={service.label || "--"} />
-                <InfoBlock label="Base URL" value={service.base_url || "--"} />
-                <InfoBlock
-                  label="Last Checked"
-                  value={
-                    service.last_checked_at
-                      ? shortDate(service.last_checked_at)
-                      : "尚未检查"
-                  }
-                />
-              </div>
+              <>
+                <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+                  <InfoBlock
+                    label="Status"
+                    value={
+                      <StatusBadge ok={service.status === "healthy"}>
+                        {service.status === "healthy" ? "Healthy" : "Error"}
+                      </StatusBadge>
+                    }
+                  />
+                  <InfoBlock label="Label" value={service.label || "--"} />
+                  <InfoBlock label="Base URL" value={service.base_url || "--"} />
+                  <InfoBlock
+                    label="Last Checked"
+                    value={
+                      service.last_checked_at
+                        ? shortDate(service.last_checked_at)
+                        : "尚未检查"
+                    }
+                  />
+                </div>
+                <div className="mt-auto flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="rounded-full"
+                    onClick={testService}
+                    disabled={testingService}
+                  >
+                    {testingService ? (
+                      <RefreshCw className="size-4 animate-spin" />
+                    ) : (
+                      <CircleDot className="size-4" />
+                    )}
+                    Test Connection
+                  </Button>
+                </div>
+              </>
             ) : (
               <div className="flex h-full flex-col gap-3 rounded-[1.35rem] border border-dashed border-moon-200/55 px-4 py-4 text-sm text-moon-500">
                 <p>请通过环境变量完成 CPA 配置</p>
@@ -1060,12 +1060,12 @@ function TokenGroup({
               TOKEN_GRID_COLUMNS,
             )}
           >
-            {TOKEN_COLUMNS.map(({ label, center }) => (
+            {TOKEN_COLUMNS.map(({ label, align }) => (
               <p
                 key={label}
                 className={cn(
                   "text-[11px] font-medium tracking-[0.16em] text-moon-300",
-                  center && "text-center",
+                  align,
                 )}
               >
                 {label}
