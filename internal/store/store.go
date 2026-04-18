@@ -19,7 +19,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 10
+const v3SchemaVersion = 11
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS accounts (
     cpa_disabled        INTEGER NOT NULL DEFAULT 0,
     codex_quota_json    TEXT NOT NULL DEFAULT '',
     codex_quota_fetched_at TEXT NOT NULL DEFAULT '',
+    probe_models        TEXT NOT NULL DEFAULT '[]',
+    last_probe_status   TEXT NOT NULL DEFAULT '',
+    last_probe_at       TEXT,
+    last_probe_error    TEXT NOT NULL DEFAULT '',
     enabled             INTEGER NOT NULL DEFAULT 1,
     status              TEXT NOT NULL DEFAULT 'unknown',
     notes               TEXT NOT NULL DEFAULT '',
@@ -235,8 +239,8 @@ func (s *Store) migrateV3(dbPath string) error {
 		return nil // already at latest
 	}
 
-	if ver >= 3 && ver <= 9 {
-		slog.Info("migrating schema to v10 (notification text-only simplify)", "from_version", ver)
+	if ver >= 3 && ver <= 10 {
+		slog.Info("migrating schema to v11 (probe models + last probe)", "from_version", ver)
 		if ver < 8 {
 			if err := s.migrateCodexQuotaColumns(); err != nil {
 				return fmt.Errorf("migrate codex quota columns: %w", err)
@@ -247,8 +251,13 @@ func (s *Store) migrateV3(dbPath string) error {
 				return fmt.Errorf("migrate notification singleton: %w", err)
 			}
 		}
-		if err := s.migrateNotificationTextOnly(); err != nil {
-			return fmt.Errorf("migrate notification text-only: %w", err)
+		if ver < 10 {
+			if err := s.migrateNotificationTextOnly(); err != nil {
+				return fmt.Errorf("migrate notification text-only: %w", err)
+			}
+		}
+		if err := s.migrateProbeColumns(); err != nil {
+			return fmt.Errorf("migrate probe columns: %w", err)
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
 	}
@@ -451,6 +460,42 @@ func (s *Store) migrateCodexQuotaColumns() error {
 			`ALTER TABLE accounts ADD COLUMN codex_quota_fetched_at TEXT NOT NULL DEFAULT ''`,
 		); err != nil {
 			return err
+		}
+	}
+
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "accounts")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+// migrateProbeColumns adds the probe_models configuration and last-probe result
+// columns to existing accounts tables. Called when upgrading from ver <= 10.
+func (s *Store) migrateProbeColumns() error {
+	exists, err := s.tableExists("accounts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	adds := []struct{ col, ddl string }{
+		{"probe_models", `ALTER TABLE accounts ADD COLUMN probe_models TEXT NOT NULL DEFAULT '[]'`},
+		{"last_probe_status", `ALTER TABLE accounts ADD COLUMN last_probe_status TEXT NOT NULL DEFAULT ''`},
+		{"last_probe_at", `ALTER TABLE accounts ADD COLUMN last_probe_at TEXT`},
+		{"last_probe_error", `ALTER TABLE accounts ADD COLUMN last_probe_error TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, a := range adds {
+		has, err := s.hasColumn("accounts", a.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.col, err)
 		}
 	}
 

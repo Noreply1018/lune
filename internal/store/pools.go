@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 )
 
@@ -346,6 +347,8 @@ func scanPoolMemberWithAccount(row rowScanner, m *PoolMember, mEnabled *int) (*A
 	var cpaServiceID sql.NullInt64
 	var lastCheckedAt sql.NullString
 	var createdAt, updatedAt sql.NullString
+	var probeModelsJSON string
+	var lastProbeAt sql.NullString
 
 	err := row.Scan(
 		&m.ID, &m.PoolID, &m.AccountID, &m.Position, mEnabled,
@@ -354,6 +357,7 @@ func scanPoolMemberWithAccount(row rowScanner, m *PoolMember, mEnabled *int) (*A
 		&cpaServiceID, &a.CpaProvider, &a.CpaAccountKey, &a.CpaEmail, &a.CpaPlanType, &a.CpaOpenaiID,
 		&a.CpaExpiredAt, &a.CpaLastRefreshAt, &cpaDisabled,
 		&a.CodexQuotaJSON, &a.CodexQuotaFetchedAt,
+		&probeModelsJSON, &a.LastProbeStatus, &lastProbeAt, &a.LastProbeError,
 		&aEnabled, &a.Status, &a.Notes, &a.QuotaDisplay, &lastCheckedAt, &a.LastError, &createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -377,6 +381,18 @@ func scanPoolMemberWithAccount(row rowScanner, m *PoolMember, mEnabled *int) (*A
 	}
 	if a.SourceKind == "" {
 		a.SourceKind = "openai_compat"
+	}
+
+	a.ProbeModels = []string{}
+	if probeModelsJSON != "" {
+		_ = json.Unmarshal([]byte(probeModelsJSON), &a.ProbeModels)
+		if a.ProbeModels == nil {
+			a.ProbeModels = []string{}
+		}
+	}
+	if lastProbeAt.Valid {
+		s := lastProbeAt.String
+		a.LastProbeAt = &s
 	}
 
 	return &a, nil

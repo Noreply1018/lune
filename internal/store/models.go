@@ -25,6 +25,12 @@ type Account struct {
 	CodexQuotaJSON      string `json:"codex_quota_json,omitempty"`
 	CodexQuotaFetchedAt string `json:"codex_quota_fetched_at,omitempty"`
 
+	// probe configuration + last self-check result (direct accounts)
+	ProbeModels     []string `json:"probe_models"`
+	LastProbeStatus string   `json:"last_probe_status,omitempty"`
+	LastProbeAt     *string  `json:"last_probe_at,omitempty"`
+	LastProbeError  string   `json:"last_probe_error,omitempty"`
+
 	// common fields
 	Enabled       bool    `json:"enabled"`
 	Status        string  `json:"status"`
