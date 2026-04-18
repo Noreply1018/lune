@@ -747,7 +747,9 @@ export default function SettingsPage() {
           )
         }
         summary={retentionSummary}
-        onReloadSummary={loadRetentionSummary}
+        onReloadSummary={async () => {
+          await loadRetentionSummary();
+        }}
       />
 
       <SystemSection

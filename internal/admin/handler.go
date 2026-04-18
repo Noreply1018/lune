@@ -772,20 +772,32 @@ func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
+	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		webutil.WriteAdminError(w, 400, "bad_request", "name is required")
 		return
 	}
+	// Force server-side generation: never trust a client-supplied value for
+	// the token column, otherwise any admin-authenticated caller could plant
+	// a known secret and bypass the random-token entropy contract.
+	req.Token = ""
 	id, err := h.store.CreateToken(&req)
 	if err != nil {
 		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
-	req.ID = id
-	req.IsGlobal = req.PoolID == nil
-	// return full token on creation
-	webutil.WriteData(w, 201, req)
+	// Fetch the persisted row so the response carries real created_at /
+	// updated_at / token_masked values; then reattach the plaintext token
+	// for the one-shot reveal-on-create UX.
+	created, err := h.store.GetToken(id)
+	if err != nil || created == nil {
+		h.internalError(w, err)
+		return
+	}
+	created.Token = req.Token
+	created.IsGlobal = created.PoolID == nil
+	webutil.WriteData(w, 201, created)
 }
 
 func (h *Handler) revealGlobalToken(w http.ResponseWriter, r *http.Request) {
@@ -853,16 +865,25 @@ func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		webutil.WriteAdminError(w, 400, "bad_request", "name is required")
+		return
+	}
 	if err := h.store.UpdateToken(id, &req); err != nil {
 		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
-	req.ID = id
-	req.IsGlobal = req.PoolID == nil
-	req.TokenMasked = maskKey(req.Token)
-	req.Token = ""
-	webutil.WriteData(w, 200, req)
+	// UpdateToken only writes name/pool_id/enabled. The real token value is
+	// unchanged, so echo back the database's masked form rather than masking
+	// whatever the client happened to put in req.Token.
+	existing.Name = req.Name
+	existing.PoolID = req.PoolID
+	existing.Enabled = req.Enabled
+	existing.IsGlobal = existing.PoolID == nil
+	existing.Token = ""
+	webutil.WriteData(w, 200, existing)
 }
 
 func (h *Handler) enableToken(w http.ResponseWriter, r *http.Request) {
@@ -1510,6 +1531,9 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
+	req.Label = strings.TrimSpace(req.Label)
+	req.BaseURL = strings.TrimSpace(req.BaseURL)
+	req.APIKey = strings.TrimSpace(req.APIKey)
 	if req.Label == "" || req.BaseURL == "" {
 		webutil.WriteAdminError(w, 400, "bad_request", "label and base_url are required")
 		return
@@ -1626,11 +1650,16 @@ func (h *Handler) testConnection(w http.ResponseWriter, r *http.Request) {
 		Error     string   `json:"error"`
 	}{}
 
-	start := time.Now()
-	modelsReq, _ := http.NewRequest("GET", baseURL+"/models", nil)
+	modelsReq, err := http.NewRequest("GET", baseURL+"/models", nil)
+	if err != nil {
+		result.Error = fmt.Sprintf("invalid base_url: %v", err)
+		webutil.WriteData(w, 200, result)
+		return
+	}
 	if req.APIKey != "" {
 		modelsReq.Header.Set("Authorization", "Bearer "+req.APIKey)
 	}
+	start := time.Now()
 	modelsResp, err := client.Do(modelsReq)
 	result.LatencyMs = time.Since(start).Milliseconds()
 
@@ -1696,11 +1725,16 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 		Error     string   `json:"error"`
 	}{}
 
-	start := time.Now()
-	healthReq, _ := http.NewRequest("GET", baseURL+"/healthz", nil)
+	healthReq, err := http.NewRequest("GET", baseURL+"/healthz", nil)
+	if err != nil {
+		result.Error = fmt.Sprintf("invalid base_url: %v", err)
+		webutil.WriteData(w, 200, result)
+		return
+	}
 	if req.APIKey != "" {
 		healthReq.Header.Set("Authorization", "Bearer "+req.APIKey)
 	}
+	start := time.Now()
 	healthResp, err := client.Do(healthReq)
 	result.LatencyMs = time.Since(start).Milliseconds()
 
@@ -1719,7 +1753,13 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 
 	result.Reachable = true
 
-	modelsReq, _ := http.NewRequest("GET", baseURL+"/v1/models", nil)
+	modelsReq, err := http.NewRequest("GET", baseURL+"/v1/models", nil)
+	if err != nil {
+		// Reachable is already true from /healthz; skip the enrichment step
+		// and return what we have rather than crashing on a nil request.
+		webutil.WriteData(w, 200, result)
+		return
+	}
 	if req.APIKey != "" {
 		modelsReq.Header.Set("Authorization", "Bearer "+req.APIKey)
 	}
