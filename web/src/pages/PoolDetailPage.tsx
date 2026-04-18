@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { KeyRound, QrCode, ShieldCheck } from "lucide-react";
+import { Check, Copy, KeyRound, QrCode, ShieldCheck } from "lucide-react";
 import AccountCard from "@/components/AccountCard";
 import AccountDetailSheet from "@/components/AccountDetailSheet";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import CopyButton from "@/components/CopyButton";
 import DragSortArea from "@/components/DragSortArea";
 import EmptyState from "@/components/EmptyState";
 import EnvSnippetsDialog from "@/components/EnvSnippetsDialog";
@@ -17,7 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { compact, pct } from "@/lib/fmt";
 import { ensureArray, getApiBaseUrl, getPoolHealth } from "@/lib/lune";
-import { matchPath, usePathname } from "@/lib/router";
+import { matchPath, usePathname, useRouter } from "@/lib/router";
 import type {
   Overview,
   PoolDetailResponse,
@@ -39,6 +38,7 @@ type AccountStatsEntry = {
 
 export default function PoolDetailPage() {
   const pathname = usePathname();
+  const { navigate } = useRouter();
   const { dataVersion, refreshData } = useAdminUI();
   const params = matchPath("/admin/pools/:id", pathname);
   const poolId = Number(params?.id);
@@ -62,6 +62,7 @@ export default function PoolDetailPage() {
   const flashTimersRef = useRef<Map<number, number>>(new Map());
   const selfCheckingRef = useRef(false);
   const revealInFlightRef = useRef<Set<number>>(new Set());
+  const scrollRetryRef = useRef<number | null>(null);
 
   const load = useCallback(() => {
     if (!hasValidPoolId) {
@@ -105,6 +106,10 @@ export default function PoolDetailPage() {
     return () => {
       flashTimersRef.current.forEach((id) => window.clearTimeout(id));
       flashTimersRef.current.clear();
+      if (scrollRetryRef.current) {
+        window.clearTimeout(scrollRetryRef.current);
+        scrollRetryRef.current = null;
+      }
     };
   }, []);
 
@@ -324,6 +329,33 @@ export default function PoolDetailPage() {
     } else {
       flashTimersRef.current.delete(memberId);
     }
+  }
+
+  function jumpToTokenInSettings(tokenId: number) {
+    navigate("/admin/settings");
+    // Custom router stores pathname without hash; replaceState afterwards so
+    // the URL is shareable without confusing pathname matching in App.tsx.
+    window.history.replaceState(null, "", `/admin/settings#access-token-${tokenId}`);
+    // Cancel any pending retry chain from a prior jump so we don't keep
+    // timers alive after the component unmounts or the user re-triggers.
+    if (scrollRetryRef.current) {
+      window.clearTimeout(scrollRetryRef.current);
+      scrollRetryRef.current = null;
+    }
+    let attempts = 0;
+    const tryScroll = () => {
+      scrollRetryRef.current = null;
+      const el = document.getElementById(`access-token-${tokenId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      if (attempts < 20) {
+        attempts += 1;
+        scrollRetryRef.current = window.setTimeout(tryScroll, 60);
+      }
+    };
+    tryScroll();
   }
 
   async function runSelfCheck() {
@@ -558,14 +590,20 @@ export default function PoolDetailPage() {
                   }`}
                   aria-hidden
                 />
-                <code className="rounded bg-moon-100/80 px-1.5 py-0.5 font-mono text-[12px] text-moon-700">
+                <code className="font-mono text-[12.5px] text-moon-700">
                   {primaryTokenDisplay}
                 </code>
                 {primaryTokenRevealed ? (
-                  <CopyButton value={primaryTokenRevealed} />
+                  <InlineCopyIcon value={primaryTokenRevealed} />
                 ) : null}
                 {!primaryPoolToken.enabled ? (
-                  <span className="text-status-yellow">已禁用 · 前往 Settings 启用</span>
+                  <button
+                    type="button"
+                    onClick={() => jumpToTokenInSettings(primaryPoolToken.id)}
+                    className="text-status-yellow hover:underline"
+                  >
+                    已禁用 · 前往 Settings 启用 →
+                  </button>
                 ) : null}
               </span>
             ) : (
@@ -598,6 +636,7 @@ export default function PoolDetailPage() {
               dragging={options.dragging}
               dragHandleProps={options.dragHandleProps}
               requests={accountStatsMap.get(member.account_id)?.requests ?? 0}
+              successRate={accountStatsMap.get(member.account_id)?.successRate ?? null}
               selected={isSelected}
               dimmed={spotlightActive && !isSelected}
               flashState={flashMap[member.id] ?? null}
@@ -646,5 +685,33 @@ export default function PoolDetailPage() {
         onConfirm={deleteAccount}
       />
     </div>
+  );
+}
+
+// Frameless copy affordance sized to sit on the meta-row text baseline; the
+// framed CopyButton (size-7) made the token chip visibly taller than sibling
+// text spans, throwing the whole "healthy · 3 账号 · token" row out of line.
+function InlineCopyIcon({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  async function handle() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      toast("已复制");
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      toast("复制失败", "error");
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={handle}
+      className="text-moon-400 transition-colors hover:text-moon-700"
+      aria-label="复制 Token"
+      title="复制 Token"
+    >
+      {copied ? <Check className="size-3 text-status-green" /> : <Copy className="size-3" />}
+    </button>
   );
 }

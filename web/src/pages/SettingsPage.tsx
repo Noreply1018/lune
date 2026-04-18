@@ -137,6 +137,7 @@ export default function SettingsPage() {
     {},
   );
   const [visibleTokenIds, setVisibleTokenIds] = useState<number[]>([]);
+  const [highlightedTokenId, setHighlightedTokenId] = useState<number | null>(null);
   const [testingService, setTestingService] = useState(false);
   const [pruning, setPruning] = useState(false);
   const [importDraft, setImportDraft] = useState<ParsedImportEnvelope | null>(
@@ -190,6 +191,33 @@ export default function SettingsPage() {
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+
+  // Honor `#access-token-<id>` in the URL so PoolDetailPage can deep-link to
+  // a specific token row. PoolDetailPage takes care of scroll-into-view (it
+  // knows the target id); we only own the transient highlight state here.
+  // Timer is managed via ref so that re-triggering the same id (user clicks
+  // the jump link twice in quick succession) resets the fade-out countdown
+  // instead of letting the old timer carry over — which would otherwise
+  // clear the highlight earlier than the full 2.6s.
+  const highlightTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    function readHash() {
+      const match = window.location.hash.match(/^#access-token-(\d+)$/);
+      if (!match) return;
+      setHighlightedTokenId(Number(match[1]));
+      if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = window.setTimeout(() => {
+        setHighlightedTokenId(null);
+        highlightTimerRef.current = null;
+      }, 2600);
+    }
+    readHash();
+    window.addEventListener("hashchange", readHash);
+    return () => {
+      window.removeEventListener("hashchange", readHash);
+      if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+    };
+  }, []);
 
   const poolNameMap = useMemo(
     () => Object.fromEntries(pools.map((pool) => [pool.id, pool.label])),
@@ -741,6 +769,7 @@ export default function SettingsPage() {
             poolNameMap={poolNameMap}
             revealedTokens={revealedTokens}
             visibleTokenIds={visibleTokenIds}
+            highlightedTokenId={highlightedTokenId}
             onCopy={copyToken}
             onReveal={toggleReveal}
             onEdit={(token) => {
@@ -758,6 +787,7 @@ export default function SettingsPage() {
             poolNameMap={poolNameMap}
             revealedTokens={revealedTokens}
             visibleTokenIds={visibleTokenIds}
+            highlightedTokenId={highlightedTokenId}
             onCopy={copyToken}
             onReveal={toggleReveal}
             onEdit={(token) => {
@@ -1177,6 +1207,7 @@ function TokenGroup({
   poolNameMap,
   revealedTokens,
   visibleTokenIds,
+  highlightedTokenId,
   onCopy,
   onReveal,
   onEdit,
@@ -1190,6 +1221,7 @@ function TokenGroup({
   poolNameMap: Record<number, string>;
   revealedTokens: Record<number, string>;
   visibleTokenIds: number[];
+  highlightedTokenId: number | null;
   onCopy: (token: AccessToken) => void;
   onReveal: (token: AccessToken) => void;
   onEdit: (token: AccessToken) => void;
@@ -1242,6 +1274,7 @@ function TokenGroup({
               }
               visible={visibleTokenIds.includes(token.id)}
               revealedValue={revealedTokens[token.id]}
+              highlighted={highlightedTokenId === token.id}
               onCopy={() => onCopy(token)}
               onReveal={() => onReveal(token)}
               onEdit={() => onEdit(token)}
@@ -1261,6 +1294,7 @@ function TokenRow({
   ownerLabel,
   visible,
   revealedValue,
+  highlighted = false,
   onCopy,
   onReveal,
   onEdit,
@@ -1272,6 +1306,7 @@ function TokenRow({
   ownerLabel: string;
   visible: boolean;
   revealedValue?: string;
+  highlighted?: boolean;
   onCopy: () => void;
   onReveal: () => void;
   onEdit: () => void;
@@ -1285,9 +1320,15 @@ function TokenRow({
 
   return (
     <div
+      id={`access-token-${token.id}`}
       className={cn(
         "grid gap-4 border-b border-moon-200/20 py-3.5 last:border-b-0 xl:items-start xl:gap-x-4",
         TOKEN_GRID_COLUMNS,
+        // ring-inset keeps the ring inside the row's box so it does not shift
+        // grid column alignment relative to sibling rows (which would happen
+        // with outside ring + padding compensation).
+        highlighted &&
+          "rounded-[0.9rem] bg-lunar-100/45 ring-2 ring-inset ring-lunar-300/70 transition-colors",
       )}
     >
       <InlineMeta label="名称" value={token.name} strong />

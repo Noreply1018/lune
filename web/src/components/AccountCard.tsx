@@ -161,16 +161,17 @@ export default function AccountCard({
         {codexQuota ? (
           <CodexQuotaBarsCompact quota={codexQuota} stale={codexQuotaStale} />
         ) : showDirectSignal ? (
-          <DirectAccountSignal account={account} />
+          <DirectAccountSignal requests={requests} successRate={successRate} />
         ) : null}
 
         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-moon-500">
-          {codexQuota ? null : (
+          {codexQuota ? (
+            <span className="rounded-full bg-moon-100/80 px-2 py-0.5">
+              今日 {compact(requests)}
+            </span>
+          ) : (
             <span className="rounded-full bg-moon-100/80 px-2 py-0.5">{quota}</span>
           )}
-          <span className="rounded-full bg-moon-100/80 px-2 py-0.5">
-            今日 {compact(requests)}
-          </span>
           {expiry ? (
             <span
               className={cn(
