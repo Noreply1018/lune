@@ -48,7 +48,7 @@ export default function DirectAccountSignal({ account }: { account: Account }) {
           <div
             className={cn(
               "absolute inset-y-0 left-0 rounded-full transition-[width]",
-              probe.hasError ? "bg-status-red" : "bg-lunar-400",
+              probe.hasError ? "bg-status-red" : "bg-lunar-500",
             )}
             style={{ width: `${probe.freshnessPercent}%` }}
           />
@@ -92,7 +92,11 @@ function describeProbe(lastCheckedAt: string | null, lastError: string | null): 
     };
   }
   const ageSeconds = Math.max(0, (Date.now() - ms) / 1000);
-  const freshnessPercent = freshnessFromAge(ageSeconds);
+  // When the last probe failed we drain the bar regardless of age — a fresh
+  // red stripe would otherwise read like a healthy account because the bar is
+  // still full. Users should see "the probe is not healthy right now" first,
+  // and the relative time + tooltip still carry the freshness detail.
+  const freshnessPercent = hasError ? 0 : freshnessFromAge(ageSeconds);
   const label = relativeTime(new Date(ms).toISOString()) || "刚刚";
   const title = hasError && lastError
     ? `上次探活 ${label} · 错误：${lastError}`

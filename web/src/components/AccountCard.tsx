@@ -66,7 +66,7 @@ export default function AccountCard({
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
   // Every non-Codex account — direct as well as non-Codex CPA (e.g. Claude) —
   // gets the dual-row signal strip so both card variants share the same height.
-  const showDirectSignal = !codexQuota && Boolean(account);
+  const showDirectSignal = !codexQuota;
   const enabled = member.enabled;
 
   const toneClass = !enabled
@@ -187,7 +187,7 @@ export default function AccountCard({
 
         <div className="mt-auto flex items-center justify-between gap-2 pt-1">
           <p className="truncate text-[10.5px] text-moon-400">
-            {showDirectSignal ? "" : relativeTime(account.last_checked_at ?? null)}
+            {showDirectSignal ? "\u00a0" : relativeTime(account.last_checked_at ?? null)}
           </p>
           <div className="flex items-center gap-0.5">
             <Button
