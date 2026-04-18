@@ -450,6 +450,28 @@ export default function ActivityPage() {
     loadNotificationDeliveries(true);
   }, [notificationFilterEvent, notificationFilterStatus]);
 
+  useEffect(() => {
+    // Support deep-links like /admin/activity#notifications by scrolling to
+    // the anchor once the target section has mounted. We retry a few times
+    // because the table is render-gated on the first data fetch.
+    if (window.location.hash !== "#notifications") {
+      return;
+    }
+    let attempts = 0;
+    const tryScroll = () => {
+      const el = document.getElementById("notifications");
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      if (attempts < 20) {
+        attempts += 1;
+        window.setTimeout(tryScroll, 60);
+      }
+    };
+    tryScroll();
+  }, []);
+
   const poolMap = useMemo(
     () => new Map(pools.map((pool) => [pool.id, pool.label])),
     [pools],
@@ -825,7 +847,7 @@ export default function ActivityPage() {
         </div>
       </section>
 
-      <section className="surface-section px-5 py-5">
+      <section id="notifications" className="surface-section scroll-mt-24 px-5 py-5">
         <SectionHeading
           title="Notifications"
           description="查看每次渠道投递是成功、失败还是被人工测试触发。"

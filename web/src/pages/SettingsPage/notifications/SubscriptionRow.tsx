@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 
 import { Switch } from "@/components/ui/switch";
@@ -20,6 +20,7 @@ type SubscriptionRowProps = {
   eventType: NotificationEventType;
   savingField: string | null;
   bodyError?: string | null;
+  extraContent?: ReactNode;
   onCommit: (
     field: "subscribed" | "body",
     next: NotificationSubscription,
@@ -32,6 +33,7 @@ export default function SubscriptionRow({
   eventType,
   savingField,
   bodyError,
+  extraContent,
   onCommit,
   onClearFieldError,
 }: SubscriptionRowProps) {
@@ -120,26 +122,20 @@ export default function SubscriptionRow({
         >
           {eventType.default_severity}
         </span>
-        {eventType.event === "test" ? (
-          <span className="inline-flex items-center rounded-full bg-moon-100/90 px-2 py-0.5 text-[11px] text-moon-500">
-            手动触发
-          </span>
-        ) : (
-          <span
-            onPointerDown={(event) => event.stopPropagation()}
-            onPointerUp={(event) => event.stopPropagation()}
-            onClick={(event) => event.stopPropagation()}
-            className="inline-flex"
-          >
-            <Switch
-              checked={subscription.subscribed}
-              disabled={savingField === "subscribed"}
-              onCheckedChange={(checked) =>
-                onCommit("subscribed", { ...subscription, subscribed: checked })
-              }
-            />
-          </span>
-        )}
+        <span
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerUp={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          className="inline-flex"
+        >
+          <Switch
+            checked={subscription.subscribed}
+            disabled={savingField === "subscribed"}
+            onCheckedChange={(checked) =>
+              onCommit("subscribed", { ...subscription, subscribed: checked })
+            }
+          />
+        </span>
         <ChevronDown
           className={cn(
             "size-4 text-moon-400 transition-transform",
@@ -153,11 +149,12 @@ export default function SubscriptionRow({
           <p className="text-xs leading-5 text-moon-400">
             触发时机：{triggerDescription}。严重级别由后端生成，无法在前端修改。
           </p>
-          {!subscription.subscribed && eventType.event !== "test" ? (
+          {!subscription.subscribed ? (
             <div className="rounded-[0.75rem] border border-amber-200/70 bg-amber-50/85 px-3 py-1.5 text-xs text-amber-800">
               当前未订阅：保存后该事件不会发送，但配置仍会保留。
             </div>
           ) : null}
+          {extraContent}
           <TemplateEditor
             label="正文"
             value={bodyDisplay}

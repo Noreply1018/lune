@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useState, type MouseEvent } from "react";
+import { ArrowUpRight } from "lucide-react";
 
 import { toast } from "@/components/Feedback";
 import SectionHeading from "@/components/SectionHeading";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { api, ApiError } from "@/lib/api";
+import { useRouter } from "@/lib/router";
 
+import ExpiringDaysInput from "./ExpiringDaysInput";
 import SettingsForm from "./SettingsForm";
 import SubscriptionsTable from "./SubscriptionsTable";
 import TestPanel, { type TestResult } from "./TestPanel";
@@ -37,7 +37,6 @@ export default function NotificationsSection({
   );
   const [eventTypes, setEventTypes] = useState<NotificationEventType[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -53,35 +52,25 @@ export default function NotificationsSection({
   const [expiringDays, setExpiringDays] = useState(initialExpiringDays);
   const [expiringDaysError, setExpiringDaysError] = useState<string | null>(null);
 
+  const { navigate } = useRouter();
+
   useEffect(() => {
     setExpiringDays(initialExpiringDays);
   }, [initialExpiringDays]);
 
-  const reload = useCallback(
-    async (opts: { silent?: boolean } = {}) => {
-      if (opts.silent) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
-      }
-      try {
-        const data = await api.get<OverviewResponse>("/notifications");
-        setSettings(data.settings);
-        setSubscriptions(data.subscriptions ?? []);
-        setEventTypes(data.event_types ?? []);
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "通知设置加载失败");
-      } finally {
-        if (opts.silent) {
-          setRefreshing(false);
-        } else {
-          setLoading(false);
-        }
-      }
-    },
-    [],
-  );
+  const reload = useCallback(async () => {
+    try {
+      const data = await api.get<OverviewResponse>("/notifications");
+      setSettings(data.settings);
+      setSubscriptions(data.subscriptions ?? []);
+      setEventTypes(data.event_types ?? []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "通知设置加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     void reload();
@@ -115,7 +104,7 @@ export default function NotificationsSection({
       }
       toast(message, "error");
       // Revert to the last-known server state so the UI reflects truth.
-      void reload({ silent: true });
+      void reload();
     } finally {
       setSettingsSaving(false);
     }
@@ -198,7 +187,7 @@ export default function NotificationsSection({
         setBanner(message);
       }
       toast(message, "error");
-      void reload({ silent: true });
+      void reload();
     } finally {
       setFieldSaving(event, null);
     }
@@ -238,20 +227,44 @@ export default function NotificationsSection({
   }
 
   async function saveExpiringDays(value: number) {
-    if (!Number.isFinite(value) || value <= 0) {
-      setExpiringDaysError("请输入正整数");
-      return;
-    }
+    const previous = expiringDays;
     setExpiringDays(value);
+    setExpiringDaysError(null);
     try {
       await api.put("/settings", { notification_expiring_days: value });
       onExpiringDaysChange(value);
-      setExpiringDaysError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : "保存阈值失败";
       setExpiringDaysError(message);
+      setExpiringDays(previous);
       toast(message, "error");
     }
+  }
+
+  function jumpToDeliveries(event: MouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    navigate("/admin/activity");
+    // The custom router stores pathname without hash, so navigate() above
+    // writes /admin/activity. We then add the hash via replaceState so the
+    // URL is stateful (survives refresh / share) without confusing the
+    // pathname match in App.tsx routing.
+    window.history.replaceState(null, "", "/admin/activity#notifications");
+    // ActivityPage is lazy-loaded and its Notifications section renders
+    // after the first data fetch, so we retry scroll-into-view until the
+    // anchor appears.
+    let attempts = 0;
+    const tryScroll = () => {
+      const el = document.getElementById("notifications");
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      if (attempts < 20) {
+        attempts += 1;
+        window.setTimeout(tryScroll, 60);
+      }
+    };
+    tryScroll();
   }
 
   const canTest = Boolean(
@@ -269,22 +282,6 @@ export default function NotificationsSection({
         <SectionHeading
           title="Notifications"
           description="配置企业微信机器人，接收账号、CPA 告警。只支持企微一种渠道。"
-          action={
-            <Button
-              variant="outline"
-              size="sm"
-              className="rounded-full"
-              onClick={() => void reload({ silent: true })}
-              disabled={loading || refreshing}
-            >
-              <RefreshCw
-                className={
-                  loading || refreshing ? "size-4 animate-spin" : "size-4"
-                }
-              />
-              Refresh
-            </Button>
-          }
         />
 
         <div className="mt-6 space-y-6">
@@ -317,40 +314,16 @@ export default function NotificationsSection({
               urlError={settingsUrlError}
               onChange={setSettings}
               onCommit={(next) => void commitSettings(next)}
+              testSlot={
+                <TestPanel
+                  loading={testLoading}
+                  result={testResult}
+                  disabled={!canTest}
+                  disabledReason={testDisabledReason}
+                  onRun={() => void runTest()}
+                />
+              }
             />
-          ) : null}
-
-          {settings ? (
-            <div className="flex items-end gap-3 rounded-[1rem] border border-white/75 bg-white/75 px-4 py-3">
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-moon-800">过期提醒阈值</p>
-                <p className="text-xs leading-5 text-moon-400">
-                  账号过期时间距今小于该天数就触发 account_expiring。
-                </p>
-              </div>
-              <div className="ml-auto flex items-end gap-2">
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="number"
-                    min={1}
-                    value={expiringDays}
-                    onChange={(event) =>
-                      setExpiringDays(Number(event.target.value) || 0)
-                    }
-                    onBlur={() => {
-                      if (expiringDays !== initialExpiringDays) {
-                        void saveExpiringDays(expiringDays);
-                      }
-                    }}
-                    className="w-20"
-                  />
-                  <span className="text-xs text-moon-400">天</span>
-                </div>
-              </div>
-              {expiringDaysError ? (
-                <p className="text-xs text-status-red">{expiringDaysError}</p>
-              ) : null}
-            </div>
           ) : null}
 
           {eventTypes.length ? (
@@ -363,18 +336,29 @@ export default function NotificationsSection({
                 void commitSubscription(event, field, next)
               }
               onClearFieldError={clearSingleFieldError}
+              renderExtra={(event) =>
+                event === "account_expiring" ? (
+                  <ExpiringDaysInput
+                    value={expiringDays}
+                    error={expiringDaysError}
+                    onCommit={(next) => void saveExpiringDays(next)}
+                    onClearError={() => setExpiringDaysError(null)}
+                  />
+                ) : null
+              }
             />
           ) : null}
 
-          {settings ? (
-            <TestPanel
-              loading={testLoading}
-              result={testResult}
-              disabled={!canTest}
-              disabledReason={testDisabledReason}
-              onRun={() => void runTest()}
-            />
-          ) : null}
+          <div className="flex justify-end">
+            <a
+              href="/admin/activity#notifications"
+              onClick={jumpToDeliveries}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-lunar-600 hover:text-lunar-700"
+            >
+              查看最近投递
+              <ArrowUpRight className="size-3.5" />
+            </a>
+          </div>
         </div>
       </div>
     </section>

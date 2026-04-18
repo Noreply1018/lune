@@ -17,6 +17,8 @@ type TestPanelProps = {
   onRun: () => void;
 };
 
+// TestPanel renders an inline row meant to sit inside the channel-config card;
+// it owns only the action button plus the latest result strip.
 export default function TestPanel({
   loading,
   result,
@@ -25,44 +27,38 @@ export default function TestPanel({
   onRun,
 }: TestPanelProps) {
   return (
-    <section className="space-y-3 rounded-[1.1rem] border border-amber-200/55 bg-[linear-gradient(180deg,rgba(255,251,235,0.88),rgba(255,247,237,0.72))] px-4 py-4">
-      <div className="space-y-1">
-        <p className="text-sm font-medium text-moon-800">测试发送</p>
-        <p className="text-xs leading-5 text-moon-400">
-          直接向配置的企微 webhook 真实发送一条「test」事件消息。结果会立即显示在按钮右侧。
-        </p>
-      </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          className="rounded-full bg-amber-600 text-white hover:bg-amber-700 focus-visible:ring-2 focus-visible:ring-amber-900/70 focus-visible:ring-offset-2 focus-visible:ring-offset-amber-50"
-          onClick={onRun}
-          disabled={disabled || loading}
-          title={disabled ? disabledReason : undefined}
+    <div className="flex flex-wrap items-center gap-3 rounded-[0.9rem] border border-moon-200/45 bg-moon-50/40 px-3 py-2.5">
+      <Button
+        className="rounded-full bg-lunar-500 text-white hover:bg-lunar-600 focus-visible:ring-2 focus-visible:ring-lunar-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+        onClick={onRun}
+        disabled={disabled || loading}
+        title={disabled ? disabledReason : undefined}
+      >
+        {loading ? (
+          <RefreshCw className="size-4 animate-spin" />
+        ) : (
+          <Send className="size-4" />
+        )}
+        Send Test
+      </Button>
+      {disabled && disabledReason ? (
+        <p className="text-xs text-moon-450">{disabledReason}</p>
+      ) : null}
+      {result ? (
+        <p
+          className={
+            result.ok ? "text-sm text-status-green" : "text-sm text-status-red"
+          }
         >
-          {loading ? (
-            <RefreshCw className="size-4 animate-spin" />
-          ) : (
-            <Send className="size-4" />
-          )}
-          Send Test
-        </Button>
-        {disabled && disabledReason ? (
-          <p className="text-xs text-moon-450">{disabledReason}</p>
-        ) : null}
-        {result ? (
-          <p
-            className={
-              result.ok
-                ? "text-sm text-status-green"
-                : "text-sm text-status-red"
-            }
-          >
-            {result.ok ? "✓" : "✗"} {result.upstream_code || "unknown"} ·{" "}
-            {(result.latency_ms / 1000).toFixed(1)}s
-            {result.upstream_message ? ` · ${result.upstream_message}` : ""}
-          </p>
-        ) : null}
-      </div>
-    </section>
+          {result.ok ? "✓" : "✗"} {result.upstream_code || "unknown"} ·{" "}
+          {(result.latency_ms / 1000).toFixed(1)}s
+          {result.upstream_message ? ` · ${result.upstream_message}` : ""}
+        </p>
+      ) : (
+        <p className="text-xs text-moon-400">
+          向当前 webhook 真实发送一条 test 事件；结果会显示在按钮右侧。
+        </p>
+      )}
+    </div>
   );
 }

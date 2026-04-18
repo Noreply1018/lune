@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -12,6 +12,7 @@ type SettingsFormProps = {
   urlError?: string | null;
   onChange: (next: NotificationSettings) => void;
   onCommit: (next: NotificationSettings) => void;
+  testSlot?: ReactNode;
 };
 
 export default function SettingsForm({
@@ -20,6 +21,7 @@ export default function SettingsForm({
   urlError,
   onChange,
   onCommit,
+  testSlot,
 }: SettingsFormProps) {
   const [localUrl, setLocalUrl] = useState(settings.webhook_url);
 
@@ -112,6 +114,8 @@ export default function SettingsForm({
             企微会把 @手机号 链接到对应成员；@all 为 @所有人。
           </p>
         </div>
+
+        {testSlot ? <div className="pt-1">{testSlot}</div> : null}
       </section>
     </div>
   );

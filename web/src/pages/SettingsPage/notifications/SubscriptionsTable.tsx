@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import SubscriptionRow from "./SubscriptionRow";
 import type {
   NotificationEventType,
@@ -15,6 +17,11 @@ type SubscriptionsTableProps = {
     next: NotificationSubscription,
   ) => void;
   onClearFieldError: (event: string, field: "body") => void;
+  // renderExtra lets the caller inject event-specific controls (like the
+  // account_expiring threshold input) into the expanded body of a row. It is
+  // called once per rendered event and the return value sits above the
+  // template editor.
+  renderExtra?: (event: string) => ReactNode;
 };
 
 export default function SubscriptionsTable({
@@ -24,8 +31,13 @@ export default function SubscriptionsTable({
   fieldErrors,
   onCommit,
   onClearFieldError,
+  renderExtra,
 }: SubscriptionsTableProps) {
   const byEvent = new Map(subscriptions.map((item) => [item.event, item]));
+  // The `test` event is now triggered exclusively via Send Test button in the
+  // channel-config card; hide its subscription row so users don't try to
+  // toggle/edit it from here.
+  const visibleEventTypes = eventTypes.filter((e) => e.event !== "test");
 
   return (
     <section className="space-y-3">
@@ -38,7 +50,7 @@ export default function SubscriptionsTable({
         </div>
       </header>
       <div className="space-y-3">
-        {eventTypes.map((eventType) => {
+        {visibleEventTypes.map((eventType) => {
           const sub = byEvent.get(eventType.event);
           if (!sub) {
             return null;
@@ -50,6 +62,7 @@ export default function SubscriptionsTable({
               eventType={eventType}
               savingField={savingField[eventType.event] ?? null}
               bodyError={fieldErrors[eventType.event]?.body ?? null}
+              extraContent={renderExtra?.(eventType.event) ?? null}
               onCommit={(field, next) => onCommit(eventType.event, field, next)}
               onClearFieldError={(field) =>
                 onClearFieldError(eventType.event, field)
