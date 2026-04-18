@@ -1836,7 +1836,9 @@ export default function ActivityPage() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="space-y-1">
-                            <p className="text-moon-700">{getRequestSummary(item)}</p>
+                            <p className="whitespace-nowrap text-moon-700">
+                              {getRequestSummary(item)}
+                            </p>
                             <p className="text-xs text-moon-400">
                               {item.source_kind || "gateway"}
                               {item.attempt_count > 1 ? (
