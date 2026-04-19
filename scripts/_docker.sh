@@ -6,15 +6,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT"
 
-# Export LUNE_PORT for docker-compose.yml variable substitution.
-# Priority: env var > lune.yaml > default 7788
-if [[ -z "${LUNE_PORT:-}" ]] && [[ -f lune.yaml ]]; then
-  _port="$(grep -E '^[[:space:]]*port[[:space:]]*:' lune.yaml | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]')"
-  if [[ -n "$_port" ]]; then
-    export LUNE_PORT="$_port"
-  fi
-fi
-export LUNE_PORT="${LUNE_PORT:-7788}"
+# Docker Compose 会自动读取 REPO_ROOT/.env，无需手动 export。
+# 这里只有 resolve_lune_port 在容器还没起来时需要预测端口，它会按顺序查：
+#   docker compose port lune 7788 → shell $LUNE_PORT → .env 文件里的 LUNE_PORT → 7788
+
+_env_lookup() {
+  # 从 REPO_ROOT/.env 读取指定 key 的值（忽略注释、空行、引号）
+  local key="$1"
+  [[ -f .env ]] || return 0
+  grep -E "^[[:space:]]*${key}[[:space:]]*=" .env \
+    | tail -n 1 \
+    | sed -E "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//; s/[[:space:]]+#.*\$//; s/^['\"]//; s/['\"][[:space:]]*\$//; s/[[:space:]]*\$//"
+}
 
 resolve_lune_port() {
   local port
@@ -29,12 +32,10 @@ resolve_lune_port() {
     return
   fi
 
-  if [[ -f lune.yaml ]]; then
-    port="$(grep -E '^[[:space:]]*port[[:space:]]*:' lune.yaml | head -1 | sed 's/.*:[[:space:]]*//' | tr -d '[:space:]')"
-    if [[ -n "$port" ]]; then
-      echo "$port"
-      return
-    fi
+  port="$(_env_lookup LUNE_PORT)"
+  if [[ -n "$port" ]]; then
+    echo "$port"
+    return
   fi
 
   echo "7788"

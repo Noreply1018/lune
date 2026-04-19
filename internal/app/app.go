@@ -21,8 +21,6 @@ import (
 	"lune/internal/notify"
 	"lune/internal/notify/drivers"
 	"lune/internal/store"
-
-	"gopkg.in/yaml.v3"
 )
 
 type LoggingConfig struct {
@@ -60,12 +58,7 @@ func LoadConfig() Config {
 		DataDir: "./data",
 	}
 
-	// try lune.yaml
-	if data, err := os.ReadFile("lune.yaml"); err == nil {
-		_ = yaml.Unmarshal(data, &cfg)
-	}
-
-	// env vars override
+	// env vars override defaults
 	if v := os.Getenv("LUNE_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
 			cfg.Port = p
@@ -85,6 +78,12 @@ func LoadConfig() Config {
 	}
 	if v := os.Getenv("LUNE_CPA_MANAGEMENT_KEY"); v != "" {
 		cfg.CpaManagementKey = v
+	}
+	if v := os.Getenv("LUNE_LOG_LEVEL"); v != "" {
+		cfg.Logging.Level = v
+	}
+	if v := os.Getenv("LUNE_LOG_FORMAT"); v != "" {
+		cfg.Logging.Format = v
 	}
 
 	return cfg

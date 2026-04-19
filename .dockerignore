@@ -7,7 +7,6 @@ SPEC/
 # Secrets & local config
 .env
 .env.*
-lune.yaml
 *.pem
 *.key
 

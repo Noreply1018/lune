@@ -12,7 +12,7 @@ services:
       LUNE_CPA_AUTH_DIR: "/app/cpa-auth"
       LUNE_CPA_BASE_URL: "http://cpa:8317"
       LUNE_CPA_API_KEY: "${CPA_API_KEY:-sk-cpa-default}"
-      LUNE_CPA_MANAGEMENT_KEY: "lune-cpa-management-dev"
+      LUNE_CPA_MANAGEMENT_KEY: "${LUNE_CPA_MANAGEMENT_KEY:-lune-cpa-management-dev}"
     volumes:
       - lune-data:/app/data
       - cpa-auth:/app/cpa-auth

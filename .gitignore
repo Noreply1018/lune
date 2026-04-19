@@ -20,9 +20,6 @@ audit-*.png
 /*.jpg
 /*.jpeg
 
-# Local config
-lune.yaml
-
 # Runtime data
 data/
 cpa-auth/
