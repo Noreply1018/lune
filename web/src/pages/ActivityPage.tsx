@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -866,6 +866,18 @@ function MoonDial({ buckets }: { buckets: TrendBucket[] }) {
   const center = 110;
   const size = 220;
   const totalAll = buckets.reduce((sum, b) => sum + b.total, 0);
+  // Gradient id must be unique across mounts — useId() prevents collisions
+  // if MoonDial ever gets used in multiple spots on the same page.
+  const gradId = useId();
+  // Tick marks (0/6/12/18) sit at fixed angles that point to real wall-clock
+  // hours. Bucket lines MUST use their own `bucket.key` (the actual hour
+  // number 0–23) to compute the angle — not their array index — because the
+  // 24h window is a rolling one: bucket[0] is "now − 23h", not "hour 0".
+  // Using index directly made bucket[0] land at the "0" tick but actually
+  // represent e.g. 16:00, silently lying about when the activity spikes were.
+  function hourToAngle(hour: number): number {
+    return (-90 + hour * 15) * (Math.PI / 180);
+  }
 
   return (
     <section className="surface-section flex h-full flex-col px-5 py-5">
@@ -882,7 +894,7 @@ function MoonDial({ buckets }: { buckets: TrendBucket[] }) {
           aria-label="24 hour activity dial"
         >
           <defs>
-            <radialGradient id="moondial-bg" cx="50%" cy="50%" r="50%">
+            <radialGradient id={gradId} cx="50%" cy="50%" r="50%">
               <stop offset="0%" stopColor="rgba(244,241,250,0.75)" />
               <stop offset="100%" stopColor="rgba(223,218,240,0.3)" />
             </radialGradient>
@@ -891,7 +903,7 @@ function MoonDial({ buckets }: { buckets: TrendBucket[] }) {
             cx={center}
             cy={center}
             r={radiusOuter + 6}
-            fill="url(#moondial-bg)"
+            fill={`url(#${gradId})`}
           />
           <circle
             cx={center}
@@ -901,9 +913,9 @@ function MoonDial({ buckets }: { buckets: TrendBucket[] }) {
             stroke="rgba(200,194,226,0.5)"
             strokeWidth={0.8}
           />
-          {/* 6/12/18/24 tick marks */}
+          {/* 0/6/12/18 tick marks — fixed to wall-clock hours */}
           {[0, 6, 12, 18].map((h) => {
-            const angle = (-90 + h * 15) * (Math.PI / 180);
+            const angle = hourToAngle(h);
             const x1 = center + Math.cos(angle) * (radiusOuter + 3);
             const y1 = center + Math.sin(angle) * (radiusOuter + 3);
             const xL = center + Math.cos(angle) * (radiusOuter + 16);
@@ -927,7 +939,11 @@ function MoonDial({ buckets }: { buckets: TrendBucket[] }) {
             if (bucket.total === 0) {
               return null;
             }
-            const angle = (-90 + i * 15) * (Math.PI / 180);
+            // bucket.key is the actual hour (0–23) from buildBuckets('24h'),
+            // NOT the array index — parse it and place the line at that
+            // hour's angle so "busiest at 14:00" actually points to 14:00.
+            const hour = Number.parseInt(bucket.key, 10);
+            const angle = hourToAngle(Number.isFinite(hour) ? hour : i);
             const length = (bucket.total / max) * (radiusOuter - radiusInner - 4);
             const rInner = radiusInner + 2;
             const rOuter = rInner + length;
@@ -1426,7 +1442,18 @@ export default function ActivityPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const loadRequestIdRef = useRef(0);
   const highlightTimerRef = useRef<number | null>(null);
+  // Tracks the single in-flight tryScroll retry timer inside jumpToLog.
+  // Recorded in a ref (not closure-local) so the unmount cleanup and the
+  // next jumpToLog call can both cancel a pending retry — otherwise up to
+  // 20 × 80ms of timeouts keep firing after the component is gone.
+  const scrollTimerRef = useRef<number | null>(null);
   const autoRefreshTimerRef = useRef<number | null>(null);
+  // Mirror of usage.truncated. Reading this via ref in jumpToLog lets the
+  // callback ignore the `usage` object identity, so auto-refresh (which
+  // replaces usage every 30s) no longer rebuilds jumpToLog — which in turn
+  // stops the hash-deeplink effect from cycling and clobbering the 2.6s
+  // highlight-clear timer mid-flight.
+  const truncatedRef = useRef(false);
 
   const load = useCallback(() => {
     const requestId = ++loadRequestIdRef.current;
@@ -1437,6 +1464,7 @@ export default function ActivityPage() {
         if (requestId !== loadRequestIdRef.current) return;
         setPools(poolData ?? []);
         setUsage(usageData);
+        truncatedRef.current = Boolean(usageData?.truncated);
         setLastUpdated(new Date().toISOString());
       })
       .catch((err) => {
@@ -1545,7 +1573,7 @@ export default function ActivityPage() {
     (rid: string) => {
       const target = logs30d.find((l) => l.request_id === rid);
       if (!target) {
-        if (usage?.truncated) {
+        if (truncatedRef.current) {
           toast("这条请求不在当前聚合窗口里，可能已经被截断。", "error");
         } else {
           toast("没有找到这条 request_id。", "error");
@@ -1566,8 +1594,17 @@ export default function ActivityPage() {
         setHighlightedRequestId(null);
         highlightTimerRef.current = null;
       }, 2600);
+      // Cancel any retry loop left over from a previous jumpToLog; otherwise
+      // two quick jumps would race and the older one could still fire after
+      // the component unmounts. scrollTimerRef is also cleared by the
+      // mount-lifecycle cleanup below.
+      if (scrollTimerRef.current) {
+        window.clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
       let attempts = 0;
       const tryScroll = () => {
+        scrollTimerRef.current = null;
         const el = document.getElementById(`logs-${rid}`);
         if (el) {
           el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1575,12 +1612,12 @@ export default function ActivityPage() {
         }
         if (attempts < 20) {
           attempts += 1;
-          window.setTimeout(tryScroll, 80);
+          scrollTimerRef.current = window.setTimeout(tryScroll, 80);
         }
       };
       tryScroll();
     },
-    [logs30d, usage],
+    [logs30d],
   );
 
   // Hash-based deep-link: #logs-<request_id> scrolls to and highlights the row.
@@ -1593,10 +1630,28 @@ export default function ActivityPage() {
     if (hashHandledRef.current === rid) return;
     hashHandledRef.current = rid;
     jumpToLog(rid);
-    return () => {
-      if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
-    };
+    // Deliberately no cleanup here: clearing highlightTimerRef on every
+    // effect re-run (which happens each time `loading`/`usage`/`jumpToLog`
+    // changes) would cancel the 2.6s highlight-clear timer mid-flight and
+    // leave the row permanently highlighted. The mount-lifecycle cleanup
+    // below owns both timers and handles unmount.
   }, [loading, usage, jumpToLog]);
+
+  // Own the timer teardowns at the component lifecycle, not at effect
+  // re-run boundaries — otherwise unrelated deps like auto-refreshed
+  // `usage` would kill timers that are still working.
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) {
+        window.clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+      if (scrollTimerRef.current) {
+        window.clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
+    };
+  }, []);
 
   async function copyPermalink(log: RequestLog) {
     const hash = `#logs-${log.request_id}`;
