@@ -13,9 +13,46 @@
 - **体验增强** — Provider 模板自动填充、一键测试连接、Env Snippets、内置 Playground
 - **分析** — 成本估算、延迟百分位追踪（p50/p95/p99）、账号级 Sparkline
 
-## 快速开始
+## 快速开始（使用预构建镜像）
 
-默认启动方式：
+适合只想跑起来的使用者，无需本地构建：
+
+```bash
+# 1. 下载 compose 文件和配置模板
+curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/.env.example
+curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/cpa-config.yaml
+
+# 2. 复制并编辑环境变量
+cp .env.example .env
+# ⚠️ 生产使用务必修改 .env 里的 CPA_API_KEY、LUNE_CPA_MANAGEMENT_KEY
+#    同时同步修改 cpa-config.yaml 里的 api-keys 和 remote-management.secret-key
+#    两边必须一致，否则 Lune 无法调用 CPA
+
+# 3. 启动
+docker compose -f docker-compose.prod.yml --env-file .env up -d
+```
+
+启动后访问 `http://127.0.0.1:7788/admin`。首次进入需用 `LUNE_ADMIN_TOKEN` 登录；若 `.env` 里留空，容器启动日志会打印自动生成的 token（`docker compose logs lune`）。
+
+**升级：**
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env pull
+docker compose -f docker-compose.prod.yml --env-file .env up -d
+```
+
+**停止 / 查看日志：**
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env down   # 停止（保留数据卷）
+docker compose -f docker-compose.prod.yml logs -f lune           # 跟随 Lune 日志
+docker compose -f docker-compose.prod.yml logs -f cpa            # 跟随 CPA 日志
+```
+
+## 本地开发
+
+从源码启动：
 
 ```bash
 ./scripts/up.sh
@@ -46,7 +83,7 @@ Docker Compose 是唯一推荐的运行和开发方式。
 
 配置优先级：`lune.yaml` → 环境变量覆盖
 
-仓库提供 [lune.example.yaml](/home/lh/projects/lune/lune.example.yaml) 作为示例配置；本地使用时复制为 `lune.yaml` 后再按环境修改。`lune.yaml` 被 `.gitignore` 忽略，用来保存本机目录、地址和 key 等本地值。
+仓库提供 [lune.example.yaml](./lune.example.yaml) 作为示例配置；本地使用时复制为 `lune.yaml` 后再按环境修改。`lune.yaml` 被 `.gitignore` 忽略，用来保存本机目录、地址和 key 等本地值。
 
 示例配置：
 

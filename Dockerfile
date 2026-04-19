@@ -1,5 +1,5 @@
 # -- Stage 1: Build frontend --
-FROM node:22-slim AS frontend
+FROM --platform=$BUILDPLATFORM node:22-slim AS frontend
 
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
@@ -8,7 +8,10 @@ COPY web/ ./
 RUN npm run build
 
 # -- Stage 2: Build Go binary --
-FROM golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -16,7 +19,7 @@ RUN go mod download
 
 COPY . .
 COPY --from=frontend /internal/site/dist /app/internal/site/dist
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /lune ./cmd/lune
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -o /lune ./cmd/lune
 
 # -- Stage 3: Runtime --
 FROM debian:bookworm-slim
