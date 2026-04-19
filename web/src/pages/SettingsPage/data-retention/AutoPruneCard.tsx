@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Clock3, RefreshCw } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
@@ -30,8 +30,15 @@ export default function AutoPruneCard({
     lastDeletedLogs + lastDeletedDeliveries + lastDeletedOutbox;
 
   const [draft, setDraft] = useState(`${retentionDays}`);
+  // Track the last server-committed value locally so the useEffect below
+  // only resyncs when the prop drifts from what we already know — e.g.
+  // parent rolled back after a PUT failure. A naive setDraft on every
+  // prop bump would race the user's next keystroke.
+  const committedRef = useRef(retentionDays);
 
   useEffect(() => {
+    if (retentionDays === committedRef.current) return;
+    committedRef.current = retentionDays;
     setDraft(`${retentionDays}`);
   }, [retentionDays]);
 
@@ -48,12 +55,13 @@ export default function AutoPruneCard({
     if (trimmed === "" || !Number.isFinite(parsed) || parsed < 0) {
       // Empty / NaN / negative: roll back display rather than silently
       // disabling auto-prune (0) or sending a bad value to the server.
-      setDraft(`${retentionDays}`);
+      setDraft(`${committedRef.current}`);
       return;
     }
     const normalized = Math.floor(parsed);
     setDraft(`${normalized}`);
-    if (normalized === retentionDays) return;
+    if (normalized === committedRef.current) return;
+    committedRef.current = normalized;
     onRetentionDaysCommit(normalized);
   }
 

@@ -77,6 +77,11 @@ export default function NotificationsSection({
   const settingsSeqRef = useRef(0);
   const subSeqRef = useRef<Record<string, number>>({});
   const expiringDaysSeqRef = useRef(0);
+  // Synchronous inflight latch for Send Test. Relying on the testLoading
+  // state would work for distinct user clicks (they arrive in separate
+  // Tasks after a re-render) but can't defend against two runTest() calls
+  // within the same microtask — a ref updates immediately, state doesn't.
+  const testInFlightRef = useRef(false);
 
   useEffect(() => {
     setExpiringDays(initialExpiringDays);
@@ -103,6 +108,12 @@ export default function NotificationsSection({
 
   async function commitSettings(next: NotificationSettings) {
     const seq = ++settingsSeqRef.current;
+    // Snapshot pre-optimistic state so failure can roll back locally. The
+    // old path called reload() here, which had two problems: (a) it wiped
+    // webhookUrlDraft the user might still be typing, and (b) a slow GET
+    // could land AFTER a newer successful commit and stomp its result.
+    // The seq guard below still handles the "newer commit in flight" case.
+    const prevSnapshot = settings;
     setSettingsSaving(true);
     setSettingsUrlError(null);
     try {
@@ -134,8 +145,12 @@ export default function NotificationsSection({
         }
       }
       toast(message, "error");
-      // Revert to the last-known server state so the UI reflects truth.
-      void reload();
+      // Revert to the pre-optimistic snapshot. Leave webhookUrlDraft
+      // alone so the user's in-progress typing survives — they can fix
+      // the bad URL and blur to retry.
+      if (prevSnapshot) {
+        setSettings(prevSnapshot);
+      }
       // Re-throw so callers that await commitSettings (e.g. runTest pre-save)
       // can short-circuit on failure instead of racing ahead with a URL the
       // server rejected.
@@ -198,9 +213,12 @@ export default function NotificationsSection({
       return;
     }
     clearFieldErrors(event);
-    const seqKey = `${event}:${field}`;
-    const seq = (subSeqRef.current[seqKey] ?? 0) + 1;
-    subSeqRef.current[seqKey] = seq;
+    // Seq is keyed per row, not per (row, field). Body and subscribed both
+    // hit the same PUT endpoint, so two in-flight requests against the
+    // same row can land responses out of order — we must serialize ack
+    // handling row-wide, not column-wide.
+    const seq = (subSeqRef.current[event] ?? 0) + 1;
+    subSeqRef.current[event] = seq;
     setFieldSaving(event, field);
     try {
       const updated = await api.put<NotificationSubscription>(
@@ -210,13 +228,13 @@ export default function NotificationsSection({
           body_template: next.body_template,
         },
       );
-      if (seq !== subSeqRef.current[seqKey]) return;
+      if (seq !== subSeqRef.current[event]) return;
       setSubscriptions((current) =>
         current.map((item) => (item.event === event ? updated : item)),
       );
       setBanner(null);
     } catch (err) {
-      if (seq !== subSeqRef.current[seqKey]) return;
+      if (seq !== subSeqRef.current[event]) return;
       const message =
         err instanceof Error ? err.message : "保存订阅设置失败";
       if (err instanceof ApiError && err.status === 400) {
@@ -229,15 +247,25 @@ export default function NotificationsSection({
         setBanner(message);
       }
       toast(message, "error");
-      void reload();
+      // No reload() here: subscriptions state was never optimistically
+      // mutated on the client side (callers hand us `next` but we only
+      // write to state on success). A blanket reload would race newer
+      // commits and could stomp their fresh writes.
     } finally {
-      if (seq === subSeqRef.current[seqKey]) {
+      if (seq === subSeqRef.current[event]) {
         setFieldSaving(event, null);
       }
     }
   }
 
   async function runTest() {
+    // The button is disabled={disabled || loading}, but rapid double-
+    // clicks can still fire two handlers before React re-renders with
+    // the new disabled state. A state-based guard (testLoading) lags one
+    // render; a ref latch flips synchronously so only the first caller
+    // reaches the POST.
+    if (testInFlightRef.current) return;
+    testInFlightRef.current = true;
     setTestLoading(true);
     try {
       // If the user typed a new URL but hasn't blurred yet, persist the draft
@@ -281,6 +309,7 @@ export default function NotificationsSection({
         });
       }
     } finally {
+      testInFlightRef.current = false;
       setTestLoading(false);
     }
   }

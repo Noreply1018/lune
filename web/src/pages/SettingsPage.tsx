@@ -959,7 +959,15 @@ function SettingsNumericRow({
   min?: number;
 }) {
   const [draft, setDraft] = useState(`${value}`);
+  // Track the last server-committed value locally. The naive
+  // useEffect([value]) path setDraft on every prop bump — including the
+  // optimistic bump from our own commit() — which races the user's next
+  // keystroke. We only resync when the prop drifts from what we locally
+  // committed (e.g. parent rolled back after a PUT failure).
+  const committedRef = useRef(value);
   useEffect(() => {
+    if (value === committedRef.current) return;
+    committedRef.current = value;
     setDraft(`${value}`);
   }, [value]);
 
@@ -969,12 +977,13 @@ function SettingsNumericRow({
     if (trimmed === "" || !Number.isFinite(parsed) || parsed < min) {
       // Empty / NaN / below floor: roll back display rather than committing
       // a sentinel value that the server will just bounce.
-      setDraft(`${value}`);
+      setDraft(`${committedRef.current}`);
       return;
     }
     const normalized = Math.floor(parsed);
     setDraft(`${normalized}`);
-    if (normalized === value) return;
+    if (normalized === committedRef.current) return;
+    committedRef.current = normalized;
     onCommit(normalized);
   }
 
