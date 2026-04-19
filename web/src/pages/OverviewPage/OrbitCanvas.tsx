@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getMoonPhase } from "./moonPhase";
+import { getMoonPhase, getMoonPhaseName } from "./moonPhase";
 
 export type OrbitAccount = {
   id: number;
@@ -18,11 +18,8 @@ export type OrbitPool = {
 export type OrbitCanvasProps = {
   pools: OrbitPool[];
   moonTone: "calm" | "warning" | "critical";
-  zoomLevel: "far" | "mid" | "near";
-  moonFace?: React.ReactNode;
-  onAccountClick?: (poolId: number, accountId: number) => void;
-  onMoonClick?: () => void;
-  moonCursor?: "pointer" | "default";
+  zoomScale: number;
+  onAccountClick?: (poolId: number) => void;
 };
 
 const HEALTH_COLOR: Record<OrbitAccount["health"], string> = {
@@ -41,19 +38,26 @@ const HEALTH_LABEL: Record<OrbitAccount["health"], string> = {
   unknown: "未知",
 };
 
-const MOON_TONE_GRADIENT: Record<OrbitCanvasProps["moonTone"], { halo: string; rim: string }> = {
-  calm: { halo: "rgba(134,125,193,0.30)", rim: "rgba(134,125,193,0.14)" },
-  warning: { halo: "rgba(192,154,85,0.32)", rim: "rgba(192,154,85,0.16)" },
-  critical: { halo: "rgba(190,116,118,0.38)", rim: "rgba(190,116,118,0.18)" },
-};
-
-const ZOOM_SCALE: Record<OrbitCanvasProps["zoomLevel"], number> = {
-  far: 0.58,
-  mid: 1,
-  near: 1.7,
+const MOON_TONE_GRADIENT: Record<OrbitCanvasProps["moonTone"], { halo: string; rim: string; haloEdge: string }> = {
+  calm: {
+    halo: "rgba(170,158,212,0.28)",
+    rim: "rgba(170,158,212,0.13)",
+    haloEdge: "rgba(170,158,212,0)",
+  },
+  warning: {
+    halo: "rgba(192,154,85,0.30)",
+    rim: "rgba(192,154,85,0.15)",
+    haloEdge: "rgba(192,154,85,0)",
+  },
+  critical: {
+    halo: "rgba(190,116,118,0.36)",
+    rim: "rgba(190,116,118,0.18)",
+    haloEdge: "rgba(190,116,118,0)",
+  },
 };
 
 const MOON_BASE_RADIUS = 64;
+const PHASE_REVEAL_MS = 3200;
 
 function seededOffset(seed: number, max: number): number {
   let x = Math.sin(seed * 9301 + 49297) * 233280;
@@ -83,11 +87,8 @@ type HoverState = { poolIdx: number; accountIdx: number } | null;
 export default function OrbitCanvas({
   pools,
   moonTone,
-  zoomLevel,
-  moonFace,
+  zoomScale,
   onAccountClick,
-  onMoonClick,
-  moonCursor = "default",
 }: OrbitCanvasProps) {
   const [frameTime, setFrameTime] = useState(0);
   const [hover, setHover] = useState<HoverState>(null);
@@ -99,7 +100,9 @@ export default function OrbitCanvas({
   const pausedRef = useRef(false);
   const dragRef = useRef<{ startX: number; startY: number; startTilt: number; startOffset: { x: number; y: number } } | null>(null);
   const springbackRef = useRef<number>(0);
+  const phaseRevealTimerRef = useRef<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [phaseRevealAt, setPhaseRevealAt] = useState<number | null>(null);
 
   useEffect(() => {
     pausedRef.current = hover !== null || isDragging;
@@ -121,14 +124,31 @@ export default function OrbitCanvas({
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (phaseRevealTimerRef.current) window.clearTimeout(phaseRevealTimerRef.current);
+      if (springbackRef.current) cancelAnimationFrame(springbackRef.current);
+    };
+  }, []);
+
+  const tiltRef = useRef(tilt);
+  const moonOffsetRef = useRef(moonOffset);
+  useEffect(() => {
+    tiltRef.current = tilt;
+  }, [tilt]);
+  useEffect(() => {
+    moonOffsetRef.current = moonOffset;
+  }, [moonOffset]);
+
   const moonPhase = useMemo(() => getMoonPhase(), []);
-  const moonRadius = MOON_BASE_RADIUS * ZOOM_SCALE[zoomLevel];
+  const phaseName = useMemo(() => getMoonPhaseName(moonPhase), [moonPhase]);
+  const moonRadius = MOON_BASE_RADIUS * zoomScale;
   const tone = MOON_TONE_GRADIENT[moonTone];
 
   const orbitPools = useMemo(() => {
     const enabled = pools.filter((p) => p.enabled);
-    const baseRadius = 160 * ZOOM_SCALE[zoomLevel];
-    const step = 72 * ZOOM_SCALE[zoomLevel];
+    const baseRadius = 160 * zoomScale;
+    const step = 72 * zoomScale;
     return enabled.map((pool, i) => {
       const radius = baseRadius + i * step;
       const duration = 120 + i * 48;
@@ -144,7 +164,7 @@ export default function OrbitCanvas({
       });
       return { pool, radius, duration, direction, phase, accountsWithBreath };
     });
-  }, [pools, zoomLevel]);
+  }, [pools, zoomScale]);
 
   const dots: DotPosition[] = useMemo(() => {
     const result: DotPosition[] = [];
@@ -189,12 +209,12 @@ export default function OrbitCanvas({
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
-      startTilt: tilt,
-      startOffset: { ...moonOffset },
+      startTilt: tiltRef.current,
+      startOffset: { ...moonOffsetRef.current },
     };
     setIsDragging(true);
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
-  }, [tilt, moonOffset]);
+  }, []);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const d = dragRef.current;
@@ -216,12 +236,10 @@ export default function OrbitCanvas({
     try {
       (e.currentTarget as Element).releasePointerCapture(e.pointerId);
     } catch {}
-    // spring back with damped interpolation — store each frame in springbackRef
-    // so handlePointerDown can cancel a still-running springback.
     const start = performance.now();
     const duration = 420;
-    const tiltStart = tilt;
-    const offsetStart = { ...moonOffset };
+    const tiltStart = tiltRef.current;
+    const offsetStart = { ...moonOffsetRef.current };
     const step = (now: number) => {
       const t = Math.min(1, (now - start) / duration);
       const eased = 1 - Math.pow(1 - t, 3);
@@ -237,9 +255,19 @@ export default function OrbitCanvas({
       }
     };
     springbackRef.current = requestAnimationFrame(step);
-  }, [tilt, moonOffset]);
+  }, []);
 
-  const visibleRingOpacity = zoomLevel === "far" ? 0.35 : zoomLevel === "near" ? 0.2 : 1;
+  const handleMoonClick = useCallback(() => {
+    setPhaseRevealAt(Date.now());
+    if (phaseRevealTimerRef.current) window.clearTimeout(phaseRevealTimerRef.current);
+    phaseRevealTimerRef.current = window.setTimeout(() => {
+      setPhaseRevealAt(null);
+      phaseRevealTimerRef.current = null;
+    }, PHASE_REVEAL_MS);
+  }, []);
+
+  // Ring opacity: very large or very small zoom dims the rings so dots stay the focus.
+  const visibleRingOpacity = zoomScale < 0.7 ? 0.4 : zoomScale > 1.5 ? 0.25 : 1;
 
   return (
     <div
@@ -259,30 +287,39 @@ export default function OrbitCanvas({
         aria-label="Lune orbit"
       >
         <defs>
-          <radialGradient id="lune-sphere" cx="32%" cy="26%" r="78%">
-            <stop offset="0" stopColor="#fffdf2" />
-            <stop offset="0.18" stopColor="#f6f0e0" />
-            <stop offset="0.5" stopColor="#cfc4e0" />
-            <stop offset="0.82" stopColor="#7a72a6" />
-            <stop offset="1" stopColor="#4a4370" />
+          {/* Realistic moon palette: warm cream highlight → ivory → soft taupe → muted slate.
+              No purple in the body — keeps a "real moon at twilight" feel while staying warm. */}
+          <radialGradient id="lune-sphere" cx="30%" cy="24%" r="82%">
+            <stop offset="0" stopColor="#fdf8e8" />
+            <stop offset="0.16" stopColor="#f1e8d0" />
+            <stop offset="0.42" stopColor="#d6c9ad" />
+            <stop offset="0.7" stopColor="#766a52" />
+            <stop offset="1" stopColor="#2b2840" />
           </radialGradient>
           <radialGradient id="lune-specular" cx="50%" cy="50%" r="50%">
-            <stop offset="0" stopColor="rgba(255,253,240,0.75)" />
-            <stop offset="0.6" stopColor="rgba(255,253,240,0.08)" />
+            <stop offset="0" stopColor="rgba(255,253,240,0.85)" />
+            <stop offset="0.55" stopColor="rgba(255,253,240,0.12)" />
             <stop offset="1" stopColor="rgba(255,253,240,0)" />
           </radialGradient>
+          {/* Earthshine: very faint cool wash on the unlit side, gives the dark side
+              that dim-but-not-black quality real moons have on Earth-facing nights. */}
+          <radialGradient id="lune-earthshine" cx="78%" cy="72%" r="60%">
+            <stop offset="0" stopColor="rgba(190,200,225,0.16)" />
+            <stop offset="0.7" stopColor="rgba(190,200,225,0.04)" />
+            <stop offset="1" stopColor="rgba(190,200,225,0)" />
+          </radialGradient>
           <radialGradient id="lune-shadow" cx="50%" cy="50%" r="50%">
-            <stop offset="0" stopColor="rgba(50,45,80,0.38)" />
-            <stop offset="0.6" stopColor="rgba(50,45,80,0.1)" />
-            <stop offset="1" stopColor="rgba(50,45,80,0)" />
+            <stop offset="0" stopColor="rgba(38,34,52,0.42)" />
+            <stop offset="0.6" stopColor="rgba(38,34,52,0.1)" />
+            <stop offset="1" stopColor="rgba(38,34,52,0)" />
           </radialGradient>
           <radialGradient id="lune-halo" cx="50%" cy="50%" r="50%">
             <stop offset="0" stopColor={tone.halo} />
             <stop offset="0.55" stopColor={tone.rim} />
-            <stop offset="1" stopColor="rgba(134,125,193,0)" />
+            <stop offset="1" stopColor={tone.haloEdge} />
           </radialGradient>
           <radialGradient id="lune-warm" cx="50%" cy="50%" r="50%">
-            <stop offset="0" stopColor="rgba(255,240,205,0.22)" />
+            <stop offset="0" stopColor="rgba(255,240,205,0.20)" />
             <stop offset="0.6" stopColor="rgba(255,240,205,0.04)" />
             <stop offset="1" stopColor="rgba(255,240,205,0)" />
           </radialGradient>
@@ -322,7 +359,7 @@ export default function OrbitCanvas({
               }
               onEnter={() => setHover({ poolIdx: dot.poolIdx, accountIdx: dot.accountIdx })}
               onLeave={() => setHover(null)}
-              onClick={() => onAccountClick?.(dot.pool.id, dot.account.id)}
+              onClick={() => onAccountClick?.(dot.pool.id)}
             />
           ))}
 
@@ -344,28 +381,41 @@ export default function OrbitCanvas({
             filter="url(#orbit-dot-glow)"
           />
 
-          {/* moon body */}
+          {/* moon body — always clickable for phase reveal */}
           <g
-            style={{ cursor: moonCursor }}
+            role="button"
+            tabIndex={0}
+            aria-label="显示当前月相"
+            style={{ cursor: "pointer", outline: "none" }}
             onClick={(e) => {
               e.stopPropagation();
-              onMoonClick?.();
+              handleMoonClick();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                handleMoonClick();
+              }
             }}
             data-orbit-hit
           >
             <circle cx={0} cy={0} r={moonRadius} fill="url(#lune-sphere)" />
+            {/* earthshine: faint blue glow on the shadow side of the disc */}
+            <circle cx={0} cy={0} r={moonRadius} fill="url(#lune-earthshine)" />
+            {/* specular highlight */}
             <ellipse
-              cx={-moonRadius * 0.25}
-              cy={-moonRadius * 0.3}
-              rx={moonRadius * 0.32}
-              ry={moonRadius * 0.24}
+              cx={-moonRadius * 0.28}
+              cy={-moonRadius * 0.32}
+              rx={moonRadius * 0.34}
+              ry={moonRadius * 0.26}
               fill="url(#lune-specular)"
             />
-            {/* craters — subtle */}
-            <circle cx={-moonRadius * 0.1} cy={moonRadius * 0.08} r={moonRadius * 0.055} fill="rgba(72,64,108,0.18)" />
-            <circle cx={moonRadius * 0.22} cy={-moonRadius * 0.14} r={moonRadius * 0.04} fill="rgba(72,64,108,0.14)" />
-            <circle cx={moonRadius * 0.08} cy={moonRadius * 0.34} r={moonRadius * 0.048} fill="rgba(72,64,108,0.16)" />
-            <circle cx={moonRadius * 0.34} cy={moonRadius * 0.26} r={moonRadius * 0.034} fill="rgba(72,64,108,0.12)" />
+            {/* craters — subtle, with a tiny bright rim for relief */}
+            <Crater cx={-moonRadius * 0.1} cy={moonRadius * 0.08} r={moonRadius * 0.055} />
+            <Crater cx={moonRadius * 0.22} cy={-moonRadius * 0.14} r={moonRadius * 0.04} />
+            <Crater cx={moonRadius * 0.08} cy={moonRadius * 0.34} r={moonRadius * 0.048} />
+            <Crater cx={moonRadius * 0.34} cy={moonRadius * 0.26} r={moonRadius * 0.034} />
+            <Crater cx={-moonRadius * 0.42} cy={moonRadius * 0.18} r={moonRadius * 0.03} />
 
             {/* lunar phase shadow overlay */}
             <MoonPhaseShadow phase={moonPhase} radius={moonRadius} />
@@ -394,32 +444,18 @@ export default function OrbitCanvas({
               }
               onEnter={() => setHover({ poolIdx: dot.poolIdx, accountIdx: dot.accountIdx })}
               onLeave={() => setHover(null)}
-              onClick={() => onAccountClick?.(dot.pool.id, dot.account.id)}
+              onClick={() => onAccountClick?.(dot.pool.id)}
             />
           ))}
 
-          {/* moonFace: overlay on the moon disc, below hover labels so labels stay on top */}
-          {moonFace ? (
-            <foreignObject
-              x={-moonRadius * 0.85}
-              y={-moonRadius * 0.85}
-              width={moonRadius * 1.7}
-              height={moonRadius * 1.7}
-              clipPath="url(#moon-clip)"
-              style={{ pointerEvents: "none" }}
-            >
-              <div
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                {moonFace}
-              </div>
-            </foreignObject>
+          {/* phase name reveal — fades in on moon click, drifts down a bit, then fades out */}
+          {phaseRevealAt !== null ? (
+            <PhaseNameReveal
+              key={phaseRevealAt}
+              text={phaseName}
+              moonRadius={moonRadius}
+              tilt={tilt}
+            />
           ) : null}
 
           {hoveredDot ? (
@@ -432,6 +468,15 @@ export default function OrbitCanvas({
         </g>
       </svg>
     </div>
+  );
+}
+
+function Crater({ cx, cy, r }: { cx: number; cy: number; r: number }) {
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={r} fill="rgba(60,52,78,0.20)" />
+      <circle cx={cx - r * 0.18} cy={cy - r * 0.22} r={r * 0.85} fill="rgba(255,250,230,0.06)" />
+    </g>
   );
 }
 
@@ -454,7 +499,6 @@ function AccountDot({
   const d = (dot.depth + 1) / 2;
   const scale = 0.66 + 0.42 * d;
 
-  // breathing: slow opacity wave, unique per dot
   const t = frameTime / dot.breathPeriod;
   const breath = 0.5 + 0.5 * Math.sin(t * Math.PI * 2 + dot.breathPhase);
   const breathOpacity = 0.68 + 0.32 * breath;
@@ -500,7 +544,6 @@ function HoverFloatLabel({
   color: string;
   statusText: string;
 }) {
-  // place label on the side away from the moon, clamped to viewBox bounds
   const side = dot.x >= 0 ? 1 : -1;
   const rawLx = dot.x + side * 28;
   const rawLy = dot.y - 8;
@@ -550,39 +593,73 @@ function HoverFloatLabel({
   );
 }
 
+function PhaseNameReveal({
+  text,
+  moonRadius,
+  tilt,
+}: {
+  text: string;
+  moonRadius: number;
+  tilt: number;
+}) {
+  // Position: just below the moon, drifting down slightly while fading out.
+  // CSS keyframes embedded as a style tag — cleaner than RAF for one-shot transitions.
+  const baseY = moonRadius * tilt + moonRadius * 0.35 + 28;
+  return (
+    <g style={{ pointerEvents: "none" }}>
+      <style>{`
+        @keyframes lune-phase-reveal {
+          0%   { opacity: 0; transform: translateY(-6px); }
+          18%  { opacity: 1; transform: translateY(0); }
+          78%  { opacity: 1; transform: translateY(0); }
+          100% { opacity: 0; transform: translateY(8px); }
+        }
+      `}</style>
+      <g
+        style={{
+          animation: `lune-phase-reveal ${PHASE_REVEAL_MS}ms ease-out forwards`,
+          transformBox: "fill-box",
+          transformOrigin: "center",
+        }}
+      >
+        <text
+          x={0}
+          y={baseY}
+          textAnchor="middle"
+          fill="rgba(33,40,63,0.78)"
+          style={{
+            font: '400 15px "Iowan Old Style","Palatino Linotype","Noto Serif SC","Source Han Serif SC",Georgia,serif',
+            letterSpacing: "0.32em",
+          }}
+        >
+          {text}
+        </text>
+      </g>
+    </g>
+  );
+}
+
 function MoonPhaseShadow({ phase, radius }: { phase: number; radius: number }) {
-  // phase 0 = new moon (fully dark), 0.5 = full moon (fully lit), 1 = new moon again
-  // We render an elliptical shadow over a full moon disc.
-  // For 0 < phase < 0.5 (waxing): shadow on the LEFT, receding.
-  // For 0.5 < phase < 1 (waning): shadow on the RIGHT, advancing.
-  if (Math.abs(phase - 0.5) < 0.02) return null; // full moon — no shadow
+  if (Math.abs(phase - 0.5) < 0.02) return null; // full moon
 
   const waxing = phase < 0.5;
-  const illumination = waxing ? phase * 2 : (1 - phase) * 2; // 0..1
+  const illumination = waxing ? phase * 2 : (1 - phase) * 2;
 
-  // ellipse rx controls curvature of terminator
   const rx = radius * Math.abs(1 - 2 * illumination);
-  const shadowSide = waxing ? -1 : 1; // waxing: dark on left
-  const shadowFill = "rgba(30,26,60,0.58)";
+  const shadowSide = waxing ? -1 : 1;
+  // shadow: neutral-warm dark so the unlit side stays readable and keeps a little warmth
+  const shadowFill = "rgba(42,36,52,0.5)";
+  // restore color when "erasing" shadow back to lit — matches mid-bright moon tone
+  const litRestore = "#dccfb0";
 
-  // If illumination < 0.5, shadow is larger than half disk; render as full disc minus lit ellipse
-  // Simpler approach: draw the dark semicircle, then draw an ellipse that is either cut-out (add light) or added (add dark)
   if (illumination > 0.5) {
-    // more than half lit: shadow is a crescent on one side.
-    // We draw the dark semicircle then "erase" a central ellipse back to lit.
-    // Using a solid warm-lit color (not url(#lune-sphere)) — the sphere gradient
-    // is objectBoundingBox-scaled and would misalign its highlight on a narrow ellipse.
     return (
       <g clipPath="url(#moon-clip)" style={{ pointerEvents: "none" }}>
-        <path
-          d={semicirclePath(radius, shadowSide)}
-          fill={shadowFill}
-        />
-        <ellipse cx={0} cy={0} rx={rx} ry={radius} fill="#eadfc9" opacity={0.96} />
+        <path d={semicirclePath(radius, shadowSide)} fill={shadowFill} />
+        <ellipse cx={0} cy={0} rx={rx} ry={radius} fill={litRestore} opacity={0.94} />
       </g>
     );
   }
-  // less than half lit: shadow covers more than half, = semicircle plus ellipse on the other side
   return (
     <g clipPath="url(#moon-clip)" style={{ pointerEvents: "none" }}>
       <path d={semicirclePath(radius, shadowSide)} fill={shadowFill} />
@@ -592,7 +669,6 @@ function MoonPhaseShadow({ phase, radius }: { phase: number; radius: number }) {
 }
 
 function semicirclePath(r: number, side: -1 | 1): string {
-  // draw a semicircle on the given side of the y-axis
   if (side === -1) {
     return `M 0 ${-r} A ${r} ${r} 0 0 0 0 ${r} Z`;
   }

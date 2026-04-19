@@ -20,8 +20,11 @@ import type {
 import OrbitCanvas, { type OrbitPool } from "./OverviewPage/OrbitCanvas";
 import StardustGlobalAccess from "./OverviewPage/StardustGlobalAccess";
 import MoonInscription from "./OverviewPage/MoonInscription";
+import AlertConstellation from "./OverviewPage/AlertConstellation";
 
-type ZoomLevel = "far" | "mid" | "near";
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2.4;
+const ZOOM_SENSITIVITY = 0.0012;
 
 function getMoonTone(alerts: OverviewAlert[]): "calm" | "warning" | "critical" {
   if (!alerts?.length) return "calm";
@@ -75,8 +78,7 @@ export default function OverviewPage() {
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [revealedGlobalToken, setRevealedGlobalToken] = useState<string | null>(null);
-  const [zoomLevel, setZoomLevel] = useState<ZoomLevel>("mid");
-  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   const baseUrl = getApiBaseUrl();
@@ -140,11 +142,9 @@ export default function OverviewPage() {
     const handler = (e: WheelEvent) => {
       if (Math.abs(e.deltaY) < 1) return;
       e.preventDefault();
-      setZoomLevel((current) => {
-        if (e.deltaY > 0) {
-          return current === "near" ? "mid" : current === "mid" ? "far" : "far";
-        }
-        return current === "far" ? "mid" : current === "mid" ? "near" : "near";
+      setZoomScale((current) => {
+        const next = current * Math.exp(-e.deltaY * ZOOM_SENSITIVITY);
+        return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next));
       });
     };
     el.addEventListener("wheel", handler, { passive: false });
@@ -253,56 +253,31 @@ export default function OverviewPage() {
         <OrbitCanvas
           pools={orbitPools}
           moonTone={moonTone}
-          zoomLevel={zoomLevel}
-          moonFace={zoomLevel === "near" && overview ? (
-            <MoonInscription
-              requests={overview.requests_today}
-              successRate={overview.success_rate_today}
-              avgLatency={overview.avg_latency_today}
-            />
-          ) : null}
+          zoomScale={zoomScale}
           onAccountClick={(poolId) => navigate(`/admin/pools/${poolId}`)}
-          moonCursor={alerts.length > 0 ? "pointer" : "default"}
-          onMoonClick={alerts.length > 0 ? () => setAlertsOpen((v) => !v) : undefined}
         />
       </div>
 
-      {/* alert reveal panel — only when moon is clicked and alerts exist */}
-      {alertsOpen && alerts.length > 0 ? (
-        <div className="pointer-events-auto absolute left-1/2 top-1/2 z-20 flex max-h-[52vh] w-[min(28rem,90vw)] -translate-x-1/2 translate-y-[8rem] flex-col rounded-[1.4rem] border border-moon-200/55 bg-white/92 p-4 shadow-[0_30px_70px_-40px_rgba(33,40,63,0.5)] backdrop-blur-md">
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-moon-400">
-              提醒
-            </p>
-            <button
-              type="button"
-              onClick={() => setAlertsOpen(false)}
-              className="text-[11px] text-moon-500 hover:text-moon-800"
-            >
-              收起
-            </button>
-          </div>
-          <ul className="space-y-2 overflow-y-auto pr-1">
-            {alerts.map((alert, i) => (
-              <li key={`${alert.type}-${i}`}>
-                <button
-                  type="button"
-                  onClick={() =>
-                    navigate(alert.pool_id ? `/admin/pools/${alert.pool_id}` : "/admin/settings")
-                  }
-                  className="w-full rounded-lg border border-moon-200/45 bg-white/55 px-3 py-2 text-left text-sm text-moon-700 transition-colors hover:bg-white/85"
-                >
-                  {alert.message}
-                </button>
-              </li>
-            ))}
-          </ul>
+      {/* upper-left — MoonInscription (metrics in Chinese numerals, click to expand) */}
+      {overview ? (
+        <div className="absolute left-6 top-16 z-10">
+          <MoonInscription
+            requests={overview.requests_today}
+            successRate={overview.success_rate_today}
+            avgLatency={overview.avg_latency_today}
+          />
         </div>
       ) : null}
 
-      {/* zoom hint (only when default) */}
-      <div className="pointer-events-none absolute left-5 bottom-5 text-[10px] tracking-[0.28em] text-moon-400/70">
-        滚轮 · 缩放 {zoomLevel === "far" ? "远" : zoomLevel === "near" ? "近" : "·"}
+      {/* upper-right — AlertConstellation (pulsing dot, click to expand) */}
+      <div className="absolute right-6 top-16 z-10">
+        <AlertConstellation
+          alerts={alerts}
+          tone={moonTone}
+          onAlertClick={(alert) =>
+            navigate(alert.pool_id ? `/admin/pools/${alert.pool_id}` : "/admin/settings")
+          }
+        />
       </div>
 
       {/* stardust global access at bottom right */}
