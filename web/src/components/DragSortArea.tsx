@@ -113,11 +113,23 @@ export default function DragSortArea({
   renderMember,
   onReorder,
   onToggleEnabled,
+  onCrossZoneMove,
 }: {
   members: PoolMember[];
   renderMember: (member: PoolMember, options: RenderOptions) => React.ReactNode;
   onReorder: (memberIds: number[]) => void;
   onToggleEnabled: (member: PoolMember, enabled: boolean) => void;
+  // Optional single-shot callback for cross-zone drops. When provided, the
+  // component fires this instead of the separate onToggleEnabled + onReorder
+  // pair, so the parent can collapse both mutations (enable/disable + priority
+  // reorder) into one atomic sequence with a single data refresh at the end.
+  // Without it, cross-zone drops double-fire and each path triggers its own
+  // refreshData(), racing each other.
+  onCrossZoneMove?: (
+    member: PoolMember,
+    enabled: boolean,
+    orderedMemberIds: number[],
+  ) => void;
 }) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const enabledMembers = useMemo(() => members.filter((member) => member.enabled), [members]);
@@ -193,8 +205,13 @@ export default function DragSortArea({
       ];
       const nextEnabled = targetZone === "enabled" ? nextTarget : remainingSource;
       const nextDisabled = targetZone === "disabled" ? nextTarget : remainingSource;
-      onToggleEnabled(sourceMember, targetZone === "enabled");
-      onReorder([...nextEnabled, ...nextDisabled].map((member) => member.id));
+      const orderedIds = [...nextEnabled, ...nextDisabled].map((member) => member.id);
+      if (onCrossZoneMove) {
+        onCrossZoneMove(sourceMember, targetZone === "enabled", orderedIds);
+      } else {
+        onToggleEnabled(sourceMember, targetZone === "enabled");
+        onReorder(orderedIds);
+      }
       return;
     }
 

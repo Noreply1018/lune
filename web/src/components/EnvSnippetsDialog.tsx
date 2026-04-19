@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import {
   Dialog,
@@ -79,11 +79,20 @@ function InlineCopyAction({
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
+  // Cancel the pending idle-revert on unmount — otherwise closing the dialog
+  // mid-copy would trigger setState on an unmounted component.
+  const revertTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (revertTimerRef.current) window.clearTimeout(revertTimerRef.current);
+    };
+  }, []);
 
   async function handleCopy() {
     await navigator.clipboard.writeText(value);
     setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    if (revertTimerRef.current) window.clearTimeout(revertTimerRef.current);
+    revertTimerRef.current = window.setTimeout(() => setCopied(false), 1600);
   }
 
   return (

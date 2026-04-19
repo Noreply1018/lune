@@ -61,7 +61,13 @@ export default function PoolDetailPage() {
   const hasLoadedRef = useRef(false);
   const flashTimersRef = useRef<Map<number, number>>(new Map());
   const selfCheckingRef = useRef(false);
-  const revealInFlightRef = useRef<Set<number>>(new Set());
+  // Promise-caching de-dup for reveal endpoints. Storing the in-flight
+  // promise (not just a boolean) lets concurrent callers share the same
+  // request AND await it, so we never hit the POST twice for the same
+  // token or accidentally return "" to a racing caller before the single
+  // fetch settles.
+  const revealInFlightRef = useRef<Map<number, Promise<string>>>(new Map());
+  const globalRevealInFlightRef = useRef<Promise<string> | null>(null);
 
   const load = useCallback(() => {
     if (!hasValidPoolId) {
@@ -84,7 +90,10 @@ export default function PoolDetailPage() {
       })
       .catch((err) => {
         if (seq !== loadSeqRef.current) return;
-        hasLoadedRef.current = true;
+        // Deliberately leave hasLoadedRef.current false on error so a retry
+        // via <ErrorState onRetry={load}> shows the skeleton again — the
+        // ErrorState screen would otherwise linger through the refetch with
+        // no visible feedback that anything's happening.
         setError(err instanceof Error ? err.message : "Pool 详情加载失败");
       })
       .finally(() => {
@@ -196,50 +205,65 @@ export default function PoolDetailPage() {
 
   // Auto-reveal the primary token so the meta row shows the full value without
   // an extra gesture. Fires when primaryPoolTokenId changes (including initial
-  // mount). revealInFlightRef de-duplicates the React.StrictMode double-mount.
+  // mount). revealPoolToken itself de-dupes concurrent callers (including the
+  // React.StrictMode double-mount), so no extra guarding is needed here.
   useEffect(() => {
     if (!primaryPoolTokenId) return;
     if (revealedTokenCache[primaryPoolTokenId]) return;
-    if (revealInFlightRef.current.has(primaryPoolTokenId)) return;
-    const tokenId = primaryPoolTokenId;
-    revealInFlightRef.current.add(tokenId);
     let cancelled = false;
-    revealPoolToken(tokenId)
-      .catch((err) => {
-        if (cancelled) return;
-        toast(err instanceof Error ? err.message : "读取 Token 失败", "error");
-      })
-      .finally(() => {
-        revealInFlightRef.current.delete(tokenId);
-      });
+    revealPoolToken(primaryPoolTokenId).catch((err) => {
+      if (cancelled) return;
+      toast(err instanceof Error ? err.message : "读取 Token 失败", "error");
+    });
     return () => {
       cancelled = true;
     };
-    // revealPoolToken is a new closure each render but the in-flight ref and
-    // cache checks above make re-invocation safe.
+    // revealPoolToken is a new closure each render but the cache + in-flight
+    // promise de-dup inside the function make re-invocation safe.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primaryPoolTokenId]);
 
   useEffect(() => {
     setRevealedGlobalToken(null);
+    // Also drop any in-flight reveal for the *old* token id — otherwise a
+    // slow POST that started before the id changed could settle afterwards
+    // and write the (now stale) value back into revealedGlobalToken.
+    globalRevealInFlightRef.current = null;
   }, [overview?.global_token_id]);
 
   async function revealPoolToken(tokenId: number): Promise<string> {
     const cached = revealedTokenCache[tokenId];
-    if (cached) {
-      return cached;
-    }
-    const revealed = await api.post<RevealedAccessToken>(`/tokens/${tokenId}/reveal`);
-    setRevealedTokenCache((current) => ({ ...current, [tokenId]: revealed.token }));
-    return revealed.token;
+    if (cached) return cached;
+    const inflight = revealInFlightRef.current.get(tokenId);
+    if (inflight) return inflight;
+    const promise = api
+      .post<RevealedAccessToken>(`/tokens/${tokenId}/reveal`)
+      .then((revealed) => {
+        setRevealedTokenCache((current) => ({ ...current, [tokenId]: revealed.token }));
+        return revealed.token;
+      })
+      .finally(() => {
+        revealInFlightRef.current.delete(tokenId);
+      });
+    revealInFlightRef.current.set(tokenId, promise);
+    return promise;
   }
 
   async function revealGlobalToken(): Promise<string> {
     if (revealedGlobalToken) return revealedGlobalToken;
     if (!overview?.global_token_id) return "";
-    const revealed = await api.post<RevealedAccessToken>("/tokens/global/reveal");
-    setRevealedGlobalToken(revealed.token);
-    return revealed.token;
+    if (globalRevealInFlightRef.current) return globalRevealInFlightRef.current;
+    const promise = api
+      .post<RevealedAccessToken>("/tokens/global/reveal")
+      .then((revealed) => {
+        setRevealedGlobalToken(revealed.token);
+        return revealed.token;
+      })
+      .finally(() => {
+        globalRevealInFlightRef.current = null;
+      });
+    globalRevealInFlightRef.current = promise;
+    return promise;
   }
 
   async function getTokenForConnect(): Promise<string> {
@@ -280,6 +304,26 @@ export default function PoolDetailPage() {
       toast(enabled ? "账号已启用" : "账号已移入禁用区");
     } catch (err) {
       toast(err instanceof Error ? err.message : "账号状态更新失败", "error");
+    } finally {
+      refreshData();
+    }
+  }
+
+  // Single-shot handler for cross-zone drags. Does both mutations
+  // (enable/disable + reorder) then triggers exactly one refreshData — the
+  // old path fired onToggleEnabled and onReorder separately, each ending in
+  // its own refreshData, racing each other and producing flicker.
+  async function handleCrossZoneMove(
+    member: PoolMember,
+    enabled: boolean,
+    memberIds: number[],
+  ) {
+    try {
+      await api.put(`/pools/${poolId}/members/${member.id}`, { enabled });
+      await api.put(`/pools/${poolId}/members/reorder`, { member_ids: memberIds });
+      toast(enabled ? "账号已启用" : "账号已移入禁用区");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "更新失败", "error");
     } finally {
       refreshData();
     }
@@ -610,6 +654,7 @@ export default function PoolDetailPage() {
         members={members}
         onReorder={reorderMembers}
         onToggleEnabled={toggleMember}
+        onCrossZoneMove={handleCrossZoneMove}
         renderMember={(member, options) => {
           const spotlightActive = detailMemberId != null;
           const isSelected = detailMemberId === member.id;
@@ -676,12 +721,23 @@ export default function PoolDetailPage() {
 
 function InlineCopyIcon({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
+  // Track the pending "revert to idle" timer so we can cancel it on unmount
+  // (otherwise the setTimeout fires a setState on an unmounted component and
+  // React logs a warning; worse, if the user re-renders the button quickly
+  // a stale timer can flip `copied` back off right after a fresh copy).
+  const revertTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (revertTimerRef.current) window.clearTimeout(revertTimerRef.current);
+    };
+  }, []);
   async function handle() {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(true);
       toast("已复制");
-      window.setTimeout(() => setCopied(false), 1600);
+      if (revertTimerRef.current) window.clearTimeout(revertTimerRef.current);
+      revertTimerRef.current = window.setTimeout(() => setCopied(false), 1600);
     } catch {
       toast("复制失败", "error");
     }

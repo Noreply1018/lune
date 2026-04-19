@@ -357,12 +357,18 @@ function ProbeConfigSection({
   }, [account.probe_models, accountId]);
 
   async function persist(next: string[]) {
+    // Snapshot pre-optimistic state so a failed PUT can roll back the chip
+    // list — otherwise the UI happily shows models the server never accepted
+    // and the next parent refresh would silently overwrite them with the
+    // real (unchanged) values, looking like a confusing ghost edit.
+    const prev = models;
     setModels(next);
     setSaving(true);
     setError(null);
     try {
       await api.put(`/accounts/${accountId}/probe-models`, { models: next });
     } catch (err) {
+      setModels(prev);
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSaving(false);
