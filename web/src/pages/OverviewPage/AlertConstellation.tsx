@@ -1,10 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { OverviewAlert } from "@/lib/types";
+import {
+  fingerprint,
+  filterVisible,
+  formatCn,
+  type ParsedAlert,
+} from "./alertUtils";
 
 type AlertConstellationProps = {
   alerts: OverviewAlert[];
   tone: "calm" | "warning" | "critical";
+  dismissed: Set<string>;
+  onDismiss: (fp: string) => void;
   onAlertClick: (alert: OverviewAlert) => void;
 };
 
@@ -26,7 +35,13 @@ const TONE_COLOR: Record<AlertConstellationProps["tone"], { dot: string; ring: s
   },
 };
 
-export default function AlertConstellation({ alerts, tone, onAlertClick }: AlertConstellationProps) {
+export default function AlertConstellation({
+  alerts,
+  tone,
+  dismissed,
+  onDismiss,
+  onAlertClick,
+}: AlertConstellationProps) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -42,10 +57,16 @@ export default function AlertConstellation({ alerts, tone, onAlertClick }: Alert
     return () => document.removeEventListener("pointerdown", onDocPointer);
   }, [open]);
 
-  if (alerts.length === 0) return null;
+  const visible = useMemo(() => filterVisible(alerts, dismissed), [alerts, dismissed]);
+
+  if (visible.length === 0) return null;
 
   const palette = TONE_COLOR[tone];
-  const count = alerts.length;
+  const count = visible.length;
+
+  function handleDismiss(alert: OverviewAlert, parsed: ParsedAlert) {
+    onDismiss(fingerprint(alert, parsed));
+  }
 
   return (
     <div ref={containerRef} className="pointer-events-auto flex flex-col items-end gap-2">
@@ -90,7 +111,7 @@ export default function AlertConstellation({ alerts, tone, onAlertClick }: Alert
       </button>
 
       {open ? (
-        <div className="flex max-h-[52vh] w-[min(24rem,80vw)] flex-col rounded-[1.2rem] border border-moon-200/55 bg-white/92 p-3 shadow-[0_30px_70px_-40px_rgba(33,40,63,0.5)] backdrop-blur-md">
+        <div className="flex max-h-[52vh] w-[min(26rem,82vw)] flex-col rounded-[1.2rem] border border-moon-200/55 bg-white/90 p-3 shadow-[0_30px_70px_-40px_rgba(33,40,63,0.5)] backdrop-blur-md">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-moon-400">
               提醒
@@ -104,20 +125,40 @@ export default function AlertConstellation({ alerts, tone, onAlertClick }: Alert
             </button>
           </div>
           <ul className="space-y-1.5 overflow-y-auto pr-1">
-            {alerts.map((alert, i) => (
-              <li key={`${alert.type}-${i}`}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onAlertClick(alert);
-                    setOpen(false);
-                  }}
-                  className="w-full rounded-lg border border-moon-200/45 bg-white/55 px-3 py-2 text-left text-sm text-moon-700 transition-colors hover:bg-white/85"
-                >
-                  {alert.message}
-                </button>
-              </li>
-            ))}
+            {visible.map(({ alert, parsed }, i) => {
+              const canDismiss = parsed.kind === "account_expiring";
+              return (
+                <li key={`${alert.type}-${i}`}>
+                  <div className="group flex items-stretch gap-1 rounded-lg border border-moon-200/45 bg-white/55 text-moon-700 transition-colors hover:bg-white/85">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onAlertClick(alert);
+                        setOpen(false);
+                      }}
+                      className="flex-1 px-3 py-2 text-left text-sm leading-relaxed"
+                      title={parsed.detail ? parsed.detail : undefined}
+                    >
+                      {formatCn(alert, parsed)}
+                    </button>
+                    {canDismiss ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDismiss(alert, parsed);
+                        }}
+                        aria-label="标记为已读"
+                        title="标记为已读（下次仍出现相同提醒会再显示）"
+                        className="flex w-8 items-center justify-center rounded-r-lg text-moon-400 opacity-0 transition-opacity hover:text-moon-700 group-hover:opacity-100"
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </div>
       ) : null}

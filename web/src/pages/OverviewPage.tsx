@@ -21,6 +21,15 @@ import OrbitCanvas, { type OrbitPool } from "./OverviewPage/OrbitCanvas";
 import StardustGlobalAccess from "./OverviewPage/StardustGlobalAccess";
 import MoonInscription from "./OverviewPage/MoonInscription";
 import AlertConstellation from "./OverviewPage/AlertConstellation";
+import PhaseReveal from "./OverviewPage/PhaseReveal";
+import { getMoonPhase, getMoonPhaseName } from "./OverviewPage/moonPhase";
+import {
+  filterVisible,
+  fingerprint,
+  loadDismissed,
+  parseAlert,
+  saveDismissed,
+} from "./OverviewPage/alertUtils";
 
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 2.4;
@@ -28,12 +37,10 @@ const ZOOM_SENSITIVITY = 0.0012;
 
 function getMoonTone(alerts: OverviewAlert[]): "calm" | "warning" | "critical" {
   if (!alerts?.length) return "calm";
-  const hasCritical = alerts.some(
-    (a) =>
-      a.type === "account_error" ||
-      a.type === "error" ||
-      a.type === "pool_unhealthy",
-  );
+  const hasCritical = alerts.some((a) => {
+    const kind = parseAlert(a).kind;
+    return kind === "account_error" || kind === "pool_unhealthy";
+  });
   if (hasCritical) return "critical";
   return "warning";
 }
@@ -79,6 +86,8 @@ export default function OverviewPage() {
   const [qrOpen, setQrOpen] = useState(false);
   const [revealedGlobalToken, setRevealedGlobalToken] = useState<string | null>(null);
   const [zoomScale, setZoomScale] = useState(1);
+  const [phaseRevealAt, setPhaseRevealAt] = useState<number | null>(null);
+  const [dismissed, setDismissed] = useState<Set<string>>(() => loadDismissed());
   const canvasRef = useRef<HTMLDivElement>(null);
 
   const baseUrl = getApiBaseUrl();
@@ -159,8 +168,41 @@ export default function OverviewPage() {
   }, [pools]);
 
   const orbitPools = useMemo(() => poolsToOrbit(pools, poolDetails), [pools, poolDetails]);
-  const moonTone = useMemo(() => getMoonTone(overview?.alerts ?? []), [overview?.alerts]);
   const alerts = overview?.alerts ?? [];
+  const visibleAlerts = useMemo(
+    () => filterVisible(alerts, dismissed).map((v) => v.alert),
+    [alerts, dismissed],
+  );
+  const moonTone = useMemo(() => getMoonTone(visibleAlerts), [visibleAlerts]);
+  const phaseName = useMemo(() => getMoonPhaseName(getMoonPhase()), []);
+  const handlePhaseRevealDismiss = useCallback(() => setPhaseRevealAt(null), []);
+
+  // Prune dismissed entries whose matching alerts no longer exist.
+  // Read `dismissed` via ref to avoid looping the effect on its own setState.
+  const dismissedRef = useRef(dismissed);
+  useEffect(() => {
+    dismissedRef.current = dismissed;
+  }, [dismissed]);
+  useEffect(() => {
+    const current = dismissedRef.current;
+    if (current.size === 0) return;
+    const live = new Set(
+      alerts
+        .map((a) => ({ alert: a, parsed: parseAlert(a) }))
+        .filter(({ parsed }) => parsed.kind === "account_expiring")
+        .map(({ alert, parsed }) => fingerprint(alert, parsed)),
+    );
+    let changed = false;
+    const next = new Set<string>();
+    current.forEach((fp) => {
+      if (live.has(fp)) next.add(fp);
+      else changed = true;
+    });
+    if (changed) {
+      setDismissed(next);
+      saveDismissed(next);
+    }
+  }, [alerts]);
 
   async function revealGlobalTokenValue(): Promise<string> {
     if (revealedGlobalToken) return revealedGlobalToken;
@@ -255,8 +297,20 @@ export default function OverviewPage() {
           moonTone={moonTone}
           zoomScale={zoomScale}
           onAccountClick={(poolId) => navigate(`/admin/pools/${poolId}`)}
+          onMoonClick={() => setPhaseRevealAt(Date.now())}
         />
       </div>
+
+      {/* phase name reveal — screen-fixed, independent of zoom.
+          `key={phaseRevealAt}` is on the JSX element so React remounts
+          PhaseReveal on every click, restarting the CSS animation. */}
+      {phaseRevealAt !== null ? (
+        <PhaseReveal
+          key={phaseRevealAt}
+          text={phaseName}
+          onDismiss={handlePhaseRevealDismiss}
+        />
+      ) : null}
 
       {/* upper-left — MoonInscription (metrics in Chinese numerals, click to expand) */}
       {overview ? (
@@ -274,6 +328,13 @@ export default function OverviewPage() {
         <AlertConstellation
           alerts={alerts}
           tone={moonTone}
+          dismissed={dismissed}
+          onDismiss={(fp) => {
+            const next = new Set(dismissed);
+            next.add(fp);
+            setDismissed(next);
+            saveDismissed(next);
+          }}
           onAlertClick={(alert) =>
             navigate(alert.pool_id ? `/admin/pools/${alert.pool_id}` : "/admin/settings")
           }
