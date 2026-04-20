@@ -12,6 +12,9 @@
 .idea/
 .vscode/
 .DS_Store
+CLAUDE.md
+docs/superpowers/
+spec/
 tmp/
 wget-log
 audit-*.png

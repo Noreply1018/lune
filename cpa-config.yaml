@@ -1,5 +1,9 @@
 # CPA (CLI Proxy API) config for Lune docker-compose setup.
 # Mounted into the container at /CLIProxyAPI/config.yaml.
+#
+# ⚠️ 生产使用务必修改下方 secret-key 和 api-keys，并与 .env 里的
+#    LUNE_CPA_MANAGEMENT_KEY / CPA_API_KEY 保持一致。
+#    当前默认值仅用于本地示例，不要直接暴露到公网。
 
 port: 8317
 
