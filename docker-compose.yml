@@ -22,7 +22,7 @@ services:
     container_name: lune-cpa
     restart: unless-stopped
     ports:
-      - "8317:8317"
+      - "127.0.0.1:8317:8317"
     environment:
       CPA_API_KEY: "${CPA_API_KEY:-sk-cpa-default}"
     volumes:

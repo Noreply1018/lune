@@ -30,5 +30,6 @@ web/.vite/
 
 # Editors / tooling
 .claude/
+.codex/
 .idea/
 .vscode/
