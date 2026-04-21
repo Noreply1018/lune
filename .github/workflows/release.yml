@@ -87,3 +87,15 @@ jobs:
           labels: ${{ steps.meta_ghcr.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Only sync on tag pushes — workflow_dispatch (edge) builds shouldn't
+      # overwrite the published Hub description.
+      - name: Sync Docker Hub description
+        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' && startsWith(github.ref, 'refs/tags/v') }}
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE_NAME }}
+          short-description: "Quiet personal LLM gateway with OpenAI-compatible API, admin UI, SQLite, and CPA-backed account pooling."
+          readme-filepath: ./docs/dockerhub-description.md
