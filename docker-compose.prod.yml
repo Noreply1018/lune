@@ -1,6 +1,6 @@
 services:
   lune:
-    image: ghcr.io/noreply1018/lune:${LUNE_IMAGE_TAG:-latest}
+    image: ${LUNE_IMAGE:-ghcr.io/noreply1018/lune}:${LUNE_IMAGE_TAG:-latest}
     container_name: lune
     restart: unless-stopped
     ports:

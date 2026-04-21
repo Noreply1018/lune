@@ -8,6 +8,7 @@
 [![License](https://img.shields.io/github/license/Noreply1018/lune?color=blue)](./LICENSE)
 [![Release](https://img.shields.io/github/v/release/Noreply1018/lune?include_prereleases&sort=semver)](https://github.com/Noreply1018/lune/releases)
 [![GHCR](https://img.shields.io/badge/ghcr.io-noreply1018%2Flune-2496ed?logo=docker)](https://github.com/Noreply1018/lune/pkgs/container/lune)
+[![Docker Hub](https://img.shields.io/badge/docker.io-noreply1018%2Flune-2496ed?logo=docker)](https://hub.docker.com/r/noreply1018/lune)
 
 ![Overview](./docs/screenshots/overview.png)
 
@@ -60,6 +61,7 @@ cp .env.example .env
 #    同时同步修改 cpa-config.yaml 里的 api-keys 和 remote-management.secret-key
 #    两边必须一致，否则 Lune 无法调用 CPA 服务
 #    仓库中的默认值仅用于本地示例，不应直接暴露在公网环境
+#    如需从 Docker Hub 拉取镜像，把 LUNE_IMAGE 改成 docker.io/noreply1018/lune
 
 # 3. 启动
 docker compose -f docker-compose.prod.yml --env-file .env up -d
@@ -99,6 +101,7 @@ cp .env.example .env
 
 | 变量 | 用途 | 默认值 |
 |---|---|---|
+| `LUNE_IMAGE` | 预构建镜像仓库（GHCR / Docker Hub） | `ghcr.io/noreply1018/lune` |
 | `LUNE_IMAGE_TAG` | 预构建镜像 tag（用于 `docker-compose.prod.yml`） | `latest` |
 | `LUNE_PORT` | HTTP 服务端口 | `7788` |
 | `LUNE_DATA_DIR` | SQLite 数据目录 | `./data` |
