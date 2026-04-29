@@ -22,11 +22,16 @@ func newHandlerTestStore(t *testing.T) (*store.Store, *store.RoutingCache, *Hand
 	t.Cleanup(func() { _ = st.Close() })
 	cache := store.NewRoutingCache(st)
 	handler := NewHandler(router.New(cache), cache, st, filepath.Join(t.TempDir(), "tmp"))
-	tokenID, err := st.CreateToken(&store.AccessToken{Name: "test-token", Token: "sk-test", Enabled: true})
+	poolID, err := st.CreatePool("test-pool", 1, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	poolIDCopy := poolID
+	tokenID, err := st.CreateToken(&store.AccessToken{Name: "test-token", Token: "sk-test", PoolID: &poolIDCopy, Enabled: true})
 	if err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
-	token := &store.AccessToken{ID: tokenID, Name: "test-token", Token: "sk-test", Enabled: true}
+	token := &store.AccessToken{ID: tokenID, Name: "test-token", Token: "sk-test", PoolID: &poolIDCopy, Enabled: true}
 	return st, cache, handler, token
 }
 
@@ -37,19 +42,15 @@ func TestGatewayRouteErrorsLogHTTPStatus(t *testing.T) {
 
 	req.ServeHTTP(rr, req.Request)
 
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
 	}
-	assertLatestLogStatus(t, st, 404)
+	assertLatestLogStatus(t, st, 503)
 	cache.Invalidate()
 }
 
 func TestGatewayNoHealthyAccountLogsHTTPStatus(t *testing.T) {
 	st, _, handler, token := newHandlerTestStore(t)
-	poolID, err := st.CreatePool("test", 1, true)
-	if err != nil {
-		t.Fatalf("CreatePool: %v", err)
-	}
 	accountID, err := st.CreateAccount(&store.Account{
 		Label:      "error-account",
 		SourceKind: "openai_compat",
@@ -64,7 +65,7 @@ func TestGatewayNoHealthyAccountLogsHTTPStatus(t *testing.T) {
 	if err := st.UpdateAccountHealth(accountID, "error", "broken"); err != nil {
 		t.Fatalf("UpdateAccountHealth: %v", err)
 	}
-	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+	if _, err := st.AddPoolMember(*token.PoolID, accountID); err != nil {
 		t.Fatalf("AddPoolMember: %v", err)
 	}
 	if err := st.RefreshAccountModels(accountID, []string{"gpt-test"}); err != nil {

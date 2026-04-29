@@ -304,3 +304,109 @@ func TestFreshDatabaseOpensAtCurrentSchema(t *testing.T) {
 		t.Fatalf("expected 4 seeded subscription rows, got %d", count)
 	}
 }
+
+func TestMigrateV12AccessTokensBecomePoolScoped(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-v12-tokens.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '12');
+CREATE TABLE pools (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO pools (id, label, priority, enabled) VALUES (1, 'Primary', 0, 1), (2, 'Secondary', 1, 1), (3, 'Missing Token Pool', 2, 1);
+CREATE TABLE access_tokens (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    pool_id INTEGER,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+);
+INSERT INTO access_tokens (id, name, token, pool_id, enabled, created_at, updated_at)
+VALUES
+    (1, 'global-old', 'sk-lune-global-old', NULL, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
+    (2, 'primary-a', 'sk-lune-primary-a', 1, 0, '2026-01-02 00:00:00', '2026-01-02 00:00:00'),
+    (3, 'primary-b', 'sk-lune-primary-b', 1, 1, '2026-01-03 00:00:00', '2026-01-03 00:00:00'),
+    (4, 'secondary', 'sk-lune-secondary', 2, 1, '2026-01-04 00:00:00', '2026-01-04 00:00:00');
+`); err != nil {
+		t.Fatalf("seed v12 schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("open store with migration: %v", err)
+	}
+	defer st.Close()
+
+	if st.SchemaVersion() != v3SchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", v3SchemaVersion, st.SchemaVersion())
+	}
+
+	var poolIDNotNull int
+	rows, err := st.DB().Query(`PRAGMA table_info(access_tokens)`)
+	if err != nil {
+		t.Fatalf("table info: %v", err)
+	}
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			rows.Close()
+			t.Fatalf("scan table info: %v", err)
+		}
+		if name == "pool_id" {
+			poolIDNotNull = notNull
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatalf("table info rows: %v", err)
+	}
+	rows.Close()
+	if poolIDNotNull != 1 {
+		t.Fatalf("expected access_tokens.pool_id to be NOT NULL after migration")
+	}
+
+	var total int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM access_tokens`).Scan(&total); err != nil {
+		t.Fatalf("count tokens: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("expected one token per pool, got %d", total)
+	}
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM access_tokens WHERE pool_id IS NULL`).Scan(&total); err != nil {
+		t.Fatalf("count global tokens: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("expected no global tokens after migration, got %d", total)
+	}
+
+	if _, err := st.DB().Exec(`INSERT INTO access_tokens (name, token, pool_id) VALUES ('bad', 'sk-lune-bad', NULL)`); err == nil {
+		t.Fatalf("expected NULL pool_id insert to fail")
+	}
+	if _, err := st.DB().Exec(`INSERT INTO access_tokens (name, token, pool_id) VALUES ('dup', 'sk-lune-dup', 1)`); err == nil {
+		t.Fatalf("expected duplicate pool_id insert to fail")
+	}
+}

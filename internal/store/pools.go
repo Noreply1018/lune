@@ -122,10 +122,10 @@ func (s *Store) CreatePool(label string, priority int, enabled bool) (int64, err
 
 // CreatePoolWithDefaultToken creates a pool and a default pool-scoped access
 // token in the same transaction. The token name is derived from `label` with a
-// `-default` suffix so listings in Settings stay legible. Returns the new pool
-// ID and token ID. Note: `access_tokens.name` is NOT unique, and for a brand
-// new pool there is no pre-existing token to collide with, so this always
-// succeeds for the happy path. The only real failure modes are the usual
+// consistent suffix so Settings can present one credential per Pool. Returns
+// the new pool ID and token ID. Note: `access_tokens.name` is NOT unique, and
+// for a brand new pool there is no pre-existing token to collide with, so this
+// always succeeds for the happy path. The only real failure modes are the usual
 // transaction errors (I/O, token-value UNIQUE collision from rand failure).
 func (s *Store) CreatePoolWithDefaultToken(label string, priority int, enabled bool) (poolID, tokenID int64, err error) {
 	tok, err := generateToken()
@@ -151,7 +151,7 @@ func (s *Store) CreatePoolWithDefaultToken(label string, priority int, enabled b
 		return 0, 0, err
 	}
 
-	tokenName := label + "-default"
+	tokenName := defaultPoolTokenName(label)
 	tokRes, err := tx.Exec(
 		`INSERT INTO access_tokens (name, token, pool_id, enabled) VALUES (?, ?, ?, ?)`,
 		tokenName, tok, poolID, true,

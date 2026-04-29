@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, KeyRound, QrCode, ShieldCheck } from "lucide-react";
+import { Check, Copy, KeyRound, ShieldCheck } from "lucide-react";
 import AccountCard from "@/components/AccountCard";
 import AccountDetailSheet from "@/components/AccountDetailSheet";
+import CodexSetupDialog from "@/components/CodexSetupDialog";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import DragSortArea from "@/components/DragSortArea";
 import EmptyState from "@/components/EmptyState";
-import EnvSnippetsDialog from "@/components/EnvSnippetsDialog";
 import ErrorState from "@/components/ErrorState";
 import PageHeader from "@/components/PageHeader";
-import QrCodeDialog from "@/components/QrCodeDialog";
 import { useAdminUI } from "@/components/AdminUI";
 import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
@@ -16,9 +15,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { compact, pct } from "@/lib/fmt";
 import { ensureArray, getApiBaseUrl, getPoolHealth } from "@/lib/lune";
-import { matchPath, usePathname, useRouter } from "@/lib/router";
+import { matchPath, usePathname } from "@/lib/router";
 import type {
-  Overview,
   PoolDetailResponse,
   PoolMember,
   RevealedAccessToken,
@@ -36,24 +34,40 @@ type AccountStatsEntry = {
   outputTokens: number;
 };
 
+function latestModel(models: string[]) {
+  const unique = Array.from(new Set(models.filter(Boolean)));
+  if (unique.length === 0) return "gpt-5";
+  return unique
+    .map((model, index) => ({ model, index, score: scoreModel(model) }))
+    .sort((a, b) => b.score - a.score || b.index - a.index)[0].model;
+}
+
+function scoreModel(model: string) {
+  const normalized = model.toLowerCase();
+  const familyMatch = normalized.match(/gpt-?(\d+(?:\.\d+)?)/);
+  const family = familyMatch ? Number(familyMatch[1]) * 1000 : 0;
+  const codexBonus = normalized.includes("codex") ? 120 : 0;
+  const dateMatch = normalized.match(/(?:^|[-_])(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?:$|[-_])/);
+  const dateScore = dateMatch
+    ? Number(`${dateMatch[1]}${dateMatch[2]}${dateMatch[3]}`) / 100000
+    : 0;
+  return family + codexBonus + dateScore;
+}
+
 export default function PoolDetailPage() {
   const pathname = usePathname();
-  const { navigate } = useRouter();
   const { dataVersion, refreshData } = useAdminUI();
   const params = matchPath("/admin/pools/:id", pathname);
   const poolId = Number(params?.id);
   const hasValidPoolId = Number.isInteger(poolId) && poolId > 0;
   const [detail, setDetail] = useState<PoolDetailResponse | null>(null);
-  const [overview, setOverview] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PoolMember | null>(null);
   const [detailMemberId, setDetailMemberId] = useState<number | null>(null);
   const [connectTokenValue, setConnectTokenValue] = useState<string | null>(null);
   const [revealedTokenCache, setRevealedTokenCache] = useState<Record<number, string>>({});
-  const [revealedGlobalToken, setRevealedGlobalToken] = useState<string | null>(null);
-  const [snippetsOpen, setSnippetsOpen] = useState(false);
-  const [qrOpen, setQrOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
   const [dialogToken, setDialogToken] = useState<string>("");
   const [selfChecking, setSelfChecking] = useState(false);
   const [flashMap, setFlashMap] = useState<Record<number, FlashState>>({});
@@ -67,7 +81,6 @@ export default function PoolDetailPage() {
   // token or accidentally return "" to a racing caller before the single
   // fetch settles.
   const revealInFlightRef = useRef<Map<number, Promise<string>>>(new Map());
-  const globalRevealInFlightRef = useRef<Promise<string> | null>(null);
 
   const load = useCallback(() => {
     if (!hasValidPoolId) {
@@ -78,15 +91,12 @@ export default function PoolDetailPage() {
     const seq = ++loadSeqRef.current;
     if (!hasLoadedRef.current) setLoading(true);
     setError(null);
-    Promise.all([
-      api.get<PoolDetailResponse>(`/pools/${poolId}`),
-      api.get<Overview>("/overview"),
-    ])
-      .then(([detailData, overviewData]) => {
+    api
+      .get<PoolDetailResponse>(`/pools/${poolId}`)
+      .then((detailData) => {
         if (seq !== loadSeqRef.current) return;
         hasLoadedRef.current = true;
         setDetail(detailData);
-        setOverview(overviewData);
       })
       .catch((err) => {
         if (seq !== loadSeqRef.current) return;
@@ -122,16 +132,13 @@ export default function PoolDetailPage() {
   const stats = detail?.stats;
   const poolTokens = ensureArray(detail?.tokens);
   const statsByAccount = ensureArray(stats?.by_account);
-  // Prefer the first enabled pool-scoped token; if every token is disabled we
-  // still surface the first one so the user sees the masked value plus a
-  // warning, rather than an empty slot that looks like "nothing configured".
   const primaryPoolToken = useMemo(
-    () => poolTokens.find((t) => t.enabled) ?? poolTokens[0] ?? null,
+    () => poolTokens[0] ?? null,
     [poolTokens],
   );
   const primaryPoolTokenId = primaryPoolToken?.id ?? null;
   const poolTokenCacheKey = useMemo(
-    () => poolTokens.map((token) => `${token.id}:${token.enabled ? 1 : 0}`).join("|"),
+    () => poolTokens.map((token) => String(token.id)).join("|"),
     [poolTokens],
   );
   const accountStatsMap = useMemo(() => {
@@ -177,26 +184,26 @@ export default function PoolDetailPage() {
   const detailPriorityIndex = detailMember ? priorityIndexMap.get(detailMember.id) : undefined;
 
   const baseUrl = getApiBaseUrl();
-  const hasConnectToken = Boolean(primaryPoolTokenId) || Boolean(overview?.global_token_id);
+  const hasConnectToken = Boolean(primaryPoolTokenId);
   const primaryTokenRevealed = primaryPoolTokenId
     ? revealedTokenCache[primaryPoolTokenId] ?? null
     : null;
   const primaryTokenDisplay = primaryPoolToken
     ? primaryTokenRevealed ?? primaryPoolToken.token_masked
-    : overview?.global_token_masked ?? "未配置全局 Token";
-  const firstPoolModel = useMemo(() => {
-    for (const member of enabledMembers) {
-      const models = ensureArray(member.account?.models);
-      if (models.length > 0) return models[0];
-    }
-    return ensureArray(pool?.models)[0];
+    : "Pool Token 尚未就绪";
+  const defaultPoolModel = useMemo(() => {
+    const models = [
+      ...ensureArray(pool?.models),
+      ...enabledMembers.flatMap((member) => ensureArray(member.account?.models)),
+    ];
+    return latestModel(models);
   }, [enabledMembers, pool]);
 
-  // When the set of tokens or their enabled flags change, drop the "connect"
-  // choice so the next Env Snippets / QR open re-picks a still-enabled token.
+  // When the token set changes, drop the "connect" choice so the next Codex
+  // setup open re-picks the current Pool token.
   // We do NOT wipe revealedTokenCache — entries are keyed by token id and
-  // remain valid across enabled-toggles (toggling doesn't change the value).
-  // Wiping would create a cross-effect stale-state trap: the reveal effect
+  // remain valid while the token id is stable. Wiping would create a
+  // cross-effect stale-state trap: the reveal effect
   // below, reading its own render's closure, would see the pre-wipe cache
   // and skip re-fetch while the UI falls back to masked.
   useEffect(() => {
@@ -223,14 +230,6 @@ export default function PoolDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primaryPoolTokenId]);
 
-  useEffect(() => {
-    setRevealedGlobalToken(null);
-    // Also drop any in-flight reveal for the *old* token id — otherwise a
-    // slow POST that started before the id changed could settle afterwards
-    // and write the (now stale) value back into revealedGlobalToken.
-    globalRevealInFlightRef.current = null;
-  }, [overview?.global_token_id]);
-
   async function revealPoolToken(tokenId: number): Promise<string> {
     const cached = revealedTokenCache[tokenId];
     if (cached) return cached;
@@ -249,23 +248,6 @@ export default function PoolDetailPage() {
     return promise;
   }
 
-  async function revealGlobalToken(): Promise<string> {
-    if (revealedGlobalToken) return revealedGlobalToken;
-    if (!overview?.global_token_id) return "";
-    if (globalRevealInFlightRef.current) return globalRevealInFlightRef.current;
-    const promise = api
-      .post<RevealedAccessToken>("/tokens/global/reveal")
-      .then((revealed) => {
-        setRevealedGlobalToken(revealed.token);
-        return revealed.token;
-      })
-      .finally(() => {
-        globalRevealInFlightRef.current = null;
-      });
-    globalRevealInFlightRef.current = promise;
-    return promise;
-  }
-
   async function getTokenForConnect(): Promise<string> {
     if (connectTokenValue) {
       return connectTokenValue;
@@ -275,16 +257,7 @@ export default function PoolDetailPage() {
       setConnectTokenValue(token);
       return token;
     }
-    return revealGlobalToken();
-  }
-
-  // For per-account direct requests we need a token that leaves tokenPoolID = nil on
-  // the gateway, otherwise X-Lune-Account-Id is silently dropped (gateway/handler.go).
-  // Pool-scoped tokens always route through pool weights — use global whenever possible.
-  async function getTokenForAccountProbe(): Promise<string> {
-    const global = await revealGlobalToken();
-    if (global) return global;
-    return getTokenForConnect();
+    return "";
   }
 
   async function reorderMembers(memberIds: number[]) {
@@ -370,28 +343,15 @@ export default function PoolDetailPage() {
     }
   }
 
-  function jumpToTokenInSettings(tokenId: number) {
-    // Custom router stores pathname without hash; replaceState afterwards so
-    // the URL is shareable without confusing pathname matching in App.tsx.
-    // Scroll + highlight are owned by SettingsPage's hash effect — this
-    // component unmounts as soon as the route changes, so any scroll retry
-    // scheduled here would get cleaned up before the token DOM exists.
-    navigate("/admin/settings");
-    window.history.replaceState(null, "", `/admin/settings#access-token-${tokenId}`);
-  }
-
   async function runSelfCheck() {
     if (selfCheckingRef.current || enabledMembers.length === 0) return;
     selfCheckingRef.current = true;
     setSelfChecking(true);
     try {
-      const token = await getTokenForAccountProbe().catch(() => "");
+      const token = await getTokenForConnect().catch(() => "");
       if (!token) {
         toast("未找到可用的 Token，无法自检", "error");
         return;
-      }
-      if (!overview?.global_token_id) {
-        toast("没有全局 Token，自检改用 Pool Token，结果反映整个 Pool 而非单账号", "error");
       }
 
       // Each target can probe multiple models in parallel and passes when any
@@ -404,7 +364,7 @@ export default function PoolDetailPage() {
         .map((member) => {
           const accountModels = ensureArray(member.account?.models);
           const configured = ensureArray(member.account?.probe_models);
-          const fallback = accountModels[accountModels.length - 1] ?? firstPoolModel;
+          const fallback = latestModel(accountModels.length > 0 ? accountModels : [defaultPoolModel]);
           const models = configured.length > 0 ? configured : fallback ? [fallback] : [];
           return { member, models };
         })
@@ -497,7 +457,7 @@ export default function PoolDetailPage() {
     }
   }
 
-  async function openSnippetsWithToken() {
+  async function openSetupWithToken() {
     try {
       const token = await getTokenForConnect();
       if (!token) {
@@ -505,21 +465,7 @@ export default function PoolDetailPage() {
         return;
       }
       setDialogToken(token);
-      setSnippetsOpen(true);
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "读取 Token 失败", "error");
-    }
-  }
-
-  async function openQrWithToken() {
-    try {
-      const token = await getTokenForConnect();
-      if (!token) {
-        toast("未找到可用的 Token", "error");
-        return;
-      }
-      setDialogToken(token);
-      setQrOpen(true);
+      setSetupOpen(true);
     } catch (err) {
       toast(err instanceof Error ? err.message : "读取 Token 失败", "error");
     }
@@ -555,27 +501,11 @@ export default function PoolDetailPage() {
             <div className="flex items-center gap-2.5">
               <span className="inline-flex items-center gap-2">
                 <span className="text-[12.5px] text-moon-500">Pool Token：</span>
-                <span
-                  className={`size-2 shrink-0 rounded-full ${
-                    primaryPoolToken.enabled ? "bg-status-green" : "bg-moon-400"
-                  }`}
-                  aria-hidden
-                />
+                <span className="size-2 shrink-0 rounded-full bg-status-green" aria-hidden />
                 <code className="font-mono text-[12.5px] text-moon-700">
                   {primaryTokenDisplay}
                 </code>
               </span>
-              {!primaryPoolToken.enabled ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => jumpToTokenInSettings(primaryPoolToken.id)}
-                  title="Token 已禁用 · 前往 Settings 启用"
-                  className="rounded-full border-status-yellow/55 bg-status-yellow/10 text-status-yellow hover:bg-status-yellow/18 hover:text-status-yellow"
-                >
-                  已禁用 ↗
-                </Button>
-              ) : null}
               {primaryTokenRevealed ? (
                 <InlineCopyIcon value={primaryTokenRevealed} />
               ) : null}
@@ -623,22 +553,12 @@ export default function PoolDetailPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={openSnippetsWithToken}
+              onClick={openSetupWithToken}
               disabled={!hasConnectToken}
               className="rounded-full border-moon-200/55 bg-white/45"
             >
               <KeyRound className="size-3.5" />
-              Env Snippets
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={openQrWithToken}
-              disabled={!hasConnectToken}
-              className="rounded-full border-moon-200/55 bg-white/45"
-            >
-              <QrCode className="size-3.5" />
-              QR
+              Codex Setup
             </Button>
           </>
         }
@@ -647,7 +567,7 @@ export default function PoolDetailPage() {
       {isEmpty ? (
         <EmptyState
           title={`${pool.label} 还没有账号。`}
-          description="当前页面已经收敛为账号编排面。先从全局入口添加账号，再回来排序、停用和调整优先级。"
+          description="当前页面已经收敛为账号编排面。先从侧边栏 Add Account 添加账号，再回来排序、停用和调整优先级。"
         />
       ) : (
       <DragSortArea
@@ -685,27 +605,20 @@ export default function PoolDetailPage() {
         stats={detailMemberStats}
         priorityIndex={detailPriorityIndex}
         poolId={poolId}
-        resolveToken={getTokenForAccountProbe}
-        hasGlobalToken={Boolean(overview?.global_token_id)}
+        resolveToken={getTokenForConnect}
         onOpenChange={(open) => {
           if (!open) setDetailMemberId(null);
         }}
       />
 
-      <EnvSnippetsDialog
-        open={snippetsOpen}
-        onOpenChange={setSnippetsOpen}
-        title={`${pool.label} · Env Snippets`}
+      <CodexSetupDialog
+        open={setupOpen}
+        onOpenChange={setSetupOpen}
+        poolId={pool.id}
+        poolLabel={pool.label}
         baseUrl={baseUrl}
         token={dialogToken}
-        model={firstPoolModel}
-      />
-      <QrCodeDialog
-        open={qrOpen}
-        onOpenChange={setQrOpen}
-        title={`${pool.label} · Token QR`}
-        baseUrl={baseUrl}
-        token={dialogToken}
+        model={defaultPoolModel}
       />
 
       <ConfirmDialog

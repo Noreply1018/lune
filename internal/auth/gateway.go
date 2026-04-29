@@ -25,8 +25,8 @@ func GatewayAuth(next http.Handler, cache *store.RoutingCache) http.Handler {
 			webutil.WriteGatewayError(w, 401, "invalid_token", "invalid access token")
 			return
 		}
-		if !accessToken.Enabled {
-			webutil.WriteGatewayError(w, 403, "token_disabled", "access token is disabled")
+		if accessToken.PoolID == nil {
+			webutil.WriteGatewayError(w, 401, "invalid_token", "invalid access token")
 			return
 		}
 

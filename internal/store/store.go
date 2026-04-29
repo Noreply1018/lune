@@ -19,7 +19,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 12
+const v3SchemaVersion = 13
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -104,11 +104,12 @@ CREATE TABLE IF NOT EXISTS access_tokens (
     id           INTEGER PRIMARY KEY,
     name         TEXT NOT NULL,
     token        TEXT NOT NULL UNIQUE,
-    pool_id      INTEGER REFERENCES pools(id) ON DELETE CASCADE,
+    pool_id      INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
     enabled      INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    last_used_at TEXT
+    last_used_at TEXT,
+    UNIQUE(pool_id)
 );
 
 CREATE TABLE IF NOT EXISTS request_logs (
@@ -265,6 +266,11 @@ func (s *Store) migrateV3(dbPath string) error {
 		if ver < 12 {
 			if err := s.migrateAttemptCountColumn(); err != nil {
 				return fmt.Errorf("migrate attempt_count column: %w", err)
+			}
+		}
+		if ver < 13 {
+			if err := s.migratePoolScopedAccessTokens(); err != nil {
+				return fmt.Errorf("migrate pool-scoped access tokens: %w", err)
 			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
@@ -534,6 +540,124 @@ func (s *Store) migrateAttemptCountColumn() error {
 	}
 	s.schemaMu.Lock()
 	delete(s.schemaCache, "request_logs")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migratePoolScopedAccessTokens() error {
+	tokensExists, err := s.tableExists("access_tokens")
+	if err != nil {
+		return err
+	}
+	poolsExists, err := s.tableExists("pools")
+	if err != nil {
+		return err
+	}
+	if !tokensExists || !poolsExists {
+		return s.ReconcilePoolTokens()
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+CREATE TABLE access_tokens_v13 (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL,
+    token        TEXT NOT NULL UNIQUE,
+    pool_id      INTEGER NOT NULL REFERENCES pools(id) ON DELETE CASCADE,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT,
+    UNIQUE(pool_id)
+)`); err != nil {
+		return err
+	}
+
+	rows, err := tx.Query(`SELECT id, label FROM pools ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	type poolRow struct {
+		id    int64
+		label string
+	}
+	var pools []poolRow
+	for rows.Next() {
+		var p poolRow
+		if err := rows.Scan(&p.id, &p.label); err != nil {
+			rows.Close()
+			return err
+		}
+		pools = append(pools, p)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, pool := range pools {
+		var (
+			id         int64
+			name       string
+			tokenValue string
+			createdAt  string
+			updatedAt  string
+			lastUsedAt sql.NullString
+		)
+		err := tx.QueryRow(
+			`SELECT id, name, token, created_at, updated_at, last_used_at
+			 FROM access_tokens
+			 WHERE pool_id = ?
+			 ORDER BY id
+			 LIMIT 1`,
+			pool.id,
+		).Scan(&id, &name, &tokenValue, &createdAt, &updatedAt, &lastUsedAt)
+		if err == sql.ErrNoRows {
+			tokenValue, err = generateToken()
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(
+				`INSERT INTO access_tokens_v13 (name, token, pool_id, enabled) VALUES (?, ?, ?, 1)`,
+				defaultPoolTokenName(pool.label), tokenValue, pool.id,
+			); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(
+			`INSERT INTO access_tokens_v13 (id, name, token, pool_id, enabled, created_at, updated_at, last_used_at)
+			 VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+			id, name, tokenValue, pool.id, createdAt, updatedAt, lastUsedAt,
+		); err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.Exec(`DROP TABLE access_tokens`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE access_tokens_v13 RENAME TO access_tokens`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_access_tokens_pool_unique ON access_tokens(pool_id)`); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "access_tokens")
 	s.schemaMu.Unlock()
 	return nil
 }

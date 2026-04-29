@@ -13,9 +13,7 @@ import {
   EyeOff,
   MoreHorizontal,
   PencilLine,
-  Plus,
   RefreshCw,
-  Trash2,
   WandSparkles,
 } from "lucide-react";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -37,17 +35,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { shortDate } from "@/lib/fmt";
@@ -74,29 +64,16 @@ type EditableSettingField =
   | "health_check_interval"
   | "data_retention_days";
 
-type TokenDraft = {
-  name: string;
-  scope: "global" | "pool";
-  poolId: string;
-};
-
-const INITIAL_TOKEN_DRAFT: TokenDraft = {
-  name: "",
-  scope: "global",
-  poolId: "",
-};
-
 const TOKEN_GRID_COLUMNS =
-  "xl:grid-cols-[minmax(10rem,1fr)_minmax(0,4.8fr)_9.5rem_6.25rem_6.25rem_11.5rem]";
+  "xl:grid-cols-[minmax(10rem,1.2fr)_minmax(10rem,1.1fr)_minmax(0,4.8fr)_9.5rem_11.5rem]";
 // `align` shifts header label within its column without moving the data rows.
 // 操作 走完全居中，状态 用 pl-5 落在“左对齐和完全居中”之间——列本身窄，硬 center
 // 会让表头离值显得远；半偏一点既收紧又不贴边。
 const TOKEN_COLUMNS: { label: string; align?: string }[] = [
+  { label: "Pool" },
   { label: "名称" },
   { label: "Token" },
-  { label: "创建时间" },
-  { label: "状态", align: "pl-5" },
-  { label: "归属" },
+  { label: "Last Used" },
   { label: "操作", align: "text-center" },
 ];
 
@@ -129,12 +106,8 @@ export default function SettingsPage() {
     null,
   );
   const settingsRef = useRef(settings);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createDraft, setCreateDraft] =
-    useState<TokenDraft>(INITIAL_TOKEN_DRAFT);
   const [editingToken, setEditingToken] = useState<AccessToken | null>(null);
   const [editingName, setEditingName] = useState("");
-  const [deleteToken, setDeleteToken] = useState<AccessToken | null>(null);
   const [regenerateToken, setRegenerateToken] = useState<AccessToken | null>(
     null,
   );
@@ -250,17 +223,13 @@ export default function SettingsPage() {
     // guarantees the scroll fires against the real section.
   }, [loading]);
 
-  const poolNameMap = useMemo(
-    () => Object.fromEntries(pools.map((pool) => [pool.id, pool.label])),
-    [pools],
-  );
-  const globalTokens = useMemo(
-    () => tokens.filter((token) => token.pool_id == null),
-    [tokens],
-  );
-  const poolTokens = useMemo(
-    () => tokens.filter((token) => token.pool_id != null),
-    [tokens],
+  const poolCredentials = useMemo(
+    () =>
+      pools.map((pool) => ({
+        pool,
+        token: tokens.find((token) => token.pool_id === pool.id) ?? null,
+      })),
+    [pools, tokens],
   );
 
   async function saveSetting(
@@ -363,76 +332,6 @@ export default function SettingsPage() {
     }
   }
 
-  async function toggleEnabled(token: AccessToken) {
-    const nextEnabled = !token.enabled;
-    setTokens((current) =>
-      current.map((item) =>
-        item.id === token.id ? { ...item, enabled: nextEnabled } : item,
-      ),
-    );
-    try {
-      await api.post(
-        `/tokens/${token.id}/${token.enabled ? "disable" : "enable"}`,
-      );
-      toast(nextEnabled ? "Token 已启用" : "Token 已停用");
-    } catch (err) {
-      setTokens((current) =>
-        current.map((item) =>
-          item.id === token.id ? { ...item, enabled: token.enabled } : item,
-        ),
-      );
-      toast(
-        err instanceof Error ? err.message : "更新 Token 状态失败",
-        "error",
-      );
-    }
-  }
-
-  async function submitCreateToken() {
-    if (!createDraft.name.trim()) {
-      toast("请先填写 Token 名称", "error");
-      return;
-    }
-    const poolId =
-      createDraft.scope === "pool" ? Number(createDraft.poolId) : null;
-    if (createDraft.scope === "pool" && !poolId) {
-      toast("请选择归属 Pool", "error");
-      return;
-    }
-    try {
-      const created = await api.post<RevealedAccessToken>("/tokens", {
-        name: createDraft.name.trim(),
-        pool_id: poolId,
-        enabled: true,
-      });
-      const now = new Date().toISOString();
-      const { token: revealedTokenValue, ...createdTokenData } = created;
-      const createdToken: AccessToken = {
-        ...createdTokenData,
-        token_masked: maskToken(revealedTokenValue),
-        pool_label:
-          created.pool_id != null ? poolNameMap[created.pool_id] : undefined,
-        is_global: created.pool_id == null,
-        created_at: now,
-        updated_at: now,
-        last_used_at: null,
-      };
-      setTokens((current) => [createdToken, ...current]);
-      setCreateOpen(false);
-      setCreateDraft(INITIAL_TOKEN_DRAFT);
-      setRevealedTokens((current) => ({
-        ...current,
-        [created.id]: revealedTokenValue,
-      }));
-      setVisibleTokenIds((current) =>
-        Array.from(new Set([...current, created.id])),
-      );
-      toast("Token 已创建");
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "创建 Token 失败", "error");
-    }
-  }
-
   async function submitRename() {
     if (!editingToken) {
       return;
@@ -453,8 +352,6 @@ export default function SettingsPage() {
     try {
       await api.put(`/tokens/${editingToken.id}`, {
         name,
-        pool_id: editingToken.pool_id,
-        enabled: editingToken.enabled,
       });
       toast("名称已更新");
       setEditingToken(null);
@@ -502,50 +399,6 @@ export default function SettingsPage() {
       setRegenerateToken(null);
     } catch (err) {
       toast(err instanceof Error ? err.message : "重新生成失败", "error");
-    }
-  }
-
-  async function confirmDeleteToken() {
-    if (!deleteToken) {
-      return;
-    }
-    const removed = deleteToken;
-    const prevVisible = visibleTokenIds.includes(removed.id);
-    const prevRevealed = revealedTokens[removed.id];
-    setTokens((current) => current.filter((token) => token.id !== removed.id));
-    setVisibleTokenIds((current) => current.filter((id) => id !== removed.id));
-    setRevealedTokens((current) => {
-      const next = { ...current };
-      delete next[removed.id];
-      return next;
-    });
-    try {
-      await api.delete(`/tokens/${removed.id}`);
-      toast("Token 已删除");
-      setDeleteToken(null);
-    } catch (err) {
-      setTokens((current) => {
-        const existingIndex = current.findIndex(
-          (token) => token.id === removed.id,
-        );
-        if (existingIndex >= 0) {
-          return current;
-        }
-        return [removed, ...current];
-      });
-      if (prevVisible) {
-        setVisibleTokenIds((current) =>
-          current.includes(removed.id) ? current : [...current, removed.id],
-        );
-      }
-      if (prevRevealed !== undefined) {
-        setRevealedTokens((current) => ({
-          ...current,
-          [removed.id]: prevRevealed,
-        }));
-      }
-      setDeleteToken(null);
-      toast(err instanceof Error ? err.message : "删除 Token 失败", "error");
     }
   }
 
@@ -788,23 +641,14 @@ export default function SettingsPage() {
         />
       </div>
 
-      <section id="token-management" className="surface-section px-5 py-5 sm:px-6 scroll-mt-6">
+      <section id="token-management" className="surface-section scroll-mt-6 px-5 py-5 sm:px-6">
         <SectionHeading
-          title="Token Management"
-          description="集中管理全局与 Pool 访问凭证。"
-          action={
-            <Button onClick={() => setCreateOpen(true)}>
-              <Plus className="size-4" />
-              Create Token
-            </Button>
-          }
+          title="Pool Credentials"
+          description="每个 Pool 自动拥有一条访问凭证；可复制、查看、重命名或重新生成。"
         />
-        <div className="mt-7 space-y-8">
-          <TokenGroup
-            title="Global Tokens"
-            tokens={globalTokens}
-            emptyText="还没有 Global Token。"
-            poolNameMap={poolNameMap}
+        <div className="mt-7">
+          <PoolCredentialsTable
+            credentials={poolCredentials}
             revealedTokens={revealedTokens}
             visibleTokenIds={visibleTokenIds}
             highlightedTokenId={highlightedTokenId}
@@ -814,27 +658,7 @@ export default function SettingsPage() {
               setEditingToken(token);
               setEditingName(token.name);
             }}
-            onToggleEnabled={toggleEnabled}
             onRegenerate={setRegenerateToken}
-            onDelete={setDeleteToken}
-          />
-          <TokenGroup
-            title="Pool Tokens"
-            tokens={poolTokens}
-            emptyText="还没有 Pool Token。"
-            poolNameMap={poolNameMap}
-            revealedTokens={revealedTokens}
-            visibleTokenIds={visibleTokenIds}
-            highlightedTokenId={highlightedTokenId}
-            onCopy={copyToken}
-            onReveal={toggleReveal}
-            onEdit={(token) => {
-              setEditingToken(token);
-              setEditingName(token.name);
-            }}
-            onToggleEnabled={toggleEnabled}
-            onRegenerate={setRegenerateToken}
-            onDelete={setDeleteToken}
           />
         </div>
       </section>
@@ -861,110 +685,6 @@ export default function SettingsPage() {
       </div>
 
       <NotificationHistorySection />
-
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="max-w-md overflow-hidden rounded-[1.6rem] border border-white/75 bg-white/95 p-0 shadow-[0_26px_70px_-38px_rgba(74,68,108,0.34)]">
-          <DialogHeader className="border-b border-moon-200/55 px-6 py-5 pr-12">
-            <DialogTitle>Create Token</DialogTitle>
-            <DialogDescription>选择归属并创建新的访问凭证。</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-5 px-6 py-6">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-moon-700">Name</label>
-              <Input
-                value={createDraft.name}
-                onChange={(event) =>
-                  setCreateDraft((current) => ({
-                    ...current,
-                    name: event.target.value,
-                  }))
-                }
-                placeholder="例如：global-cli"
-              />
-            </div>
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-moon-700">Ownership</p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className={cn(
-                    "rounded-full border px-3 py-1.5 text-sm transition-colors",
-                    createDraft.scope === "global"
-                      ? "border-lunar-300/65 bg-lunar-100/60 text-moon-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]"
-                      : "border-moon-200/65 bg-white/60 text-moon-500 hover:border-moon-250/75 hover:bg-white/80",
-                  )}
-                  onClick={() =>
-                    setCreateDraft((current) => ({
-                      ...current,
-                      scope: "global",
-                      poolId: "",
-                    }))
-                  }
-                >
-                  Global
-                </button>
-                <button
-                  type="button"
-                  className={cn(
-                    "rounded-full border px-3 py-1.5 text-sm transition-colors",
-                    createDraft.scope === "pool"
-                      ? "border-lunar-300/65 bg-lunar-100/60 text-moon-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]"
-                      : "border-moon-200/65 bg-white/60 text-moon-500 hover:border-moon-250/75 hover:bg-white/80",
-                  )}
-                  onClick={() =>
-                    setCreateDraft((current) => ({ ...current, scope: "pool" }))
-                  }
-                >
-                  指定 Pool
-                </button>
-              </div>
-            </div>
-            {createDraft.scope === "pool" ? (
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-moon-700">
-                  Pool
-                </label>
-                <Select
-                  value={createDraft.poolId}
-                  onValueChange={(value) =>
-                    setCreateDraft((current) => ({
-                      ...current,
-                      poolId: value ?? "",
-                    }))
-                  }
-                >
-                  <SelectTrigger className="h-9 w-full rounded-lg border-moon-200/65 bg-white/72 px-3 text-sm text-moon-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.52)] hover:border-moon-250/80 hover:bg-white/82 focus-visible:border-lunar-300/70 focus-visible:ring-lunar-200/45">
-                    <SelectValue placeholder="选择 Pool" />
-                  </SelectTrigger>
-                  <SelectContent
-                    sideOffset={2}
-                    align="start"
-                    className="w-(--anchor-width) rounded-[1rem] border border-moon-200/70 bg-white/95 p-1 shadow-[0_20px_44px_-28px_rgba(74,68,108,0.34)]"
-                  >
-                    {pools.map((pool) => (
-                      <SelectItem
-                        key={pool.id}
-                        value={String(pool.id)}
-                        className="rounded-[0.8rem] px-3 py-2 text-sm text-moon-700 focus:bg-lunar-100/80 focus:text-moon-800 data-[selected]:bg-lunar-100/70 data-[selected]:text-moon-800"
-                      >
-                        {pool.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : null}
-          </div>
-          <div className="flex items-center justify-end gap-3 border-t border-moon-200/55 bg-white/72 px-6 py-4">
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={() => void submitCreateToken()}>
-              Create Token
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <Dialog
         open={Boolean(editingToken)}
@@ -999,15 +719,6 @@ export default function SettingsPage() {
         variant="default"
         onConfirm={confirmRegenerateToken}
       />
-
-      <ConfirmDialog
-        open={Boolean(deleteToken)}
-        onOpenChange={(open) => !open && setDeleteToken(null)}
-        title="删除 Token"
-        description={`删除后，${deleteToken?.name ?? "该 Token"} 将不再可用。`}
-        onConfirm={confirmDeleteToken}
-      />
-
     </div>
   );
 }
@@ -1092,46 +803,34 @@ function SettingsNumericRow({
   );
 }
 
-function TokenGroup({
-  title,
-  tokens,
-  emptyText,
-  poolNameMap,
+function PoolCredentialsTable({
+  credentials,
   revealedTokens,
   visibleTokenIds,
   highlightedTokenId,
   onCopy,
   onReveal,
   onEdit,
-  onToggleEnabled,
   onRegenerate,
-  onDelete,
 }: {
-  title: string;
-  tokens: AccessToken[];
-  emptyText?: string;
-  poolNameMap: Record<number, string>;
+  credentials: { pool: Pool; token: AccessToken | null }[];
   revealedTokens: Record<number, string>;
   visibleTokenIds: number[];
   highlightedTokenId: number | null;
   onCopy: (token: AccessToken) => void;
   onReveal: (token: AccessToken) => void;
   onEdit: (token: AccessToken) => void;
-  onToggleEnabled: (token: AccessToken) => void;
   onRegenerate: (token: AccessToken) => void;
-  onDelete: (token: AccessToken) => void;
 }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm font-medium text-moon-800">{title}</p>
-        <p className="text-xs text-moon-350">{tokens.length} tokens</p>
+        <p className="text-sm font-medium text-moon-800">Pool access</p>
+        <p className="text-xs text-moon-350">{credentials.length} pools</p>
       </div>
-      {tokens.length === 0 ? (
+      {credentials.length === 0 ? (
         <div className="border-y border-moon-200/30 py-5">
-          <p className="text-sm text-moon-400">
-            {emptyText ?? "当前分组为空。"}
-          </p>
+          <p className="text-sm text-moon-400">还没有 Pool，创建 Pool 后会自动生成访问凭证。</p>
         </div>
       ) : (
         <div className="border-y border-moon-200/30">
@@ -1153,26 +852,18 @@ function TokenGroup({
               </p>
             ))}
           </div>
-          {tokens.map((token) => (
-            <TokenRow
-              key={token.id}
+          {credentials.map(({ pool, token }) => (
+            <PoolCredentialRow
+              key={pool.id}
+              pool={pool}
               token={token}
-              ownerLabel={
-                token.pool_id
-                  ? (poolNameMap[token.pool_id] ??
-                    token.pool_label ??
-                    `Pool #${token.pool_id}`)
-                  : "Global"
-              }
-              visible={visibleTokenIds.includes(token.id)}
-              revealedValue={revealedTokens[token.id]}
-              highlighted={highlightedTokenId === token.id}
-              onCopy={() => onCopy(token)}
-              onReveal={() => onReveal(token)}
-              onEdit={() => onEdit(token)}
-              onToggleEnabled={() => onToggleEnabled(token)}
-              onRegenerate={() => onRegenerate(token)}
-              onDelete={() => onDelete(token)}
+              visible={token ? visibleTokenIds.includes(token.id) : false}
+              revealedValue={token ? revealedTokens[token.id] : undefined}
+              highlighted={token ? highlightedTokenId === token.id : false}
+              onCopy={token ? () => onCopy(token) : undefined}
+              onReveal={token ? () => onReveal(token) : undefined}
+              onEdit={token ? () => onEdit(token) : undefined}
+              onRegenerate={token ? () => onRegenerate(token) : undefined}
             />
           ))}
         </div>
@@ -1181,38 +872,36 @@ function TokenGroup({
   );
 }
 
-function TokenRow({
+function PoolCredentialRow({
+  pool,
   token,
-  ownerLabel,
   visible,
   revealedValue,
   highlighted = false,
   onCopy,
   onReveal,
   onEdit,
-  onToggleEnabled,
   onRegenerate,
-  onDelete,
 }: {
-  token: AccessToken;
-  ownerLabel: string;
+  pool: Pool;
+  token: AccessToken | null;
   visible: boolean;
   revealedValue?: string;
   highlighted?: boolean;
-  onCopy: () => void;
-  onReveal: () => void;
-  onEdit: () => void;
-  onToggleEnabled: () => void;
-  onRegenerate: () => void;
-  onDelete: () => void;
+  onCopy?: () => void;
+  onReveal?: () => void;
+  onEdit?: () => void;
+  onRegenerate?: () => void;
 }) {
-  const displayToken = visible
-    ? (revealedValue ?? token.token_masked)
-    : token.token_masked;
+  const displayToken = token
+    ? visible
+      ? (revealedValue ?? token.token_masked)
+      : token.token_masked
+    : "凭证未就绪，刷新后重试";
 
   return (
     <div
-      id={`access-token-${token.id}`}
+      id={token ? `access-token-${token.id}` : undefined}
       className={cn(
         "grid gap-4 border-b border-moon-200/20 py-3.5 last:border-b-0 xl:items-start xl:gap-x-4",
         TOKEN_GRID_COLUMNS,
@@ -1223,30 +912,26 @@ function TokenRow({
           "rounded-[0.9rem] bg-lunar-100/45 ring-2 ring-inset ring-lunar-300/70 transition-colors",
       )}
     >
-      <InlineMeta label="名称" value={token.name} strong />
+      <InlineMeta label="Pool" value={pool.label} strong />
+      <InlineMeta label="名称" value={token?.name ?? "自动创建中"} />
       <InlineMeta
         label="Token"
-        value={displayToken || "--"}
+        value={displayToken}
         mono
         muted={!visible}
         nowrap
       />
-      <InlineMeta label="创建时间" value={shortDate(token.created_at)} />
       <InlineMeta
-        label="状态"
-        value={
-          <StatusBadge ok={token.enabled}>
-            {token.enabled ? "Enabled" : "Disabled"}
-          </StatusBadge>
-        }
+        label="Last Used"
+        value={token?.last_used_at ? shortDate(token.last_used_at) : "Never"}
       />
-      <InlineMeta label="归属" value={ownerLabel} />
       <div className="flex min-w-0 flex-nowrap items-center justify-start gap-1.5 overflow-hidden xl:self-start">
         <Button
           variant="ghost"
           size="sm"
           className="shrink-0 rounded-full px-2.5 text-moon-500"
           onClick={onCopy}
+          disabled={!token}
         >
           <Copy className="size-3.5" />
           Copy
@@ -1256,6 +941,7 @@ function TokenRow({
           size="sm"
           className="shrink-0 rounded-full px-2.5 text-moon-500"
           onClick={onReveal}
+          disabled={!token}
         >
           {visible ? (
             <EyeOff className="size-3.5" />
@@ -1277,25 +963,13 @@ function TokenRow({
             <MoreHorizontal className="size-4" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuItem onClick={onEdit}>
+            <DropdownMenuItem onClick={onEdit} disabled={!token}>
               <PencilLine className="size-4" />
               Edit name
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onToggleEnabled}>
-              <CircleDot className="size-4" />
-              {token.enabled ? "Disable" : "Enable"}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onRegenerate}>
+            <DropdownMenuItem onClick={onRegenerate} disabled={!token}>
               <WandSparkles className="size-4" />
               Regenerate
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={onDelete}
-              className="text-status-red focus:text-status-red"
-            >
-              <Trash2 className="size-4" />
-              Delete
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

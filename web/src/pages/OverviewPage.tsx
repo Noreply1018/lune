@@ -1,24 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EmptyState from "@/components/EmptyState";
-import EnvSnippetsDialog from "@/components/EnvSnippetsDialog";
 import ErrorState from "@/components/ErrorState";
-import QrCodeDialog from "@/components/QrCodeDialog";
 import { useAdminUI } from "@/components/AdminUI";
-import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { ensureArray, getAccountHealth, getApiBaseUrl } from "@/lib/lune";
+import { ensureArray, getAccountHealth } from "@/lib/lune";
 import { useRouter } from "@/lib/router";
 import type {
   Overview,
   OverviewAlert,
   Pool,
   PoolDetailResponse,
-  RevealedAccessToken,
 } from "@/lib/types";
 import OrbitCanvas, { type OrbitPool } from "./OverviewPage/OrbitCanvas";
-import StardustGlobalAccess from "./OverviewPage/StardustGlobalAccess";
 import MoonInscription from "./OverviewPage/MoonInscription";
 import AlertConstellation from "./OverviewPage/AlertConstellation";
 import PhaseReveal from "./OverviewPage/PhaseReveal";
@@ -82,16 +77,10 @@ export default function OverviewPage() {
   const [poolDetails, setPoolDetails] = useState<Record<number, PoolDetailResponse>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [snippetsOpen, setSnippetsOpen] = useState(false);
-  const [qrOpen, setQrOpen] = useState(false);
-  const [revealedGlobalToken, setRevealedGlobalToken] = useState<string | null>(null);
   const [zoomScale, setZoomScale] = useState(1);
   const [phaseRevealAt, setPhaseRevealAt] = useState<number | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => loadDismissed());
   const canvasRef = useRef<HTMLDivElement>(null);
-
-  const baseUrl = getApiBaseUrl();
-  const hasGlobalToken = Boolean(overview?.global_token_id);
 
   const load = useCallback(async (signal: { cancelled: boolean }) => {
     setLoading(true);
@@ -141,10 +130,6 @@ export default function OverviewPage() {
   }, [dataVersion, load]);
 
   useEffect(() => {
-    setRevealedGlobalToken(null);
-  }, [overview?.global_token_id]);
-
-  useEffect(() => {
     if (loading || error || !pools.length) return;
     const el = canvasRef.current;
     if (!el) return;
@@ -159,13 +144,6 @@ export default function OverviewPage() {
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
   }, [loading, error, pools.length]);
-
-  const firstPoolModel = useMemo(() => {
-    for (const pool of pools) {
-      if (pool.enabled && pool.models.length > 0) return pool.models[0];
-    }
-    return undefined;
-  }, [pools]);
 
   const orbitPools = useMemo(() => poolsToOrbit(pools, poolDetails), [pools, poolDetails]);
   const alerts = overview?.alerts ?? [];
@@ -203,54 +181,6 @@ export default function OverviewPage() {
       saveDismissed(next);
     }
   }, [alerts]);
-
-  async function revealGlobalTokenValue(): Promise<string> {
-    if (revealedGlobalToken) return revealedGlobalToken;
-    const revealed = await api.post<RevealedAccessToken>("/tokens/global/reveal");
-    setRevealedGlobalToken(revealed.token);
-    return revealed.token;
-  }
-
-  async function copyToClipboard(value: string) {
-    await navigator.clipboard.writeText(value);
-  }
-
-  async function copyGlobalToken() {
-    try {
-      const token = await revealGlobalTokenValue();
-      await copyToClipboard(token);
-      toast("已复制 Token", "success");
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "复制失败", "error");
-    }
-  }
-
-  async function copyBaseUrl() {
-    try {
-      await copyToClipboard(baseUrl);
-      toast("已复制 API 地址", "success");
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "复制失败", "error");
-    }
-  }
-
-  async function openSnippetsWithToken() {
-    try {
-      await revealGlobalTokenValue();
-      setSnippetsOpen(true);
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "读取全局 Token 失败", "error");
-    }
-  }
-
-  async function openQrWithToken() {
-    try {
-      await revealGlobalTokenValue();
-      setQrOpen(true);
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "读取全局 Token 失败", "error");
-    }
-  }
 
   if (loading) {
     return (
@@ -341,34 +271,6 @@ export default function OverviewPage() {
         />
       </div>
 
-      {/* stardust global access at bottom right */}
-      <div className="absolute bottom-5 right-6 z-10 text-right">
-        <StardustGlobalAccess
-          baseUrl={baseUrl}
-          tokenMasked={overview?.global_token_masked ?? ""}
-          hasToken={hasGlobalToken}
-          onCopyToken={copyGlobalToken}
-          onCopyBaseUrl={copyBaseUrl}
-          onOpenSnippets={openSnippetsWithToken}
-          onOpenQr={openQrWithToken}
-        />
-      </div>
-
-      <EnvSnippetsDialog
-        open={snippetsOpen}
-        onOpenChange={setSnippetsOpen}
-        title="Global Env Snippets"
-        baseUrl={baseUrl}
-        token={revealedGlobalToken ?? ""}
-        model={firstPoolModel}
-      />
-      <QrCodeDialog
-        open={qrOpen}
-        onOpenChange={setQrOpen}
-        title="Global Token QR"
-        baseUrl={baseUrl}
-        token={revealedGlobalToken ?? ""}
-      />
     </div>
   );
 }

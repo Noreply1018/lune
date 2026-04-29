@@ -63,9 +63,8 @@ export interface AccessToken {
   name: string;
   token?: string;
   token_masked: string;
-  pool_id: number | null;
+  pool_id: number;
   pool_label?: string;
-  is_global: boolean;
   enabled: boolean;
   created_at: string;
   updated_at: string;
@@ -76,7 +75,7 @@ export interface AccessTokenCreated {
   id: number;
   name: string;
   token: string;
-  pool_id: number | null;
+  pool_id: number;
 }
 
 export interface RevealedAccessToken extends AccessToken {
@@ -114,8 +113,6 @@ export interface Overview {
   requests_today: number;
   success_rate_today: number;
   avg_latency_today: number;
-  global_token_id: number | null;
-  global_token_masked: string;
   alerts: OverviewAlert[];
 }
 

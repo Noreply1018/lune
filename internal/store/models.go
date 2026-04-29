@@ -91,7 +91,6 @@ type AccessToken struct {
 
 	// computed fields
 	TokenMasked string `json:"token_masked"`
-	IsGlobal    bool   `json:"is_global"`
 	PoolLabel   string `json:"pool_label,omitempty"`
 }
 
@@ -179,17 +178,15 @@ type UsageLogPage struct {
 }
 
 type Overview struct {
-	PoolsTotal        int     `json:"pools_total"`
-	PoolsHealthy      int     `json:"pools_healthy"`
-	AccountsTotal     int     `json:"accounts_total"`
-	AccountsHealthy   int     `json:"accounts_healthy"`
-	ModelsTotal       int     `json:"models_total"`
-	RequestsToday     int64   `json:"requests_today"`
-	SuccessRateToday  float64 `json:"success_rate_today"`
-	AvgLatencyToday   float64 `json:"avg_latency_today"`
-	GlobalTokenID     *int64  `json:"global_token_id,omitempty"`
-	GlobalTokenMasked string  `json:"global_token_masked"`
-	Alerts            []Alert `json:"alerts"`
+	PoolsTotal       int     `json:"pools_total"`
+	PoolsHealthy     int     `json:"pools_healthy"`
+	AccountsTotal    int     `json:"accounts_total"`
+	AccountsHealthy  int     `json:"accounts_healthy"`
+	ModelsTotal      int     `json:"models_total"`
+	RequestsToday    int64   `json:"requests_today"`
+	SuccessRateToday float64 `json:"success_rate_today"`
+	AvgLatencyToday  float64 `json:"avg_latency_today"`
+	Alerts           []Alert `json:"alerts"`
 }
 
 type Alert struct {

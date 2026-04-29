@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 const tokenColumns = `id, name, token, pool_id, enabled, created_at, updated_at, last_used_at`
@@ -59,7 +60,18 @@ func (s *Store) GetTokenByNameAndPool(name string, poolID *int64) (*AccessToken,
 	return token, err
 }
 
+func defaultPoolTokenName(poolLabel string) string {
+	name := strings.TrimSpace(poolLabel)
+	if name == "" {
+		return "pool-token"
+	}
+	return name + "-token"
+}
+
 func (s *Store) CreateToken(t *AccessToken) (int64, error) {
+	if t.PoolID == nil {
+		return 0, fmt.Errorf("pool_id is required")
+	}
 	if t.Token == "" {
 		tok, err := generateToken()
 		if err != nil {
@@ -77,26 +89,11 @@ func (s *Store) CreateToken(t *AccessToken) (int64, error) {
 	return res.LastInsertId()
 }
 
-func (s *Store) UpdateToken(id int64, t *AccessToken) error {
+func (s *Store) UpdateTokenName(id int64, name string) error {
 	_, err := s.db.Exec(
-		`UPDATE access_tokens SET name=?, pool_id=?, enabled=?, updated_at=datetime('now') WHERE id=?`,
-		t.Name, t.PoolID, t.Enabled, id,
+		`UPDATE access_tokens SET name=?, updated_at=datetime('now') WHERE id=?`,
+		name, id,
 	)
-	return err
-}
-
-func (s *Store) EnableToken(id int64) error {
-	_, err := s.db.Exec(`UPDATE access_tokens SET enabled=1, updated_at=datetime('now') WHERE id=?`, id)
-	return err
-}
-
-func (s *Store) DisableToken(id int64) error {
-	_, err := s.db.Exec(`UPDATE access_tokens SET enabled=0, updated_at=datetime('now') WHERE id=?`, id)
-	return err
-}
-
-func (s *Store) DeleteToken(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM access_tokens WHERE id=?`, id)
 	return err
 }
 
@@ -163,51 +160,147 @@ func (s *Store) ListTokensByPool(poolID int64) ([]AccessToken, error) {
 	return tokens, rows.Err()
 }
 
-func (s *Store) ListGlobalTokens() ([]AccessToken, error) {
-	rows, err := s.db.Query(`SELECT ` + tokenColumns + ` FROM access_tokens WHERE pool_id IS NULL ORDER BY id`)
+func (s *Store) EnsurePoolToken(poolID int64) (*AccessToken, error) {
+	pool, err := s.GetPool(poolID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var tokens []AccessToken
-	for rows.Next() {
-		t, err := scanTokenRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		tokens = append(tokens, *t)
-	}
-	return tokens, rows.Err()
-}
-
-// EnsureDefaultGlobalToken creates a default global token if no tokens exist.
-// Returns the token (existing or newly created), or nil if tokens already exist.
-func (s *Store) EnsureDefaultGlobalToken() (*AccessToken, error) {
-	count, err := s.CountTokens()
-	if err != nil {
-		return nil, err
-	}
-	if count > 0 {
+	if pool == nil {
 		return nil, nil
 	}
-
-	tok, err := generateToken()
+	tokens, err := s.ListTokensByPool(poolID)
 	if err != nil {
 		return nil, err
 	}
-
-	t := &AccessToken{
-		Name:    "default",
-		Token:   tok,
-		PoolID:  nil,
-		Enabled: true,
+	if len(tokens) > 0 {
+		if !tokens[0].Enabled {
+			if _, err := s.db.Exec(`UPDATE access_tokens SET enabled=1, updated_at=datetime('now') WHERE id=?`, tokens[0].ID); err != nil {
+				return nil, err
+			}
+			tokens[0].Enabled = true
+		}
+		return &tokens[0], nil
 	}
-	id, err := s.CreateToken(t)
+	poolIDCopy := poolID
+	id, err := s.CreateToken(&AccessToken{
+		Name:    defaultPoolTokenName(pool.Label),
+		PoolID:  &poolIDCopy,
+		Enabled: true,
+	})
 	if err != nil {
 		return nil, err
 	}
 	return s.GetToken(id)
+}
+
+type reconcileTokenResult struct {
+	Created int
+	Skipped int
+}
+
+func (s *Store) ReconcilePoolTokens() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := reconcilePoolTokensTx(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func reconcilePoolTokensTx(tx *sql.Tx) (reconcileTokenResult, error) {
+	var result reconcileTokenResult
+	var tableCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('pools', 'access_tokens')`).Scan(&tableCount); err != nil {
+		return result, err
+	}
+	if tableCount < 2 {
+		return result, nil
+	}
+
+	if res, err := tx.Exec(`DELETE FROM access_tokens WHERE pool_id IS NULL`); err != nil {
+		return result, err
+	} else if n, err := res.RowsAffected(); err == nil {
+		result.Skipped += int(n)
+	}
+
+	rows, err := tx.Query(`SELECT id, label FROM pools ORDER BY id`)
+	if err != nil {
+		return result, err
+	}
+	type poolRow struct {
+		id    int64
+		label string
+	}
+	var pools []poolRow
+	for rows.Next() {
+		var p poolRow
+		if err := rows.Scan(&p.id, &p.label); err != nil {
+			rows.Close()
+			return result, err
+		}
+		pools = append(pools, p)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return result, err
+	}
+	rows.Close()
+
+	for _, pool := range pools {
+		tokenRows, err := tx.Query(`SELECT id FROM access_tokens WHERE pool_id = ? ORDER BY id`, pool.id)
+		if err != nil {
+			return result, err
+		}
+		var ids []int64
+		for tokenRows.Next() {
+			var id int64
+			if err := tokenRows.Scan(&id); err != nil {
+				tokenRows.Close()
+				return result, err
+			}
+			ids = append(ids, id)
+		}
+		if err := tokenRows.Err(); err != nil {
+			tokenRows.Close()
+			return result, err
+		}
+		tokenRows.Close()
+
+		if len(ids) == 0 {
+			value, err := generateToken()
+			if err != nil {
+				return result, err
+			}
+			if _, err := tx.Exec(
+				`INSERT INTO access_tokens (name, token, pool_id, enabled) VALUES (?, ?, ?, 1)`,
+				defaultPoolTokenName(pool.label), value, pool.id,
+			); err != nil {
+				return result, err
+			}
+			result.Created++
+			continue
+		}
+
+		keepID := ids[0]
+		if _, err := tx.Exec(`UPDATE access_tokens SET enabled=1, updated_at=datetime('now') WHERE id=?`, keepID); err != nil {
+			return result, err
+		}
+		for _, extraID := range ids[1:] {
+			if _, err := tx.Exec(`DELETE FROM access_tokens WHERE id=?`, extraID); err != nil {
+				return result, err
+			}
+			result.Skipped++
+		}
+	}
+
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_access_tokens_pool_unique ON access_tokens(pool_id)`); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func scanTokenRow(row rowScanner) (*AccessToken, error) {
@@ -230,7 +323,6 @@ func scanTokenRow(row rowScanner) (*AccessToken, error) {
 	}
 
 	// computed fields
-	t.IsGlobal = t.PoolID == nil
 	if len(t.Token) > 12 {
 		t.TokenMasked = t.Token[:12] + "..." + t.Token[len(t.Token)-4:]
 	} else {

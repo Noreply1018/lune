@@ -38,9 +38,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// determine path suffix
 	pathSuffix := extractPathSuffix(r.URL.Path)
 
+	var tokenPoolID *int64
+	if accessToken != nil && accessToken.PoolID != nil {
+		tokenPoolID = accessToken.PoolID
+	}
+
 	// GET /v1/models — handled locally
 	if pathSuffix == "models" && r.Method == http.MethodGet {
-		h.handleModels(w)
+		h.handleModels(w, tokenPoolID)
 		return
 	}
 
@@ -75,15 +80,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// v3: extract token's pool_id and optional force-account header
-	var tokenPoolID *int64
-	if accessToken != nil && accessToken.PoolID != nil {
-		tokenPoolID = accessToken.PoolID
-	}
-
 	var forceAccountID *int64
-	if v := r.Header.Get("X-Lune-Account-Id"); v != "" && tokenPoolID == nil {
-		// force-account only allowed for Global Tokens (no pool scope)
+	if v := r.Header.Get("X-Lune-Account-Id"); v != "" {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			forceAccountID = &id
 		}
@@ -232,9 +230,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logRequest(requestID, accessToken, model, lastResolved, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, lastSourceKind, attemptsUsed)
 }
 
-func (h *Handler) handleModels(w http.ResponseWriter) {
-	// v3: aggregate models from account_models via cache
-	modelNames := h.cache.GetAllModels()
+func (h *Handler) handleModels(w http.ResponseWriter, tokenPoolID *int64) {
+	modelNames := []string{}
+	if tokenPoolID != nil {
+		if models, err := h.store.GetPoolModels(*tokenPoolID); err == nil {
+			modelNames = models
+		}
+	}
 	type model struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`

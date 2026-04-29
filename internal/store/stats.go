@@ -75,19 +75,6 @@ func (s *Store) GetOverview() (*Overview, error) {
 		todayStart,
 	).Scan(&o.AvgLatencyToday)
 
-	// global token metadata (first token where pool_id IS NULL)
-	var tokenID int64
-	var tokenVal string
-	err = s.db.QueryRow(`SELECT id, token FROM access_tokens WHERE pool_id IS NULL AND enabled = 1 ORDER BY id LIMIT 1`).Scan(&tokenID, &tokenVal)
-	if err == nil && tokenVal != "" {
-		o.GlobalTokenID = &tokenID
-		if len(tokenVal) > 12 {
-			o.GlobalTokenMasked = tokenVal[:12] + "..." + tokenVal[len(tokenVal)-4:]
-		} else {
-			o.GlobalTokenMasked = tokenVal
-		}
-	}
-
 	// alerts: accounts expiring within 7 days
 	expiringRows, err := s.db.Query(`
 		SELECT a.id, a.label, a.cpa_expired_at,

@@ -142,25 +142,36 @@ func runImport(tx *sql.Tx, payload ConfigImportPayload) (*ConfigImportResult, er
 		if importedToken.Name == "" {
 			continue
 		}
+		if importedToken.PoolID == nil {
+			result.SkippedTokens++
+			continue
+		}
 
 		var mappedPoolID *int64
-		if importedToken.PoolID != nil {
-			if importedToken.PoolLabel == "" {
-				return nil, fmt.Errorf("token %q references a pool but has no pool_label", importedToken.Name)
+		if importedToken.PoolLabel == "" {
+			return nil, fmt.Errorf("token %q references a pool but has no pool_label", importedToken.Name)
+		}
+		poolID, ok := poolIDByLabel[importedToken.PoolLabel]
+		if !ok {
+			existingPool, err := getPoolByLabelTx(tx, importedToken.PoolLabel)
+			if err != nil {
+				return nil, err
 			}
-			poolID, ok := poolIDByLabel[importedToken.PoolLabel]
-			if !ok {
-				existingPool, err := getPoolByLabelTx(tx, importedToken.PoolLabel)
-				if err != nil {
-					return nil, err
-				}
-				if existingPool == nil {
-					return nil, fmt.Errorf("pool %q not found for token %q", importedToken.PoolLabel, importedToken.Name)
-				}
-				poolID = existingPool.ID
-				poolIDByLabel[importedToken.PoolLabel] = poolID
+			if existingPool == nil {
+				return nil, fmt.Errorf("pool %q not found for token %q", importedToken.PoolLabel, importedToken.Name)
 			}
-			mappedPoolID = &poolID
+			poolID = existingPool.ID
+			poolIDByLabel[importedToken.PoolLabel] = poolID
+		}
+		mappedPoolID = &poolID
+
+		var poolTokenCount int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM access_tokens WHERE pool_id = ?`, poolID).Scan(&poolTokenCount); err != nil {
+			return nil, err
+		}
+		if poolTokenCount > 0 {
+			result.SkippedTokens++
+			continue
 		}
 
 		existing, err := getTokenByNameAndPoolTx(tx, importedToken.Name, mappedPoolID)
@@ -184,6 +195,13 @@ func runImport(tx *sql.Tx, payload ConfigImportPayload) (*ConfigImportResult, er
 		}
 		result.CreatedTokens++
 	}
+
+	reconcileResult, err := reconcilePoolTokensTx(tx)
+	if err != nil {
+		return nil, err
+	}
+	result.CreatedTokens += reconcileResult.Created
+	result.SkippedTokens += reconcileResult.Skipped
 
 	for key, value := range payload.Settings {
 		if key == "admin_token" || !syscfg.IsAllowedSettingKey(key) {

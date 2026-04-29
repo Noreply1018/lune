@@ -155,11 +155,8 @@ func New(cfg Config) (*App, error) {
 
 	cache := store.NewRoutingCache(st)
 
-	// ensure a default global token exists
-	if tok, err := st.EnsureDefaultGlobalToken(); err != nil {
-		slog.Error("ensure default global token", "err", err)
-	} else if tok != nil {
-		slog.Info("default global token created", "token", tok.TokenMasked)
+	if err := st.ReconcilePoolTokens(); err != nil {
+		slog.Error("reconcile pool tokens", "err", err)
 	}
 
 	return &App{

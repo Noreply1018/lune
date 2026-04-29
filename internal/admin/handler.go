@@ -99,14 +99,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 
 	// Tokens
 	handle("GET /admin/api/tokens", h.listTokens)
-	handle("POST /admin/api/tokens", h.createToken)
-	handle("POST /admin/api/tokens/global/reveal", h.revealGlobalToken)
 	handle("POST /admin/api/tokens/{id}/reveal", h.revealToken)
 	handle("PUT /admin/api/tokens/{id}", h.updateToken)
-	handle("POST /admin/api/tokens/{id}/enable", h.enableToken)
-	handle("POST /admin/api/tokens/{id}/disable", h.disableToken)
 	handle("POST /admin/api/tokens/{id}/regenerate", h.regenerateToken)
-	handle("DELETE /admin/api/tokens/{id}", h.deleteToken)
 
 	// Settings
 	handle("GET /admin/api/settings", h.getSettings)
@@ -500,6 +495,12 @@ func (h *Handler) getPoolDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if _, err := h.store.EnsurePoolToken(id); err != nil {
+		h.internalError(w, err)
+		return
+	}
+	h.cache.Invalidate()
+
 	tokens, err := h.store.ListTokensByPool(id)
 	if err != nil {
 		h.internalError(w, err)
@@ -511,7 +512,6 @@ func (h *Handler) getPoolDetail(w http.ResponseWriter, r *http.Request) {
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		tokens[i].Token = ""
-		tokens[i].IsGlobal = tokens[i].PoolID == nil
 		tokens[i].PoolLabel = pool.Label
 	}
 
@@ -724,10 +724,19 @@ func (h *Handler) listPoolTokens(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
+	if _, err := h.store.EnsurePoolToken(poolID); err != nil {
+		h.internalError(w, err)
+		return
+	}
+	h.cache.Invalidate()
+	tokens, err = h.store.ListTokensByPool(poolID)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
 	for i := range tokens {
 		tokens[i].TokenMasked = maskKey(tokens[i].Token)
 		tokens[i].Token = ""
-		tokens[i].IsGlobal = tokens[i].PoolID == nil
 		if tokens[i].PoolID != nil && pool != nil {
 			tokens[i].PoolLabel = pool.Label
 		}
@@ -765,62 +774,6 @@ func (h *Handler) listTokens(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteList(w, tokens, len(tokens))
 }
 
-func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
-	var req store.AccessToken
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
-		return
-	}
-	req.Name = strings.TrimSpace(req.Name)
-	if req.Name == "" {
-		webutil.WriteAdminError(w, 400, "bad_request", "name is required")
-		return
-	}
-	// Force server-side generation: never trust a client-supplied value for
-	// the token column, otherwise any admin-authenticated caller could plant
-	// a known secret and bypass the random-token entropy contract.
-	req.Token = ""
-	id, err := h.store.CreateToken(&req)
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	h.cache.Invalidate()
-	// Fetch the persisted row so the response carries real created_at /
-	// updated_at / token_masked values; then reattach the plaintext token
-	// for the one-shot reveal-on-create UX.
-	created, err := h.store.GetToken(id)
-	if err != nil || created == nil {
-		h.internalError(w, err)
-		return
-	}
-	created.Token = req.Token
-	created.IsGlobal = created.PoolID == nil
-	webutil.WriteData(w, 201, created)
-}
-
-func (h *Handler) revealGlobalToken(w http.ResponseWriter, r *http.Request) {
-	tokens, err := h.store.ListGlobalTokens()
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	var token *store.AccessToken
-	for i := range tokens {
-		if tokens[i].Enabled {
-			token = &tokens[i]
-			break
-		}
-	}
-	if token == nil {
-		webutil.WriteAdminError(w, 404, "not_found", "global token not found")
-		return
-	}
-	token.TokenMasked = maskKey(token.Token)
-	token.IsGlobal = true
-	webutil.WriteData(w, 200, token)
-}
-
 func (h *Handler) revealToken(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
@@ -836,7 +789,6 @@ func (h *Handler) revealToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token.TokenMasked = maskKey(token.Token)
-	token.IsGlobal = token.PoolID == nil
 	if token.PoolID != nil {
 		if pool, err := h.store.GetPool(*token.PoolID); err == nil && pool != nil {
 			token.PoolLabel = pool.Label
@@ -869,59 +821,14 @@ func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "name is required")
 		return
 	}
-	if err := h.store.UpdateToken(id, &req); err != nil {
+	if err := h.store.UpdateTokenName(id, req.Name); err != nil {
 		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
-	// UpdateToken only writes name/pool_id/enabled. The real token value is
-	// unchanged, so echo back the database's masked form rather than masking
-	// whatever the client happened to put in req.Token.
 	existing.Name = req.Name
-	existing.PoolID = req.PoolID
-	existing.Enabled = req.Enabled
-	existing.IsGlobal = existing.PoolID == nil
 	existing.Token = ""
 	webutil.WriteData(w, 200, existing)
-}
-
-func (h *Handler) enableToken(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(w, r)
-	if !ok {
-		return
-	}
-	if err := h.store.EnableToken(id); err != nil {
-		h.internalError(w, err)
-		return
-	}
-	h.cache.Invalidate()
-	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
-}
-
-func (h *Handler) disableToken(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(w, r)
-	if !ok {
-		return
-	}
-	if err := h.store.DisableToken(id); err != nil {
-		h.internalError(w, err)
-		return
-	}
-	h.cache.Invalidate()
-	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
-}
-
-func (h *Handler) deleteToken(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(w, r)
-	if !ok {
-		return
-	}
-	if err := h.store.DeleteToken(id); err != nil {
-		h.internalError(w, err)
-		return
-	}
-	h.cache.Invalidate()
-	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
 }
 
 func (h *Handler) regenerateToken(w http.ResponseWriter, r *http.Request) {
@@ -940,7 +847,6 @@ func (h *Handler) regenerateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	h.cache.Invalidate()
 	token.TokenMasked = maskKey(token.Token)
-	token.IsGlobal = token.PoolID == nil
 	if token.PoolID != nil {
 		if pool, err := h.store.GetPool(*token.PoolID); err == nil && pool != nil {
 			token.PoolLabel = pool.Label

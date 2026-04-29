@@ -6,7 +6,7 @@ Lune is a personal-first LLM gateway with an OpenAI-compatible API, a built-in a
 
 - OpenAI-compatible gateway for `/v1/*` and `/openai/v1/*`
 - Pool-based routing across direct provider accounts and CPA services
-- Embedded admin UI for account, pool, token, and settings management
+- Embedded admin UI for account, pool, Pool credential, and settings management
 - SQLite persistence in a single self-hosted container workflow
 - Prebuilt multi-arch images on both GHCR and Docker Hub
 
@@ -32,6 +32,8 @@ http://127.0.0.1:7788/admin
 ```
 
 Do not publish port `8317`; it is only used inside the container for Lune-to-CPA traffic.
+
+After adding accounts, open a Pool detail page and use **Codex Setup** to generate the Codex CLI `config.toml` snippet for that Pool.
 
 ## Compose quick start
 
