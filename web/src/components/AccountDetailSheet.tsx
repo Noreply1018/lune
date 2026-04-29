@@ -86,7 +86,9 @@ export default function AccountDetailSheet({
   const health = getAccountHealth(account);
   const isCodexCpa =
     account.source_kind === "cpa" && account.cpa_provider.toLowerCase() === "codex";
-  const expiry = isCodexCpa ? null : getExpiryMeta(account.cpa_expired_at ?? null);
+  const expiry = getExpiryMeta(
+    isCodexCpa ? account.cpa_subscription_expires_at ?? null : account.cpa_expired_at ?? null,
+  );
   const quota = parseQuotaDisplay(account.quota_display ?? "");
   const codexQuota = parseCodexQuota(account);
   const models = ensureArray(account.models);
@@ -178,7 +180,8 @@ export default function AccountDetailSheet({
                 <DebugPanel
                   accountId={account.id}
                   baseUrl={account.runtime?.base_url || account.base_url || "--"}
-                  expiry={isCodexCpa ? null : account.cpa_expired_at ?? null}
+                  subscriptionExpiry={isCodexCpa ? account.cpa_subscription_expires_at ?? null : null}
+                  credentialExpiry={account.cpa_expired_at ?? null}
                   lastCheckedAt={account.last_checked_at ?? null}
                   lastError={account.last_error ?? null}
                 />
@@ -597,13 +600,15 @@ function PlaygroundPanel({
 function DebugPanel({
   accountId,
   baseUrl,
-  expiry,
+  subscriptionExpiry,
+  credentialExpiry,
   lastCheckedAt,
   lastError,
 }: {
   accountId: number;
   baseUrl: string;
-  expiry: string | null;
+  subscriptionExpiry: string | null;
+  credentialExpiry: string | null;
   lastCheckedAt: string | null;
   lastError: string | null;
 }) {
@@ -611,10 +616,16 @@ function DebugPanel({
     <div className="space-y-4 text-sm">
       <DebugRow label="Account ID" value={String(accountId)} copyable />
       <DebugRow label="Runtime Base URL" value={baseUrl} copyable breakAll />
-      {expiry ? (
+      {subscriptionExpiry ? (
+        <DebugRow
+          label="ChatGPT Subscription Expires"
+          value={`${subscriptionExpiry} · ${relativeTime(subscriptionExpiry)}`}
+        />
+      ) : null}
+      {credentialExpiry ? (
         <DebugRow
           label="CPA Credential Expires"
-          value={`${expiry} · ${relativeTime(expiry)}`}
+          value={`${credentialExpiry} · ${relativeTime(credentialExpiry)}`}
         />
       ) : null}
       <DebugRow label="Last Checked" value={relativeTime(lastCheckedAt) || "--"} />

@@ -34,11 +34,12 @@ func TestListSystemNotificationsHandlesRFC3339Expiry(t *testing.T) {
 	codexExpiringSoon := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
 
 	if _, err := st.db.Exec(
-		`INSERT INTO accounts (label, source_kind, cpa_provider, cpa_expired_at) VALUES (?, 'cpa', '', ?), (?, 'cpa', '', ?), (?, 'cpa', '', ?), (?, 'cpa', 'codex', ?)`,
+		`INSERT INTO accounts (label, source_kind, cpa_provider, cpa_expired_at, cpa_subscription_expires_at) VALUES (?, 'cpa', '', ?, ''), (?, 'cpa', '', ?, ''), (?, 'cpa', '', ?, ''), (?, 'cpa', 'codex', ?, ''), (?, 'cpa', 'codex', '', ?)`,
 		"expired-account", expiredAt,
 		"expiring-account", expiringSoon,
 		"future-account", outsideWindow,
 		"codex-credential", codexExpiringSoon,
+		"codex-subscription", codexExpiringSoon,
 	); err != nil {
 		t.Fatalf("seed accounts: %v", err)
 	}
@@ -47,8 +48,8 @@ func TestListSystemNotificationsHandlesRFC3339Expiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list notifications: %v", err)
 	}
-	if len(notifications) != 2 {
-		t.Fatalf("expected 2 notifications, got %d", len(notifications))
+	if len(notifications) != 3 {
+		t.Fatalf("expected 3 notifications, got %d", len(notifications))
 	}
 
 	byTitle := make(map[string]SystemNotification, len(notifications))
@@ -69,9 +70,10 @@ func TestOverviewExpiryAlertsIgnoreCodexCredentials(t *testing.T) {
 
 	expiringSoon := time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)
 	if _, err := st.db.Exec(
-		`INSERT INTO accounts (label, source_kind, cpa_provider, cpa_expired_at, enabled) VALUES (?, 'cpa', '', ?, 1), (?, 'cpa', 'Codex', ?, 1)`,
+		`INSERT INTO accounts (label, source_kind, cpa_provider, cpa_expired_at, cpa_subscription_expires_at, enabled) VALUES (?, 'cpa', '', ?, '', 1), (?, 'cpa', 'Codex', ?, '', 1), (?, 'cpa', 'Codex', '', ?, 1)`,
 		"claude-credential", expiringSoon,
 		"codex-credential", expiringSoon,
+		"codex-subscription", expiringSoon,
 	); err != nil {
 		t.Fatalf("seed accounts: %v", err)
 	}
@@ -80,11 +82,18 @@ func TestOverviewExpiryAlertsIgnoreCodexCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get overview: %v", err)
 	}
-	if len(overview.Alerts) != 1 {
-		t.Fatalf("expected one non-codex expiry alert, got %+v", overview.Alerts)
+	if len(overview.Alerts) != 2 {
+		t.Fatalf("expected non-codex and codex subscription expiry alerts, got %+v", overview.Alerts)
 	}
-	if overview.Alerts[0].Message != fmt.Sprintf("Account %q expires at %s", "claude-credential", expiringSoon) {
-		t.Fatalf("unexpected alert: %+v", overview.Alerts[0])
+	messages := map[string]bool{}
+	for _, alert := range overview.Alerts {
+		messages[alert.Message] = true
+	}
+	if !messages[fmt.Sprintf("Account %q expires at %s", "claude-credential", expiringSoon)] {
+		t.Fatalf("missing non-codex alert: %+v", overview.Alerts)
+	}
+	if !messages[fmt.Sprintf("Account %q expires at %s", "codex-subscription", expiringSoon)] {
+		t.Fatalf("missing codex subscription alert: %+v", overview.Alerts)
 	}
 }
 

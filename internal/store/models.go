@@ -11,15 +11,18 @@ type Account struct {
 	Provider string `json:"provider"`
 
 	// cpa fields
-	CpaServiceID     *int64 `json:"cpa_service_id,omitempty"`
-	CpaProvider      string `json:"cpa_provider,omitempty"`
-	CpaAccountKey    string `json:"cpa_account_key,omitempty"`
-	CpaEmail         string `json:"cpa_email,omitempty"`
-	CpaPlanType      string `json:"cpa_plan_type,omitempty"`
-	CpaOpenaiID      string `json:"cpa_openai_id,omitempty"`
-	CpaExpiredAt     string `json:"cpa_expired_at,omitempty"`
-	CpaLastRefreshAt string `json:"cpa_last_refresh_at,omitempty"`
-	CpaDisabled      bool   `json:"cpa_disabled,omitempty"`
+	CpaServiceID             *int64 `json:"cpa_service_id,omitempty"`
+	CpaProvider              string `json:"cpa_provider,omitempty"`
+	CpaAccountKey            string `json:"cpa_account_key,omitempty"`
+	CpaEmail                 string `json:"cpa_email,omitempty"`
+	CpaPlanType              string `json:"cpa_plan_type,omitempty"`
+	CpaOpenaiID              string `json:"cpa_openai_id,omitempty"`
+	CpaExpiredAt             string `json:"cpa_expired_at,omitempty"`
+	CpaLastRefreshAt         string `json:"cpa_last_refresh_at,omitempty"`
+	CpaDisabled              bool   `json:"cpa_disabled,omitempty"`
+	CpaSubscriptionExpiresAt string `json:"cpa_subscription_expires_at,omitempty"`
+	CpaSubscriptionFetchedAt string `json:"cpa_subscription_fetched_at,omitempty"`
+	CpaSubscriptionLastError string `json:"cpa_subscription_last_error,omitempty"`
 
 	// codex quota snapshot (updated by health loop)
 	CodexQuotaJSON      string `json:"codex_quota_json,omitempty"`

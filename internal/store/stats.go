@@ -77,7 +77,11 @@ func (s *Store) GetOverview() (*Overview, error) {
 
 	// alerts: accounts expiring within 7 days
 	expiringRows, err := s.db.Query(`
-		SELECT a.id, a.label, a.cpa_expired_at,
+		SELECT a.id, a.label,
+			CASE
+				WHEN lower(a.cpa_provider) = 'codex' THEN a.cpa_subscription_expires_at
+				ELSE a.cpa_expired_at
+			END AS expires_at,
 			COALESCE((
 				SELECT pm.pool_id
 				FROM pool_members pm
@@ -87,7 +91,12 @@ func (s *Store) GetOverview() (*Overview, error) {
 				LIMIT 1
 			), 0) AS pool_id
 		FROM accounts a
-		WHERE a.source_kind = 'cpa' AND lower(a.cpa_provider) != 'codex' AND a.cpa_expired_at != '' AND a.enabled = 1`,
+		WHERE a.source_kind = 'cpa'
+		  AND (
+		    (lower(a.cpa_provider) = 'codex' AND a.cpa_subscription_expires_at != '')
+		    OR (lower(a.cpa_provider) != 'codex' AND a.cpa_expired_at != '')
+		  )
+		  AND a.enabled = 1`,
 	)
 	if err == nil {
 		defer expiringRows.Close()

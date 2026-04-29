@@ -69,7 +69,11 @@ export default function AccountCard({
   );
   const isCodexCpa =
     account?.source_kind === "cpa" && account.cpa_provider.toLowerCase() === "codex";
-  const expiry = isCodexCpa ? null : getExpiryMeta(account?.cpa_expired_at ?? null);
+  const expiry = getExpiryMeta(
+    isCodexCpa
+      ? account?.cpa_subscription_expires_at ?? null
+      : account?.cpa_expired_at ?? null,
+  );
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
   // Every non-Codex account — direct as well as non-Codex CPA (e.g. Claude) —
   // gets the dual-row signal strip so both card variants share the same height.

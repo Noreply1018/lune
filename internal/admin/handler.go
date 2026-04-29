@@ -340,11 +340,19 @@ func (h *Handler) discoverModels(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		quotaErr = err.Error()
 	}
+	subscriptionRefreshed := false
+	subscriptionErr := ""
+	subscriptionRefreshed, err = h.healthChecker.RefreshCodexSubscription(r.Context(), *acc)
+	if err != nil {
+		subscriptionErr = err.Error()
+	}
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, map[string]any{
-		"models":          models,
-		"quota_refreshed": quotaRefreshed,
-		"quota_error":     quotaErr,
+		"models":                 models,
+		"quota_refreshed":        quotaRefreshed,
+		"quota_error":            quotaErr,
+		"subscription_refreshed": subscriptionRefreshed,
+		"subscription_error":     subscriptionErr,
 	})
 }
 

@@ -24,6 +24,9 @@ export interface Account {
   cpa_expired_at: string | null;
   cpa_last_refresh_at: string | null;
   cpa_disabled: boolean;
+  cpa_subscription_expires_at?: string | null;
+  cpa_subscription_fetched_at?: string | null;
+  cpa_subscription_last_error?: string;
   codex_quota_json?: string;
   codex_quota_fetched_at?: string;
   probe_models: string[];

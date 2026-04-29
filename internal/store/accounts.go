@@ -9,6 +9,7 @@ import (
 var accountColumns = `id, label, source_kind, base_url, api_key, provider,
 	cpa_service_id, cpa_provider, cpa_account_key, cpa_email, cpa_plan_type, cpa_openai_id,
 	cpa_expired_at, cpa_last_refresh_at, cpa_disabled,
+	cpa_subscription_expires_at, cpa_subscription_fetched_at, cpa_subscription_last_error,
 	codex_quota_json, codex_quota_fetched_at,
 	probe_models, last_probe_status, last_probe_at, last_probe_error,
 	enabled, status, notes, quota_display, last_checked_at, last_error, created_at, updated_at`
@@ -16,6 +17,7 @@ var accountColumns = `id, label, source_kind, base_url, api_key, provider,
 var accountColumnsWithAlias = `a.id, a.label, a.source_kind, a.base_url, a.api_key, a.provider,
 	a.cpa_service_id, a.cpa_provider, a.cpa_account_key, a.cpa_email, a.cpa_plan_type, a.cpa_openai_id,
 	a.cpa_expired_at, a.cpa_last_refresh_at, a.cpa_disabled,
+	a.cpa_subscription_expires_at, a.cpa_subscription_fetched_at, a.cpa_subscription_last_error,
 	a.codex_quota_json, a.codex_quota_fetched_at,
 	a.probe_models, a.last_probe_status, a.last_probe_at, a.last_probe_error,
 	a.enabled, a.status, a.notes, a.quota_display, a.last_checked_at, a.last_error, a.created_at, a.updated_at`
@@ -46,11 +48,13 @@ func (s *Store) CreateAccount(a *Account) (int64, error) {
 		`INSERT INTO accounts (label, source_kind, base_url, api_key, provider,
 			cpa_service_id, cpa_provider, cpa_account_key, cpa_email, cpa_plan_type, cpa_openai_id,
 			cpa_expired_at, cpa_last_refresh_at, cpa_disabled,
+			cpa_subscription_expires_at, cpa_subscription_fetched_at, cpa_subscription_last_error,
 			enabled, status, notes, quota_display)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Label, a.SourceKind, a.BaseURL, a.APIKey, a.Provider,
 		a.CpaServiceID, a.CpaProvider, a.CpaAccountKey, a.CpaEmail, a.CpaPlanType, a.CpaOpenaiID,
 		a.CpaExpiredAt, a.CpaLastRefreshAt, a.CpaDisabled,
+		a.CpaSubscriptionExpiresAt, a.CpaSubscriptionFetchedAt, a.CpaSubscriptionLastError,
 		a.Enabled, "healthy", a.Notes, a.QuotaDisplay,
 	)
 	if err != nil {
@@ -167,6 +171,22 @@ func (s *Store) UpdateAccountCodexQuota(id int64, quotaJSON, fetchedAt string) e
 	return err
 }
 
+func (s *Store) UpdateAccountQuotaDisplay(id int64, quotaDisplay string) error {
+	_, err := s.db.Exec(
+		`UPDATE accounts SET quota_display=?, updated_at=datetime('now') WHERE id=?`,
+		quotaDisplay, id,
+	)
+	return err
+}
+
+func (s *Store) UpdateAccountCpaSubscription(id int64, expiresAt, fetchedAt, lastError string) error {
+	_, err := s.db.Exec(
+		`UPDATE accounts SET cpa_subscription_expires_at=?, cpa_subscription_fetched_at=?, cpa_subscription_last_error=? WHERE id=?`,
+		expiresAt, fetchedAt, lastError, id,
+	)
+	return err
+}
+
 // UpdateAccountProbeModels persists the user's probe-model selection.
 // A nil slice is stored as "[]" so the column never holds NULL or an empty
 // string — scanAccountRow relies on that invariant.
@@ -229,6 +249,7 @@ func scanAccountRow(row rowScanner) (*Account, error) {
 		&a.ID, &a.Label, &a.SourceKind, &a.BaseURL, &a.APIKey, &a.Provider,
 		&cpaServiceID, &a.CpaProvider, &a.CpaAccountKey, &a.CpaEmail, &a.CpaPlanType, &a.CpaOpenaiID,
 		&a.CpaExpiredAt, &a.CpaLastRefreshAt, &cpaDisabled,
+		&a.CpaSubscriptionExpiresAt, &a.CpaSubscriptionFetchedAt, &a.CpaSubscriptionLastError,
 		&a.CodexQuotaJSON, &a.CodexQuotaFetchedAt,
 		&probeModelsJSON, &a.LastProbeStatus, &lastProbeAt, &a.LastProbeError,
 		&enabled, &a.Status, &a.Notes, &a.QuotaDisplay, &lastCheckedAt, &a.LastError, &createdAt, &updatedAt,

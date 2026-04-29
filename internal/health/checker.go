@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	degradedLatencyThreshold = 5 * time.Second
-	maxConcurrency           = 10
+	degradedLatencyThreshold       = 5 * time.Second
+	maxConcurrency                 = 10
+	codexSubscriptionFetchInterval = 6 * time.Hour
 )
 
 type Checker struct {
@@ -92,7 +93,9 @@ func (c *Checker) checkAll(ctx context.Context) {
 
 	// sync CPA metadata from auth files
 	c.syncCpaMetadata()
+	c.fetchDirectBalances(ctx)
 	c.fetchCodexQuotas(ctx)
+	c.fetchCodexSubscriptions(ctx)
 	c.pruneRequestLogs()
 
 	c.cache.Invalidate()
@@ -214,7 +217,7 @@ func (c *Checker) DiscoverModels(ctx context.Context, acc store.Account) ([]stri
 }
 
 func (c *Checker) RefreshCodexQuota(ctx context.Context, acc store.Account) (bool, error) {
-	if acc.SourceKind != "cpa" || acc.CpaProvider != "codex" {
+	if acc.SourceKind != "cpa" || strings.ToLower(acc.CpaProvider) != "codex" {
 		return false, nil
 	}
 	if !acc.Enabled || acc.CpaDisabled {
@@ -244,6 +247,39 @@ func (c *Checker) RefreshCodexQuota(ctx context.Context, acc store.Account) (boo
 		return false, err
 	}
 	if err := c.fetchOneCodexQuota(ctx, client, acc, authIndex); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (c *Checker) RefreshCodexSubscription(ctx context.Context, acc store.Account) (bool, error) {
+	if acc.SourceKind != "cpa" || strings.ToLower(acc.CpaProvider) != "codex" {
+		return false, nil
+	}
+	if !acc.Enabled || acc.CpaDisabled {
+		return false, nil
+	}
+	if acc.CpaServiceID == nil {
+		return false, fmt.Errorf("missing CPA service")
+	}
+	svc := c.cache.GetCpaService(*acc.CpaServiceID)
+	if svc == nil || !svc.Enabled {
+		return false, fmt.Errorf("CPA service unreachable")
+	}
+	managementKey := svc.ManagementKey
+	if managementKey == "" {
+		managementKey = c.managementKey
+	}
+	if managementKey == "" {
+		return false, fmt.Errorf("CPA management key is empty")
+	}
+
+	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
+	authIndex, err := c.findAuthIndex(ctx, client, acc.CpaAccountKey)
+	if err != nil {
+		return false, err
+	}
+	if err := c.fetchOneCodexSubscription(ctx, client, acc, authIndex); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -369,6 +405,66 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 	wg.Wait()
 }
 
+func (c *Checker) fetchCodexSubscriptions(ctx context.Context) {
+	svc := c.cache.GetCpaServiceSingle()
+	if svc == nil || !svc.Enabled {
+		return
+	}
+	managementKey := svc.ManagementKey
+	if managementKey == "" {
+		managementKey = c.managementKey
+	}
+	if managementKey == "" {
+		return
+	}
+
+	cutoff := time.Now().UTC().Add(-codexSubscriptionFetchInterval)
+	var targets []store.Account
+	for _, acc := range c.cache.GetAccounts() {
+		if acc.SourceKind != "cpa" || strings.ToLower(acc.CpaProvider) != "codex" {
+			continue
+		}
+		if !acc.Enabled || acc.CpaDisabled {
+			continue
+		}
+		if acc.CpaSubscriptionFetchedAt != "" {
+			if t, err := time.Parse("2006-01-02 15:04:05", acc.CpaSubscriptionFetchedAt); err == nil && t.After(cutoff) {
+				continue
+			}
+		}
+		targets = append(targets, acc)
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
+	keyToIndex, err := c.listAuthIndexes(ctx, client)
+	if err != nil {
+		slog.Warn("fetch codex subscriptions: list auth-files", "err", err)
+		return
+	}
+
+	sem := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+	for _, acc := range targets {
+		authIndex, ok := keyToIndex[acc.CpaAccountKey]
+		if !ok || authIndex == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(a store.Account, idx string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := c.fetchOneCodexSubscription(ctx, client, a, idx); err != nil {
+				slog.Warn("fetch codex subscription", "account_id", a.ID, "err", err)
+			}
+		}(acc, authIndex)
+	}
+	wg.Wait()
+}
+
 func (c *Checker) listAuthIndexes(ctx context.Context, client *cpa.ManagementClient) (map[string]string, error) {
 	files, err := client.ListAuthFiles(ctx)
 	if err != nil {
@@ -424,6 +520,42 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 	fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 	if err := c.store.UpdateAccountCodexQuota(acc.ID, body, fetchedAt); err != nil {
 		return fmt.Errorf("persist quota: %w", err)
+	}
+	c.cache.Invalidate()
+	return nil
+}
+
+func (c *Checker) fetchOneCodexSubscription(ctx context.Context, client *cpa.ManagementClient, acc store.Account, authIndex string) error {
+	header := map[string]string{
+		"Authorization": "Bearer $TOKEN$",
+	}
+	if acc.CpaOpenaiID != "" {
+		header["ChatGPT-Account-Id"] = acc.CpaOpenaiID
+	}
+	resp, err := client.APICall(ctx, authIndex, http.MethodGet, "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27", header)
+	fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	if err != nil {
+		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, err.Error())
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		msg := fmt.Sprintf("HTTP %d", resp.StatusCode)
+		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, msg)
+		return fmt.Errorf("%s", msg)
+	}
+	body := strings.TrimSpace(resp.Body)
+	if body == "" {
+		msg := "empty subscription response"
+		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, msg)
+		return fmt.Errorf("%s", msg)
+	}
+	expiresAt, err := parseCodexSubscriptionExpiry([]byte(body), acc.CpaOpenaiID)
+	if err != nil {
+		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, err.Error())
+		return err
+	}
+	if err := c.store.UpdateAccountCpaSubscription(acc.ID, expiresAt, fetchedAt, ""); err != nil {
+		return fmt.Errorf("persist subscription: %w", err)
 	}
 	c.cache.Invalidate()
 	return nil

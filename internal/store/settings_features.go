@@ -19,13 +19,19 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 
 	expiringDays := syscfg.ParsePositiveInt(settings["notification_expiring_days"], syscfg.DefaultNotificationExpiringDays)
 	rows, err := s.db.Query(
-		`SELECT id, label, cpa_expired_at
+		`SELECT id, label,
+		        CASE
+		          WHEN lower(cpa_provider) = 'codex' THEN cpa_subscription_expires_at
+		          ELSE cpa_expired_at
+		        END AS expires_at
 		 FROM accounts
 		 WHERE source_kind = 'cpa'
-		   AND lower(cpa_provider) != 'codex'
-		   AND cpa_expired_at != ''
+		   AND (
+		     (lower(cpa_provider) = 'codex' AND cpa_subscription_expires_at != '')
+		     OR (lower(cpa_provider) != 'codex' AND cpa_expired_at != '')
+		   )
 		   AND enabled = 1
-		 ORDER BY cpa_expired_at ASC, id ASC`,
+		 ORDER BY expires_at ASC, id ASC`,
 	)
 	if err != nil {
 		return nil, err

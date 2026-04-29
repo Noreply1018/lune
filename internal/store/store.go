@@ -19,7 +19,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 13
+const v3SchemaVersion = 14
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     cpa_expired_at      TEXT NOT NULL DEFAULT '',
     cpa_last_refresh_at TEXT NOT NULL DEFAULT '',
     cpa_disabled        INTEGER NOT NULL DEFAULT 0,
+    cpa_subscription_expires_at TEXT NOT NULL DEFAULT '',
+    cpa_subscription_fetched_at TEXT NOT NULL DEFAULT '',
+    cpa_subscription_last_error TEXT NOT NULL DEFAULT '',
     codex_quota_json    TEXT NOT NULL DEFAULT '',
     codex_quota_fetched_at TEXT NOT NULL DEFAULT '',
     probe_models        TEXT NOT NULL DEFAULT '[]',
@@ -271,6 +274,11 @@ func (s *Store) migrateV3(dbPath string) error {
 		if ver < 13 {
 			if err := s.migratePoolScopedAccessTokens(); err != nil {
 				return fmt.Errorf("migrate pool-scoped access tokens: %w", err)
+			}
+		}
+		if ver < 14 {
+			if err := s.migrateCpaSubscriptionColumns(); err != nil {
+				return fmt.Errorf("migrate CPA subscription columns: %w", err)
 			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
@@ -540,6 +548,39 @@ func (s *Store) migrateAttemptCountColumn() error {
 	}
 	s.schemaMu.Lock()
 	delete(s.schemaCache, "request_logs")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migrateCpaSubscriptionColumns() error {
+	exists, err := s.tableExists("accounts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	adds := []struct{ col, ddl string }{
+		{"cpa_subscription_expires_at", `ALTER TABLE accounts ADD COLUMN cpa_subscription_expires_at TEXT NOT NULL DEFAULT ''`},
+		{"cpa_subscription_fetched_at", `ALTER TABLE accounts ADD COLUMN cpa_subscription_fetched_at TEXT NOT NULL DEFAULT ''`},
+		{"cpa_subscription_last_error", `ALTER TABLE accounts ADD COLUMN cpa_subscription_last_error TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, a := range adds {
+		has, err := s.hasColumn("accounts", a.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.col, err)
+		}
+	}
+
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "accounts")
 	s.schemaMu.Unlock()
 	return nil
 }
