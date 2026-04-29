@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -20,7 +20,7 @@ import { toast } from "@/components/Feedback";
 import { useAdminUI } from "@/components/AdminUI";
 import { useRouter } from "@/lib/router";
 import { ApiError, api } from "@/lib/api";
-import type { CpaService, LoginSession, Pool } from "@/lib/types";
+import type { Account, CpaService, LoginSession, Pool } from "@/lib/types";
 import {
   Sheet,
   SheetContent,
@@ -338,6 +338,21 @@ export default function AddAccountDrawer() {
     [provider],
   );
 
+  const refreshAfterAccountCreate = useCallback(
+    async (accountId?: number | null) => {
+      if (accountId) {
+        try {
+          await api.post(`/accounts/${accountId}/discover-models`);
+        } catch {
+          // The account has already been created. Keep the drawer flow moving;
+          // the Pool reload below will render the persisted backend state.
+        }
+      }
+      refreshData();
+    },
+    [refreshData],
+  );
+
   useEffect(() => {
     if (!addAccountOpen) return;
 
@@ -380,16 +395,17 @@ export default function AddAccountDrawer() {
                 providerLabel: restoredProviderLabel,
               });
               setLoginSession(restored);
-              setStep(restored.status === "succeeded" ? 4 : 3);
+              setStep(3);
               setRestoredSession(isActiveLoginSession(restored));
               if (restored.status === "succeeded" && restored.account_id) {
+                await refreshAfterAccountCreate(restored.account_id);
                 setResult({
                   poolId: restoredPoolId,
                   poolLabel: safePools.find((pool) => pool.id === restoredPoolId)?.label || fallback?.poolLabel || "未命名 Pool",
                   label: restored.account?.label ?? "CPA account",
                   source: `CPA · ${restoredProviderLabel}`,
                 });
-                refreshData();
+                setStep(4);
                 clearStoredCpaSession();
               }
               if (!isActiveLoginSession(restored)) {
@@ -427,7 +443,7 @@ export default function AddAccountDrawer() {
         }
       })
       .finally(() => setLoading(false));
-  }, [addAccountOpen]);
+  }, [addAccountOpen, refreshAfterAccountCreate]);
 
   useEffect(() => {
     if (!addAccountOpen) {
@@ -526,6 +542,14 @@ export default function AddAccountDrawer() {
         }
         if (session.status === "succeeded" && session.account_id) {
           const poolId = pendingCpaFlow?.poolId ?? preferredPoolId ?? 0;
+          if (pollRef.current) {
+            window.clearTimeout(pollRef.current);
+            pollRef.current = null;
+          }
+          setRestoredSession(false);
+          clearStoredCpaSession();
+          await refreshAfterAccountCreate(session.account_id);
+          if (disposed) return;
           setResult({
             poolId,
             poolLabel: pendingCpaFlow?.poolLabel || getPoolLabel(poolId),
@@ -533,13 +557,6 @@ export default function AddAccountDrawer() {
             source: `CPA · ${pendingCpaFlow?.providerLabel || getProviderLabel(providerOptions, provider)}`,
           });
           setStep(4);
-          setRestoredSession(false);
-          clearStoredCpaSession();
-          refreshData();
-          if (pollRef.current) {
-            window.clearTimeout(pollRef.current);
-            pollRef.current = null;
-          }
         }
         if (session.status === "failed" || session.status === "expired" || session.status === "cancelled") {
           setRestoredSession(false);
@@ -566,7 +583,7 @@ export default function AddAccountDrawer() {
         pollRef.current = null;
       }
     };
-  }, [cpaService, loginSession, pendingCpaFlow, preferredPoolId, provider, providerOptions, refreshData]);
+  }, [cpaService, loginSession, pendingCpaFlow, preferredPoolId, provider, providerOptions, refreshAfterAccountCreate]);
 
   useEffect(() => {
     if (!isActiveLoginSession(loginSession)) return;
@@ -622,7 +639,7 @@ export default function AddAccountDrawer() {
     setLoading(true);
     try {
       const poolId = await ensurePool();
-      await api.post("/accounts", {
+      const created = await api.post<Account>("/accounts", {
         label: directForm.label.trim(),
         source_kind: "openai_compat",
         provider: directForm.provider,
@@ -632,7 +649,7 @@ export default function AddAccountDrawer() {
         enabled: true,
         pool_id: poolId,
       });
-      refreshData();
+      await refreshAfterAccountCreate(created.id);
       setResult({
         poolId,
         poolLabel: getPoolLabel(poolId),

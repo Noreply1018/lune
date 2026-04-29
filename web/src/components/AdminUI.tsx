@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useMemo,
   useState,
@@ -26,25 +27,31 @@ export function AdminUIProvider({ children }: { children: ReactNode }) {
   const [dataVersion, setDataVersion] = useState(0);
   const [poolSnapshots, setPoolSnapshots] = useState<Record<number, PoolSnapshot>>({});
 
+  const openAddAccount = useCallback((poolId?: number | null) => {
+    setPreferredPoolId(poolId ?? null);
+    setAddAccountOpen(true);
+  }, []);
+
+  const closeAddAccount = useCallback(() => {
+    setAddAccountOpen(false);
+  }, []);
+
+  const refreshData = useCallback(() => {
+    setDataVersion((current) => current + 1);
+  }, []);
+
   const value = useMemo<AdminUIContextValue>(
     () => ({
       addAccountOpen,
       preferredPoolId,
       dataVersion,
       poolSnapshots,
-      openAddAccount: (poolId) => {
-        setPreferredPoolId(poolId ?? null);
-        setAddAccountOpen(true);
-      },
-      closeAddAccount: () => {
-        setAddAccountOpen(false);
-      },
-      refreshData: () => {
-        setDataVersion((current) => current + 1);
-      },
+      openAddAccount,
+      closeAddAccount,
+      refreshData,
       setPoolSnapshots,
     }),
-    [addAccountOpen, dataVersion, poolSnapshots, preferredPoolId],
+    [addAccountOpen, closeAddAccount, dataVersion, openAddAccount, poolSnapshots, preferredPoolId, refreshData],
   );
 
   return (
