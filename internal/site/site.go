@@ -20,23 +20,33 @@ func Handler() http.Handler {
 	fileServer := http.FileServer(http.FS(subtree))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// static assets
-		if strings.HasPrefix(r.URL.Path, "/admin/assets/") || strings.HasPrefix(r.URL.Path, "/assets/") {
-			assetReq := r
-			if strings.HasPrefix(r.URL.Path, "/admin/assets/") {
-				// Strip /admin for the embedded filesystem without mutating the
-				// caller's request. The access logger and downstream handlers should
-				// still see the original URL.
-				assetReq = r.Clone(r.Context())
-				assetReq.URL.Path = strings.TrimPrefix(r.URL.Path, "/admin")
-			}
-			fileServer.ServeHTTP(w, assetReq)
+		if staticReq, ok := staticFileRequest(subtree, r); ok {
+			fileServer.ServeHTTP(w, staticReq)
 			return
 		}
 
 		// all other /admin paths → SPA index.html
 		serveIndex(subtree, w)
 	})
+}
+
+func staticFileRequest(files fs.FS, r *http.Request) (*http.Request, bool) {
+	filePath := r.URL.Path
+	if strings.HasPrefix(filePath, "/admin/") {
+		filePath = strings.TrimPrefix(filePath, "/admin")
+	}
+
+	info, err := fs.Stat(files, strings.TrimPrefix(filePath, "/"))
+	if err != nil || info.IsDir() {
+		return nil, false
+	}
+	if filePath == r.URL.Path {
+		return r, true
+	}
+
+	staticReq := r.Clone(r.Context())
+	staticReq.URL.Path = filePath
+	return staticReq, true
 }
 
 func serveIndex(files fs.FS, w http.ResponseWriter) {

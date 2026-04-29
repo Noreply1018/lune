@@ -397,7 +397,7 @@ func (s *Store) migrateNotificationSingleton() error {
 		return fmt.Errorf("apply notification singleton schema: %w", err)
 	}
 
-	// Clear legacy legacy-webhook flag so the old path cannot reassert itself.
+	// Clear legacy webhook flags so the old path cannot reassert itself.
 	if _, err := s.db.Exec(`DELETE FROM system_config WHERE key IN ('webhook_url', 'webhook_enabled', 'notification_legacy_migrated')`); err != nil {
 		return fmt.Errorf("clear legacy webhook settings: %w", err)
 	}

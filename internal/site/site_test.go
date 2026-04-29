@@ -49,3 +49,23 @@ func TestHandlerServesAdminAssetWithoutMutatingOriginalPath(t *testing.T) {
 		t.Fatalf("expected javascript content type, got %q", ct)
 	}
 }
+
+func TestHandlerServesAdminFaviconAsStaticFile(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/admin/favicon.svg", http.NoBody)
+	rr := httptest.NewRecorder()
+
+	Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if req.URL.Path != "/admin/favicon.svg" {
+		t.Fatalf("request path was mutated: %q", req.URL.Path)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "image/svg+xml") {
+		t.Fatalf("expected svg content type, got %q", ct)
+	}
+	if strings.Contains(rr.Body.String(), `<div id="root">`) {
+		t.Fatalf("expected favicon body, got SPA index")
+	}
+}

@@ -1,3 +1,5 @@
+ARG CPA_VERSION=v6.9.41
+
 # -- Stage 1: Build frontend --
 FROM --platform=$BUILDPLATFORM node:22-slim AS frontend
 
@@ -27,8 +29,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
     -o /lune ./cmd/lune
 
 # -- Stage 3: CPA binary --
-ARG CPA_VERSION=v6.9.41
-FROM eceasy/cli-proxy-api:v6.9.41@sha256:27a8090de418fd5ef96fae91ba6ba8579874806d573c5de3f8d13a1a4fe5ee91 AS cpa
+FROM eceasy/cli-proxy-api:${CPA_VERSION}@sha256:27a8090de418fd5ef96fae91ba6ba8579874806d573c5de3f8d13a1a4fe5ee91 AS cpa
 
 # -- Stage 4: Runtime --
 FROM debian:bookworm-slim

@@ -8,6 +8,42 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+type tableColumnInfo struct {
+	NotNull int
+}
+
+func requireTableColumn(t *testing.T, db *sql.DB, table, column string) tableColumnInfo {
+	t.Helper()
+
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("table info for %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("scan table info for %s: %v", table, err)
+		}
+		if name == column {
+			return tableColumnInfo{NotNull: notNull}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table info rows for %s: %v", table, err)
+	}
+	t.Fatalf("expected %s.%s to exist", table, column)
+	return tableColumnInfo{}
+}
+
 func TestMigrateV2PreservesCpaServicesWithoutManagementKeyColumn(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "legacy-v2.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -359,34 +395,7 @@ VALUES
 		t.Fatalf("expected schema version %d, got %d", v3SchemaVersion, st.SchemaVersion())
 	}
 
-	var poolIDNotNull int
-	rows, err := st.DB().Query(`PRAGMA table_info(access_tokens)`)
-	if err != nil {
-		t.Fatalf("table info: %v", err)
-	}
-	for rows.Next() {
-		var (
-			cid        int
-			name       string
-			columnType string
-			notNull    int
-			defaultVal sql.NullString
-			pk         int
-		)
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
-			rows.Close()
-			t.Fatalf("scan table info: %v", err)
-		}
-		if name == "pool_id" {
-			poolIDNotNull = notNull
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		t.Fatalf("table info rows: %v", err)
-	}
-	rows.Close()
-	if poolIDNotNull != 1 {
+	if requireTableColumn(t, st.DB(), "access_tokens", "pool_id").NotNull != 1 {
 		t.Fatalf("expected access_tokens.pool_id to be NOT NULL after migration")
 	}
 
@@ -503,36 +512,7 @@ VALUES (1, 'req_1', 'primary', 'gpt-5', NULL);
 	if st.SchemaVersion() != v3SchemaVersion {
 		t.Fatalf("expected schema version %d, got %d", v3SchemaVersion, st.SchemaVersion())
 	}
-	hasPoolID := false
-	rows, err := st.DB().Query(`PRAGMA table_info(request_logs)`)
-	if err != nil {
-		t.Fatalf("table info: %v", err)
-	}
-	for rows.Next() {
-		var (
-			cid        int
-			name       string
-			columnType string
-			notNull    int
-			defaultVal sql.NullString
-			pk         int
-		)
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
-			rows.Close()
-			t.Fatalf("scan table info: %v", err)
-		}
-		if name == "pool_id" {
-			hasPoolID = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		t.Fatalf("table info rows: %v", err)
-	}
-	rows.Close()
-	if !hasPoolID {
-		t.Fatalf("expected request_logs.pool_id to be added")
-	}
+	requireTableColumn(t, st.DB(), "request_logs", "pool_id")
 
 	if _, err := st.GetPoolStats(1, "24h"); err != nil {
 		t.Fatalf("pool stats should work after migration: %v", err)
@@ -582,34 +562,5 @@ CREATE TABLE request_logs (
 	}
 	defer st.Close()
 
-	hasPoolID := false
-	rows, err := st.DB().Query(`PRAGMA table_info(request_logs)`)
-	if err != nil {
-		t.Fatalf("table info: %v", err)
-	}
-	for rows.Next() {
-		var (
-			cid        int
-			name       string
-			columnType string
-			notNull    int
-			defaultVal sql.NullString
-			pk         int
-		)
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
-			rows.Close()
-			t.Fatalf("scan table info: %v", err)
-		}
-		if name == "pool_id" {
-			hasPoolID = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		t.Fatalf("table info rows: %v", err)
-	}
-	rows.Close()
-	if !hasPoolID {
-		t.Fatalf("expected request_logs.pool_id to be repaired")
-	}
+	requireTableColumn(t, st.DB(), "request_logs", "pool_id")
 }
