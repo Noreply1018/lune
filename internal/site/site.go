@@ -22,11 +22,15 @@ func Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// static assets
 		if strings.HasPrefix(r.URL.Path, "/admin/assets/") || strings.HasPrefix(r.URL.Path, "/assets/") {
-			// strip /admin prefix for asset serving
+			assetReq := r
 			if strings.HasPrefix(r.URL.Path, "/admin/assets/") {
-				r.URL.Path = strings.TrimPrefix(r.URL.Path, "/admin")
+				// Strip /admin for the embedded filesystem without mutating the
+				// caller's request. The access logger and downstream handlers should
+				// still see the original URL.
+				assetReq = r.Clone(r.Context())
+				assetReq.URL.Path = strings.TrimPrefix(r.URL.Path, "/admin")
 			}
-			fileServer.ServeHTTP(w, r)
+			fileServer.ServeHTTP(w, assetReq)
 			return
 		}
 

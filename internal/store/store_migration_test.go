@@ -411,3 +411,205 @@ VALUES
 		t.Fatalf("expected duplicate pool_id insert to fail")
 	}
 }
+
+func TestMigrateV12AddsRequestLogPoolID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-v12-request-logs.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '12');
+CREATE TABLE pools (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO pools (id, label, priority, enabled) VALUES (1, 'Primary', 0, 1);
+CREATE TABLE accounts (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'openai_compat',
+    base_url TEXT NOT NULL DEFAULT '',
+    api_key TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    notes TEXT NOT NULL DEFAULT '',
+    quota_display TEXT NOT NULL DEFAULT '',
+    last_checked_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE notification_subscriptions (
+    event TEXT PRIMARY KEY,
+    subscribed INTEGER NOT NULL DEFAULT 1,
+    body_template TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE access_tokens (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    pool_id INTEGER,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+);
+INSERT INTO access_tokens (id, name, token, pool_id, enabled)
+VALUES (1, 'primary', 'sk-lune-primary', 1, 1);
+CREATE TABLE request_logs (
+    id INTEGER PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    access_token_name TEXT NOT NULL DEFAULT '',
+    model_requested TEXT NOT NULL DEFAULT '',
+    model_actual TEXT NOT NULL DEFAULT '',
+    account_id INTEGER,
+    status_code INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    stream INTEGER NOT NULL DEFAULT 0,
+    request_ip TEXT NOT NULL DEFAULT '',
+    success INTEGER NOT NULL DEFAULT 1,
+    error_message TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO request_logs (id, request_id, access_token_name, model_requested, account_id)
+VALUES (1, 'req_1', 'primary', 'gpt-5', NULL);
+`); err != nil {
+		t.Fatalf("seed v12 schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("open store with migration: %v", err)
+	}
+	defer st.Close()
+
+	if st.SchemaVersion() != v3SchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", v3SchemaVersion, st.SchemaVersion())
+	}
+	hasPoolID := false
+	rows, err := st.DB().Query(`PRAGMA table_info(request_logs)`)
+	if err != nil {
+		t.Fatalf("table info: %v", err)
+	}
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			rows.Close()
+			t.Fatalf("scan table info: %v", err)
+		}
+		if name == "pool_id" {
+			hasPoolID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatalf("table info rows: %v", err)
+	}
+	rows.Close()
+	if !hasPoolID {
+		t.Fatalf("expected request_logs.pool_id to be added")
+	}
+
+	if _, err := st.GetPoolStats(1, "24h"); err != nil {
+		t.Fatalf("pool stats should work after migration: %v", err)
+	}
+}
+
+func TestMigrateV15RepairsMissingRequestLogPoolID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-v15-missing-pool-id.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '15');
+CREATE TABLE request_logs (
+    id INTEGER PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    access_token_name TEXT NOT NULL DEFAULT '',
+    model_requested TEXT NOT NULL DEFAULT '',
+    model_actual TEXT NOT NULL DEFAULT '',
+    account_id INTEGER,
+    status_code INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    stream INTEGER NOT NULL DEFAULT 0,
+    request_ip TEXT NOT NULL DEFAULT '',
+    success INTEGER NOT NULL DEFAULT 1,
+    error_message TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`); err != nil {
+		t.Fatalf("seed v15 schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("open store with repair: %v", err)
+	}
+	defer st.Close()
+
+	hasPoolID := false
+	rows, err := st.DB().Query(`PRAGMA table_info(request_logs)`)
+	if err != nil {
+		t.Fatalf("table info: %v", err)
+	}
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			rows.Close()
+			t.Fatalf("scan table info: %v", err)
+		}
+		if name == "pool_id" {
+			hasPoolID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatalf("table info rows: %v", err)
+	}
+	rows.Close()
+	if !hasPoolID {
+		t.Fatalf("expected request_logs.pool_id to be repaired")
+	}
+}

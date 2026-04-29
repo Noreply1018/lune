@@ -143,6 +143,79 @@ func TestListPoolTokensIncludesPoolLabel(t *testing.T) {
 	}
 }
 
+func TestGetPoolDetailHandlesEmptyPool(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	poolID, _, err := st.CreatePoolWithDefaultToken("Empty Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool with token: %v", err)
+	}
+
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/admin/api/pools/%d", poolID), http.NoBody)
+	req.SetPathValue("id", fmt.Sprintf("%d", poolID))
+	rr := httptest.NewRecorder()
+
+	handler.getPoolDetail(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			Pool struct {
+				ID int64 `json:"id"`
+			} `json:"pool"`
+			Members []store.PoolMember  `json:"members"`
+			Tokens  []store.AccessToken `json:"tokens"`
+			Models  []string            `json:"models"`
+			Stats   store.UsageStats    `json:"stats"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.Pool.ID != poolID {
+		t.Fatalf("expected pool id %d, got %d", poolID, resp.Data.Pool.ID)
+	}
+	if resp.Data.Members == nil {
+		t.Fatalf("expected members to be an empty array, got nil")
+	}
+	if len(resp.Data.Tokens) != 1 {
+		t.Fatalf("expected one pool token, got %d", len(resp.Data.Tokens))
+	}
+	if resp.Data.Tokens[0].Token != "" || resp.Data.Tokens[0].TokenMasked == "" {
+		t.Fatalf("expected masked token only, got %+v", resp.Data.Tokens[0])
+	}
+	if resp.Data.Models == nil {
+		t.Fatalf("expected models to be an empty array, got nil")
+	}
+	if resp.Data.Stats.ByAccount == nil || resp.Data.Stats.ByToken == nil {
+		t.Fatalf("expected empty stats arrays, got %+v", resp.Data.Stats)
+	}
+}
+
+func TestGetPoolDetailMissingPoolReturnsNotFound(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/pools/404", http.NoBody)
+	req.SetPathValue("id", "404")
+	rr := httptest.NewRecorder()
+
+	handler.getPoolDetail(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "pool not found") {
+		t.Fatalf("expected structured not found response, got %s", rr.Body.String())
+	}
+}
+
 func TestImportConfigCreatesPoolsSkipsExistingTokensAndIgnoresAdminToken(t *testing.T) {
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)

@@ -12,6 +12,9 @@ FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG LUNE_VERSION=dev
+ARG LUNE_COMMIT=unknown
+ARG LUNE_BUILD_DATE=unknown
 
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -19,13 +22,17 @@ RUN go mod download
 
 COPY . .
 COPY --from=frontend /internal/site/dist /app/internal/site/dist
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -o /lune ./cmd/lune
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
+    -ldflags "-X main.version=${LUNE_VERSION} -X main.commit=${LUNE_COMMIT} -X main.date=${LUNE_BUILD_DATE}" \
+    -o /lune ./cmd/lune
 
 # -- Stage 3: CPA binary --
-FROM --platform=$TARGETPLATFORM eceasy/cli-proxy-api:v6.9.41 AS cpa
+ARG CPA_VERSION=v6.9.41
+FROM eceasy/cli-proxy-api:v6.9.41@sha256:27a8090de418fd5ef96fae91ba6ba8579874806d573c5de3f8d13a1a4fe5ee91 AS cpa
 
 # -- Stage 4: Runtime --
 FROM debian:bookworm-slim
+ARG CPA_VERSION=v6.9.41
 
 WORKDIR /app
 RUN apt-get update \
@@ -44,7 +51,7 @@ ENV LUNE_PORT=7788
 ENV LUNE_DATA_DIR=/app/data
 ENV LUNE_CPA_AUTH_DIR=/app/data/cpa-auth
 ENV LUNE_GATEWAY_TMP_DIR=/app/data/tmp
-ENV LUNE_EMBEDDED_CPA_VERSION=v6.9.41
+ENV LUNE_EMBEDDED_CPA_VERSION=${CPA_VERSION}
 
 ENTRYPOINT ["lune-entrypoint"]
 CMD ["up"]

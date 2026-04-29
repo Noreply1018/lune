@@ -246,6 +246,9 @@ func (s *Store) migrateV3(dbPath string) error {
 	ver := s.schemaVersion()
 
 	if ver >= v3SchemaVersion {
+		if err := s.migrateRequestLogPoolColumn(); err != nil {
+			return fmt.Errorf("repair request log pool column: %w", err)
+		}
 		return nil // already at latest
 	}
 
@@ -275,6 +278,9 @@ func (s *Store) migrateV3(dbPath string) error {
 			if err := s.migrateAttemptCountColumn(); err != nil {
 				return fmt.Errorf("migrate attempt_count column: %w", err)
 			}
+		}
+		if err := s.migrateRequestLogPoolColumn(); err != nil {
+			return fmt.Errorf("migrate request log pool column: %w", err)
 		}
 		if ver < 13 {
 			if err := s.migratePoolScopedAccessTokens(); err != nil {
@@ -555,6 +561,35 @@ func (s *Store) migrateAttemptCountColumn() error {
 		if _, err := s.db.Exec(`ALTER TABLE request_logs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1`); err != nil {
 			return fmt.Errorf("add column attempt_count: %w", err)
 		}
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "request_logs")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+// migrateRequestLogPoolColumn adds request_logs.pool_id for Pool detail stats
+// and Activity filters. Some pre-v0.1.3 databases can already be on schema
+// versions near the Pool-token migration without this column.
+func (s *Store) migrateRequestLogPoolColumn() error {
+	exists, err := s.tableExists("request_logs")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	has, err := s.hasColumn("request_logs", "pool_id")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := s.db.Exec(`ALTER TABLE request_logs ADD COLUMN pool_id INTEGER`); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_request_logs_pool_id ON request_logs(pool_id)`); err != nil {
+		return err
 	}
 	s.schemaMu.Lock()
 	delete(s.schemaCache, "request_logs")

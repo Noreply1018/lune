@@ -75,12 +75,28 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
 
+      - name: Set build metadata
+        id: build_meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=edge" >> "$GITHUB_OUTPUT"
+          fi
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            LUNE_VERSION=${{ steps.build_meta.outputs.version }}
+            LUNE_COMMIT=${{ github.sha }}
+            LUNE_BUILD_DATE=${{ steps.build_meta.outputs.date }}
+            CPA_VERSION=v6.9.41
           tags: |
             ${{ steps.meta_ghcr.outputs.tags }}
             ${{ steps.meta_dockerhub.outputs.tags }}
