@@ -76,13 +76,15 @@ docker pull noreply1018/lune:latest
 | Container port | `7788` |
 | Volume | `lune-data` → `/app/data` |
 
-环境变量建议至少设置这几项：
+首次本机使用不需要填写环境变量。Lune 会自动生成管理 token，内置 CPA runtime 的 API key 和管理密钥也会使用容器内部默认值。
 
-| 变量 | 示例 | 说明 |
-|---|---|---|
-| `LUNE_ADMIN_TOKEN` | `lune-change-me` | 登录管理界面的 token |
-| `CPA_API_KEY` | `sk-cpa-change-me` | 内置 CPA runtime 的 API key |
-| `LUNE_CPA_MANAGEMENT_KEY` | `lune-cpa-management-change-me` | Lune 调用 CPA 管理接口的密钥 |
+如果 Docker Desktop 的 Run 界面要求选择 volume 类型，推荐使用 named volume：
+
+| Volume name | Container path |
+|---|---|
+| `lune-data` | `/app/data` |
+
+也可以用宿主机目录绑定到 `/app/data`，例如 macOS / Linux 的 `~/lune-data` 或 Windows 的 `C:\Users\<you>\lune-data`。
 
 不要映射 `8317`。它是容器内部 Lune 访问 CPA runtime 的端口，默认不需要暴露给宿主机。
 
@@ -94,7 +96,7 @@ docker pull noreply1018/lune:latest
 http://127.0.0.1:7788/admin
 ```
 
-用你设置的 `LUNE_ADMIN_TOKEN` 登录。进入后可以：
+本机访问通常会直接进入管理界面；如果你设置了 `LUNE_ADMIN_TOKEN` 或通过远程地址访问，用该 token 登录。进入后可以：
 
 - 在 Settings 查看 Runtime 和 CPA Runtime 状态
 - 在 Pools / Add Account 里添加直连 API Key 账号
@@ -120,7 +122,6 @@ curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/docker-compose.p
 curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/.env.example
 cp .env.example .env
 
-# 生产使用务必修改 .env 里的 LUNE_ADMIN_TOKEN、CPA_API_KEY、LUNE_CPA_MANAGEMENT_KEY
 docker compose -f docker-compose.prod.yml --env-file .env up -d
 ```
 
@@ -150,16 +151,18 @@ docker compose -f docker-compose.prod.yml logs -f lune           # 跟随 Lune +
 
 Docker Desktop 用户可以在 Run 界面的 Environment variables 里填写配置；Compose 用户通过根目录的 `.env` 文件配置，`docker compose` 会自动读取它并注入到容器环境变量里。
 
+个人本机使用没有必填环境变量。只有在远程访问、反代部署、改端口或调试内部 CPA 布线时，才需要显式设置。
+
 仓库提供 [.env.example](./.env.example) 作为模板。本地使用时复制一份：
 
 ```bash
 cp .env.example .env
-# 按需修改 LUNE_PORT / LUNE_ADMIN_TOKEN / CPA_API_KEY 等
+# 按需修改 LUNE_PORT；远程访问时再设置 LUNE_ADMIN_TOKEN
 ```
 
 `.env` 已被 `.gitignore` 忽略。下表是 Lune 能识别的**全部**环境变量——`.env.example` 只列出日常需要修改的几项，其余（如数据目录、内置 CPA 地址）由 `docker-compose.yml` 直接固定在容器里，一般不需要动。
 
-### 环境变量
+### 常用环境变量
 
 | 变量 | 用途 | 默认值 |
 |---|---|---|
@@ -167,7 +170,16 @@ cp .env.example .env
 | `LUNE_IMAGE_TAG` | 预构建镜像 tag（用于 `docker-compose.prod.yml`） | `latest` |
 | `LUNE_PORT` | HTTP 服务端口 | `7788` |
 | `LUNE_DATA_DIR` | SQLite 数据目录 | `./data` |
-| `LUNE_ADMIN_TOKEN` | 管理令牌覆盖 | 自动生成 |
+| `LUNE_ADMIN_TOKEN` | 管理令牌覆盖；远程访问或反代部署时建议设置 | 自动生成 |
+| `LUNE_LOG_LEVEL` | 日志级别：`debug` / `info` / `warn` / `error` | `info` |
+| `LUNE_LOG_FORMAT` | 日志格式：`text` / `json` | `text` |
+
+### 高级 / 内部环境变量
+
+这些变量用于内置 CPA runtime 和 Lune 之间的容器内部通信，Docker Desktop 本机使用不需要填写。
+
+| 变量 | 用途 | 默认值 |
+|---|---|---|
 | `LUNE_CPA_AUTH_DIR` | CPA 凭据文件目录 | Docker: `/app/data/cpa-auth` |
 | `LUNE_CPA_BASE_URL` | Lune 连接 CPA 的地址 | Docker: `http://127.0.0.1:8317` |
 | `LUNE_CPA_API_KEY` | Lune 使用的 CPA API Key | 同 `CPA_API_KEY` |
@@ -175,8 +187,12 @@ cp .env.example .env
 | `CPA_API_KEY` | CPA 服务 API Key | `sk-cpa-default` |
 | `LUNE_EMBEDDED_CPA` | 是否启动镜像内置 CPA：`1` / `0` | `1` |
 | `LUNE_GATEWAY_TMP_DIR` | 大请求重放临时目录 | Docker: `/app/data/tmp` |
-| `LUNE_LOG_LEVEL` | 日志级别：`debug` / `info` / `warn` / `error` | `info` |
-| `LUNE_LOG_FORMAT` | 日志格式：`text` / `json` | `text` |
+
+### 访问安全
+
+默认 Compose 只把管理端口绑定到 `127.0.0.1`。Docker Desktop 手动 Run 时也建议只在本机使用，不要把 `7788` 暴露到公网或不可信局域网。
+
+如果你需要远程访问，请至少设置 `LUNE_ADMIN_TOKEN`，并通过可信反向代理、VPN 或防火墙限制访问来源。当前版本为了本机 Docker Desktop 体验，会信任 loopback 和私有网络来源；更严格的远程访问认证策略已放入后续版本计划。
 
 ## Docker 与 CPA 服务
 

@@ -10,7 +10,30 @@ Lune is a personal-first LLM gateway with an OpenAI-compatible API, a built-in a
 - SQLite persistence in a single self-hosted container workflow
 - Prebuilt multi-arch images on both GHCR and Docker Hub
 
-## Quick start
+## Docker Desktop quick start
+
+Pull `noreply1018/lune:latest` from Docker Desktop, then click **Run**.
+
+Recommended Run settings:
+
+| Field | Value |
+|---|---|
+| Container name | `lune` |
+| Host port | `7788` |
+| Container port | `7788` |
+| Volume | `lune-data` -> `/app/data` |
+
+No environment variables are required for first local use. Lune auto-generates the admin token, and the embedded CPA runtime uses internal default credentials.
+
+Open:
+
+```text
+http://127.0.0.1:7788/admin
+```
+
+Do not publish port `8317`; it is only used inside the container for Lune-to-CPA traffic.
+
+## Compose quick start
 
 ```bash
 curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/docker-compose.prod.yml
@@ -37,6 +60,8 @@ To pull from Docker Hub instead, set:
 LUNE_IMAGE=docker.io/noreply1018/lune
 LUNE_IMAGE_TAG=latest
 ```
+
+For remote access, set `LUNE_ADMIN_TOKEN` and keep the published admin port behind a trusted proxy, VPN, or firewall. The default path is intended for personal local use.
 
 ## Links
 
