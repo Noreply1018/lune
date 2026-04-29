@@ -45,26 +45,92 @@ Lune 做的事，是把 CPA 当成**另一类账号来源**：你可以直接把
 - **手头有 API Key** → 直连，最短路径
 - **只有 CLI 登录**（比如 ChatGPT Plus 的 Codex 访问）→ 走 CPA，让 Lune 帮你做凭据管理和过期预警
 
-## 快速开始
+## 快速开始：Docker Desktop
 
-适合只想跑起来的使用者，无需本地构建：
+适合第一次使用、只想把 Lune 跑起来的用户。Lune 默认是一个完整镜像：管理界面、网关后端和内置 CPA runtime 都在同一个容器里。
+
+### 1. 拉取镜像
+
+打开 Docker Desktop，进入 **Images**，搜索并拉取：
+
+```text
+noreply1018/lune:latest
+```
+
+也可以在终端执行：
 
 ```bash
-# 1. 下载 compose 文件和配置模板
+docker pull noreply1018/lune:latest
+```
+
+### 2. Run 容器
+
+在 Docker Desktop 的镜像列表里点击 `noreply1018/lune:latest` 右侧的 **Run**。
+
+推荐填写：
+
+| 项目 | 值 |
+|---|---|
+| Container name | `lune` |
+| Host port | `7788` |
+| Container port | `7788` |
+| Volume | `lune-data` → `/app/data` |
+
+环境变量建议至少设置这几项：
+
+| 变量 | 示例 | 说明 |
+|---|---|---|
+| `LUNE_ADMIN_TOKEN` | `lune-change-me` | 登录管理界面的 token |
+| `CPA_API_KEY` | `sk-cpa-change-me` | 内置 CPA runtime 的 API key |
+| `LUNE_CPA_MANAGEMENT_KEY` | `lune-cpa-management-change-me` | Lune 调用 CPA 管理接口的密钥 |
+
+不要映射 `8317`。它是容器内部 Lune 访问 CPA runtime 的端口，默认不需要暴露给宿主机。
+
+### 3. 打开管理界面
+
+启动后访问：
+
+```text
+http://127.0.0.1:7788/admin
+```
+
+用你设置的 `LUNE_ADMIN_TOKEN` 登录。进入后可以：
+
+- 在 Settings 查看 Runtime 和 CPA Runtime 状态
+- 在 Pools / Add Account 里添加直连 API Key 账号
+- 使用 CPA 登录 Codex 类账号
+- 从 Settings 复制 Env Snippets 给客户端使用
+
+### 4. 更新镜像
+
+在 Docker Desktop 里重新 Pull `noreply1018/lune:latest`，然后重新创建容器，并继续挂载同一个 `lune-data` volume。
+
+如果你使用固定版本，建议拉取类似：
+
+```text
+noreply1018/lune:0.1.3
+```
+
+## 服务器 / Compose 运行
+
+适合希望把配置落到 `.env`、用命令行长期运行的用户：
+
+```bash
 curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/docker-compose.prod.yml
 curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/.env.example
-
-# 2. 复制并编辑环境变量
 cp .env.example .env
-# ⚠️ 生产使用务必修改 .env 里的 CPA_API_KEY、LUNE_CPA_MANAGEMENT_KEY
-#    仓库中的默认值仅用于本地示例，不应直接暴露在公网环境
-#    如需从 Docker Hub 拉取镜像，把 LUNE_IMAGE 改成 docker.io/noreply1018/lune
 
-# 3. 启动
+# 生产使用务必修改 .env 里的 LUNE_ADMIN_TOKEN、CPA_API_KEY、LUNE_CPA_MANAGEMENT_KEY
 docker compose -f docker-compose.prod.yml --env-file .env up -d
 ```
 
-启动后访问 `http://127.0.0.1:7788/admin`。首次进入需用 `LUNE_ADMIN_TOKEN` 登录；若 `.env` 里留空，容器启动日志会打印自动生成的 token（`docker compose logs lune`）。
+默认生产 compose 从 GHCR 拉取镜像。如需 Docker Hub，把 `.env` 里的 `LUNE_IMAGE` 改成：
+
+```env
+LUNE_IMAGE=docker.io/noreply1018/lune
+```
+
+启动后访问 `http://127.0.0.1:7788/admin`。
 
 **升级：**
 
@@ -82,7 +148,7 @@ docker compose -f docker-compose.prod.yml logs -f lune           # 跟随 Lune +
 
 ## 配置
 
-Docker Compose 场景（默认运行方式）通过根目录的 `.env` 文件配置——`docker compose` 会自动读取它并注入到容器环境变量里。
+Docker Desktop 用户可以在 Run 界面的 Environment variables 里填写配置；Compose 用户通过根目录的 `.env` 文件配置，`docker compose` 会自动读取它并注入到容器环境变量里。
 
 仓库提供 [.env.example](./.env.example) 作为模板。本地使用时复制一份：
 
@@ -148,7 +214,7 @@ Lune 的日常开发流程也走 Docker Compose，无需在本机装 Go 或 Node
 ./scripts/rebuild.sh          # 重新构建并启动
 ```
 
-Docker Compose 是唯一推荐的运行和开发方式。欢迎直接提交 GitHub Issue 或 Pull Request。
+本地开发推荐使用 Docker Compose。普通使用者优先使用 Docker Desktop 直接运行预构建镜像。
 
 ## HTTP 接口
 
