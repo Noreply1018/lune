@@ -8,7 +8,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import StatusBadge from "@/components/StatusBadge";
-import { CodexQuotaBarsCompact } from "@/components/CodexQuotaBars";
+import {
+  CodexQuotaBarsCompact,
+  CodexQuotaBarsPendingCompact,
+} from "@/components/CodexQuotaBars";
 import DirectAccountSignal from "@/components/DirectAccountSignal";
 import { isQuotaStale, parseCodexQuota } from "@/lib/codexQuota";
 import { compact, relativeTime } from "@/lib/fmt";
@@ -57,18 +60,20 @@ export default function AccountCard({
 }) {
   const account = member.account;
   const health = account ? getAccountHealth(account) : "error";
-  const expiry = getExpiryMeta(account?.cpa_expired_at ?? null);
   const quota = parseQuotaDisplay(account?.quota_display ?? "");
   // Card re-renders on every drag tick; parsing the raw JSON each time is
   // wasted work even though the payload is small.
   const codexQuota = useMemo(
     () => (account ? parseCodexQuota(account) : null),
-    [account?.cpa_provider, account?.codex_quota_json],
+    [account?.source_kind, account?.cpa_provider, account?.codex_quota_json],
   );
+  const isCodexCpa =
+    account?.source_kind === "cpa" && account.cpa_provider.toLowerCase() === "codex";
+  const expiry = isCodexCpa ? null : getExpiryMeta(account?.cpa_expired_at ?? null);
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
   // Every non-Codex account — direct as well as non-Codex CPA (e.g. Claude) —
   // gets the dual-row signal strip so both card variants share the same height.
-  const showDirectSignal = !codexQuota;
+  const showDirectSignal = !isCodexCpa;
   const enabled = member.enabled;
 
   const toneClass = !enabled
@@ -160,12 +165,14 @@ export default function AccountCard({
 
         {codexQuota ? (
           <CodexQuotaBarsCompact quota={codexQuota} stale={codexQuotaStale} />
+        ) : isCodexCpa ? (
+          <CodexQuotaBarsPendingCompact />
         ) : showDirectSignal ? (
           <DirectAccountSignal requests={requests} successRate={successRate} />
         ) : null}
 
         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-moon-500">
-          {codexQuota ? (
+          {isCodexCpa ? (
             <span className="rounded-full bg-moon-100/80 px-2 py-0.5">
               今日 {compact(requests)}
             </span>

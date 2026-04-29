@@ -84,7 +84,9 @@ export default function AccountDetailSheet({
   }
 
   const health = getAccountHealth(account);
-  const expiry = getExpiryMeta(account.cpa_expired_at ?? null);
+  const isCodexCpa =
+    account.source_kind === "cpa" && account.cpa_provider.toLowerCase() === "codex";
+  const expiry = isCodexCpa ? null : getExpiryMeta(account.cpa_expired_at ?? null);
   const quota = parseQuotaDisplay(account.quota_display ?? "");
   const codexQuota = parseCodexQuota(account);
   const models = ensureArray(account.models);
@@ -113,7 +115,9 @@ export default function AccountDetailSheet({
             </SheetDescription>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-moon-500">
               <StatusBadge status={health === "unknown" ? "degraded" : health} />
-              <span className="rounded-full bg-moon-100/85 px-2.5 py-1">{quota}</span>
+              <span className="rounded-full bg-moon-100/85 px-2.5 py-1">
+                {isCodexCpa ? `Codex${account.cpa_plan_type ? ` · ${account.cpa_plan_type}` : ""}` : quota}
+              </span>
               {expiry ? (
                 <span
                   className={cn(

@@ -378,7 +378,9 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 	fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 	if err := c.store.UpdateAccountCodexQuota(acc.ID, body, fetchedAt); err != nil {
 		slog.Error("fetch codex quota: persist", "account_id", acc.ID, "err", err)
+		return
 	}
+	c.cache.Invalidate()
 }
 
 func (c *Checker) syncCpaMetadata() {
