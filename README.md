@@ -142,9 +142,7 @@ Lune 的日常开发流程也走 Docker Compose，无需在本机装 Go 或 Node
 ```bash
 ./scripts/up.sh               # 启动 Lune（内置 CPA），并打印访问地址
 ./scripts/restart.sh          # 默认重启 Lune
-./scripts/restart.sh all      # 同上，兼容旧习惯
 ./scripts/logs.sh             # 默认跟随 Lune 日志
-./scripts/logs.sh all         # 同上，日志里包含内置 CPA
 ./scripts/ps.sh               # 查看容器状态
 ./scripts/down.sh             # 停止并移除容器
 ./scripts/rebuild.sh          # 重新构建并启动
