@@ -55,6 +55,9 @@ func TestListSystemNotificationsHandlesRFC3339Expiry(t *testing.T) {
 	byTitle := make(map[string]SystemNotification, len(notifications))
 	for _, item := range notifications {
 		byTitle[item.Title] = item
+		if item.Label == "codex-credential" {
+			t.Fatalf("codex credential expiry must not generate a system notification: %+v", notifications)
+		}
 	}
 
 	if byTitle["CPA account expired"].Severity != "critical" {
@@ -88,6 +91,9 @@ func TestOverviewExpiryAlertsIgnoreCodexCredentials(t *testing.T) {
 	messages := map[string]bool{}
 	for _, alert := range overview.Alerts {
 		messages[alert.Message] = true
+		if alert.Message == fmt.Sprintf("Account %q expires at %s", "codex-credential", expiringSoon) {
+			t.Fatalf("codex credential expiry must not generate an overview alert: %+v", overview.Alerts)
+		}
 	}
 	if !messages[fmt.Sprintf("Account %q expires at %s", "claude-credential", expiringSoon)] {
 		t.Fatalf("missing non-codex alert: %+v", overview.Alerts)

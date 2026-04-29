@@ -15,12 +15,18 @@ func parseCodexSubscriptionExpiry(body []byte, accountID string) (string, error)
 	}
 
 	scopes := subscriptionScopes(root, accountID)
-	for _, scope := range scopes {
-		if expiresAt, ok := findSubscriptionExpiry(scope, nil); ok {
-			return expiresAt.UTC().Format(time.RFC3339), nil
-		}
+	if len(scopes) == 0 {
+		return "", fmt.Errorf("subscription account not found")
 	}
-	return "", fmt.Errorf("subscription expiry not found")
+	var candidates []subscriptionCandidate
+	for _, scope := range scopes {
+		candidates = collectSubscriptionCandidates(scope, nil, candidates)
+	}
+	expiresAt, ok := bestSubscriptionCandidate(candidates)
+	if !ok {
+		return "", fmt.Errorf("subscription expiry not found")
+	}
+	return expiresAt.UTC().Format(time.RFC3339), nil
 }
 
 func subscriptionScopes(root any, accountID string) []any {
@@ -35,7 +41,10 @@ func subscriptionScopes(root any, accountID string) []any {
 			if valueMatches(x["account_id"], accountID) || valueMatches(x["id"], accountID) || valueMatches(x["chatgpt_account_id"], accountID) {
 				scopes = append(scopes, x)
 			}
-			for _, child := range x {
+			for key, child := range x {
+				if valueMatches(key, accountID) {
+					scopes = append(scopes, child)
+				}
 				walk(child)
 			}
 		case []any:
@@ -45,59 +54,83 @@ func subscriptionScopes(root any, accountID string) []any {
 		}
 	}
 	walk(root)
-	if len(scopes) == 0 {
-		return []any{root}
-	}
 	return scopes
 }
 
 func valueMatches(v any, want string) bool {
 	s, ok := v.(string)
-	return ok && s == want
+	return ok && strings.EqualFold(s, want)
 }
 
-func findSubscriptionExpiry(v any, path []string) (time.Time, bool) {
+type subscriptionCandidate struct {
+	expiresAt time.Time
+	priority  int
+}
+
+func bestSubscriptionCandidate(candidates []subscriptionCandidate) (time.Time, bool) {
+	if len(candidates) == 0 {
+		return time.Time{}, false
+	}
+	best := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if candidate.priority < best.priority {
+			best = candidate
+			continue
+		}
+		if candidate.priority == best.priority && candidate.expiresAt.After(best.expiresAt) {
+			best = candidate
+		}
+	}
+	return best.expiresAt, true
+}
+
+func collectSubscriptionCandidates(v any, path []string, candidates []subscriptionCandidate) []subscriptionCandidate {
 	switch x := v.(type) {
 	case map[string]any:
 		for key, value := range x {
-			if t, ok := parseSubscriptionTime(key, value, path); ok {
-				return t, true
+			if t, priority, ok := parseSubscriptionTime(key, value, path); ok {
+				candidates = append(candidates, subscriptionCandidate{expiresAt: t, priority: priority})
 			}
 		}
 		for key, value := range x {
-			if t, ok := findSubscriptionExpiry(value, append(path, key)); ok {
-				return t, true
-			}
+			candidates = collectSubscriptionCandidates(value, append(path, key), candidates)
 		}
 	case []any:
 		for _, value := range x {
-			if t, ok := findSubscriptionExpiry(value, path); ok {
-				return t, true
-			}
+			candidates = collectSubscriptionCandidates(value, path, candidates)
 		}
 	}
-	return time.Time{}, false
+	return candidates
 }
 
-func parseSubscriptionTime(key string, value any, path []string) (time.Time, bool) {
+func parseSubscriptionTime(key string, value any, path []string) (time.Time, int, bool) {
 	key = strings.ToLower(key)
 	pathText := strings.ToLower(strings.Join(path, "."))
-	explicit := key == "subscription_expires_at_timestamp" ||
-		key == "subscription_expires_at" ||
-		key == "subscription_expiry" ||
-		key == "current_period_end" ||
-		key == "billing_period_end" ||
-		key == "next_billing_at" ||
-		key == "next_renewal_at" ||
-		key == "renews_at"
-	contextual := key == "expires_at" && (strings.Contains(pathText, "subscription") ||
-		strings.Contains(pathText, "account_plan") ||
-		strings.Contains(pathText, "entitlement") ||
-		strings.Contains(pathText, "billing"))
-	if !explicit && !contextual {
-		return time.Time{}, false
+	priority := subscriptionTimePriority(key, pathText)
+	if priority == 0 {
+		return time.Time{}, 0, false
 	}
-	return parseAnyTime(value)
+	t, ok := parseAnyTime(value)
+	return t, priority, ok
+}
+
+func subscriptionTimePriority(key, pathText string) int {
+	switch key {
+	case "subscription_expires_at_timestamp", "subscription_expires_at", "subscription_expiry":
+		return 1
+	case "current_period_end", "billing_period_end":
+		return 2
+	case "next_billing_at", "next_renewal_at", "renews_at":
+		return 3
+	case "expires_at":
+		if strings.Contains(pathText, "subscription") ||
+			strings.Contains(pathText, "account_plan") ||
+			strings.Contains(pathText, "entitlement") ||
+			strings.Contains(pathText, "billing") {
+			return 4
+		}
+	}
+	return 0
 }
 
 func parseAnyTime(v any) (time.Time, bool) {
