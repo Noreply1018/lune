@@ -325,35 +325,40 @@ function GatewayBaseUrlInscription({ baseUrl }: { baseUrl: string }) {
       onFocus={() => setAwake(true)}
       onBlur={soften}
       className={[
-        "pointer-events-auto w-[calc(100vw-3rem)] max-w-[30rem] select-none transition-opacity duration-700",
+        "pointer-events-auto w-[min(22rem,calc(100vw-3rem))] select-none transition-opacity duration-700",
         awake || copied ? "opacity-100" : "opacity-40",
       ].join(" ")}
+      style={{
+        fontFamily:
+          "'Iowan Old Style','Palatino Linotype','Noto Serif SC','Source Han Serif SC',Georgia,serif",
+      }}
     >
-      <div className="rounded-[1rem] border border-moon-200/55 bg-white/80 px-3.5 py-3 shadow-[0_18px_40px_-30px_rgba(33,40,63,0.4)] backdrop-blur-md">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <p className="text-[10px] uppercase tracking-[0.28em] text-moon-400">
-              Gateway Base URL
-            </p>
-            <code className="block truncate font-mono text-[12px] text-moon-700" title={baseUrl}>
-              {baseUrl}
-            </code>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 shrink-0 rounded-full text-moon-500"
-            onClick={copyBaseUrl}
-            aria-label="复制 Gateway Base URL"
-            title="复制 Gateway Base URL"
+      <div className="flex items-end justify-end gap-2 text-right">
+        <div className="min-w-0 space-y-1">
+          <p className="whitespace-nowrap text-[8px] uppercase tracking-[0.32em] text-moon-500">
+            Gateway Base URL
+          </p>
+          <code
+            className="block truncate font-mono text-[12px] tracking-[0.08em] text-moon-700"
+            title={baseUrl}
           >
-            {copied ? (
-              <Check className="size-3.5 text-status-green" />
-            ) : (
-              <Copy className="size-3.5" />
-            )}
-          </Button>
+            {baseUrl}
+          </code>
         </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="mb-[-0.15rem] size-6 shrink-0 rounded-full text-moon-500 hover:bg-white/45"
+          onClick={copyBaseUrl}
+          aria-label="复制 Gateway Base URL"
+          title="复制 Gateway Base URL"
+        >
+          {copied ? (
+            <Check className="size-3.5 text-status-green" />
+          ) : (
+            <Copy className="size-3.5" />
+          )}
+        </Button>
       </div>
     </div>
   );
