@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,6 +15,12 @@ import (
 	"lune/internal/store"
 )
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.New(filepath.Join(t.TempDir(), "lune-test.db"))
@@ -24,6 +31,108 @@ func newTestStore(t *testing.T) *store.Store {
 		_ = st.Close()
 	})
 	return st
+}
+
+func TestCheckCpaServiceRetriesStartupConnectionFailures(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "http://cpa.local",
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	cache.Invalidate()
+
+	attempts := 0
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.cpaHealthAttempts = 3
+	checker.cpaHealthRetryDelay = time.Millisecond
+	checker.client = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			attempts++
+			if r.Header.Get("Authorization") != "Bearer service-key" {
+				t.Fatalf("missing CPA service API key header")
+			}
+			if attempts < 3 {
+				return nil, errors.New("connection refused")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       http.NoBody,
+			}, nil
+		}),
+	}
+
+	svc, err := st.GetCpaServiceByID(serviceID)
+	if err != nil {
+		t.Fatalf("get cpa service: %v", err)
+	}
+	checker.checkCpaService(context.Background(), svc)
+
+	updated, err := st.GetCpaServiceByID(serviceID)
+	if err != nil {
+		t.Fatalf("get updated cpa service: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected 3 CPA health attempts, got %d", attempts)
+	}
+	if updated.Status != "healthy" || updated.LastError != "" {
+		t.Fatalf("expected healthy CPA service, got status=%q error=%q", updated.Status, updated.LastError)
+	}
+}
+
+func TestCheckCpaServiceDoesNotRetryHttpStatusFailures(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "http://cpa.local",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+
+	attempts := 0
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.cpaHealthAttempts = 3
+	checker.cpaHealthRetryDelay = time.Millisecond
+	checker.client = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			attempts++
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Body:       http.NoBody,
+			}, nil
+		}),
+	}
+
+	svc, err := st.GetCpaServiceByID(serviceID)
+	if err != nil {
+		t.Fatalf("get cpa service: %v", err)
+	}
+	checker.checkCpaService(context.Background(), svc)
+
+	updated, err := st.GetCpaServiceByID(serviceID)
+	if err != nil {
+		t.Fatalf("get updated cpa service: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected one CPA health attempt, got %d", attempts)
+	}
+	if updated.Status != "error" || updated.LastError != "HTTP 401" {
+		t.Fatalf("expected HTTP 401 error, got status=%q error=%q", updated.Status, updated.LastError)
+	}
 }
 
 func TestFetchCodexSubscriptionsUsesAuthFileMetadata(t *testing.T) {

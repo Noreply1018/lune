@@ -22,6 +22,8 @@ const (
 	degradedLatencyThreshold       = 5 * time.Second
 	maxConcurrency                 = 10
 	codexSubscriptionFetchInterval = 6 * time.Hour
+	defaultCpaHealthAttempts       = 10
+	defaultCpaHealthRetryDelay     = 500 * time.Millisecond
 )
 
 type Checker struct {
@@ -31,6 +33,9 @@ type Checker struct {
 	cpaAuthDir    string
 	managementKey string
 	notifier      *notify.Service
+
+	cpaHealthAttempts   int
+	cpaHealthRetryDelay time.Duration
 }
 
 func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir, managementKey string, notifier *notify.Service) *Checker {
@@ -41,6 +46,9 @@ func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir, manageme
 		cpaAuthDir:    cpaAuthDir,
 		managementKey: managementKey,
 		notifier:      notifier,
+
+		cpaHealthAttempts:   defaultCpaHealthAttempts,
+		cpaHealthRetryDelay: defaultCpaHealthRetryDelay,
 	}
 }
 
@@ -319,33 +327,79 @@ func parseModelList(body []byte) []string {
 }
 
 func (c *Checker) checkCpaService(ctx context.Context, svc *store.CpaService) {
-	url := fmt.Sprintf("%s/healthz", strings.TrimRight(svc.BaseURL, "/"))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
+	if err := c.probeCpaService(ctx, svc); err != nil {
 		c.store.UpdateCpaServiceHealth(svc.ID, "error", err.Error())
-		c.cache.Invalidate()
-		return
-	}
-	if svc.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+svc.APIKey)
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		c.store.UpdateCpaServiceHealth(svc.ID, "error", err.Error())
-		c.cache.Invalidate()
-		return
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		c.store.UpdateCpaServiceHealth(svc.ID, "error", fmt.Sprintf("HTTP %d", resp.StatusCode))
 		c.cache.Invalidate()
 		return
 	}
 
 	c.store.UpdateCpaServiceHealth(svc.ID, "healthy", "")
 	c.cache.Invalidate()
+}
+
+func (c *Checker) probeCpaService(ctx context.Context, svc *store.CpaService) error {
+	url := fmt.Sprintf("%s/healthz", strings.TrimRight(svc.BaseURL, "/"))
+	var lastErr error
+
+	attempts := c.cpaHealthAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		retryable, err := c.probeCpaHealthURL(ctx, url, svc.APIKey)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		if !retryable || attempt == attempts {
+			break
+		}
+		if !sleepContext(ctx, c.cpaHealthRetryDelay) {
+			return ctx.Err()
+		}
+	}
+
+	return lastErr
+}
+
+func (c *Checker) probeCpaHealthURL(ctx context.Context, url, apiKey string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return true, err
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	return false, nil
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // fetchCodexQuotas pulls `wham/usage` through CPA api-call for every enabled
