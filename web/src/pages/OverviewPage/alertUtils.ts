@@ -4,6 +4,7 @@ export const DISMISS_STORAGE_KEY = "lune.overview.alertDismissals.v1";
 
 export type AlertKind =
   | "account_expiring"
+  | "cpa_credential_error"
   | "account_error"
   | "pool_unhealthy"
   | "other";
@@ -20,6 +21,8 @@ export function parseAlert(alert: OverviewAlert): ParsedAlert {
   const kind: AlertKind =
     alert.type === "account_expiring" || alert.type === "expiring"
       ? "account_expiring"
+      : alert.type === "cpa_credential_error"
+      ? "cpa_credential_error"
       : alert.type === "account_error" || alert.type === "error"
       ? "account_error"
       : alert.type === "pool_unhealthy"
@@ -33,6 +36,9 @@ export function parseAlert(alert: OverviewAlert): ParsedAlert {
     if (kind === "account_expiring") {
       const at = detail.match(/^expires at\s+(.+)$/i);
       detail = at ? at[1].trim() : detail;
+    } else if (kind === "cpa_credential_error") {
+      const colon = detail.match(/^CPA credential requires login(?::\s*(.*))?$/i);
+      detail = colon && colon[1] ? colon[1].trim() : "";
     } else if (kind === "account_error") {
       const colon = detail.match(/^has error status(?::\s*(.*))?$/i);
       detail = colon && colon[1] ? colon[1].trim() : "";
@@ -49,6 +55,10 @@ export function formatCn(alert: OverviewAlert, parsed: ParsedAlert): string {
   switch (parsed.kind) {
     case "account_expiring":
       return `账号${label}将于 ${parsed.detail} 到期`;
+    case "cpa_credential_error":
+      return parsed.detail
+        ? `账号${label}CPA 登录态失效：${parsed.detail}`
+        : `账号${label}CPA 登录态失效，需要重新登录`;
     case "account_error":
       return parsed.detail
         ? `账号${label}状态异常：${parsed.detail}`

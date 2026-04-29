@@ -19,6 +19,7 @@ import type { PoolMember } from "@/lib/types";
 import {
   getAccessLabel,
   getAccountHealth,
+  getCpaCredentialMeta,
   getExpiryMeta,
   parseQuotaDisplay,
 } from "@/lib/lune";
@@ -74,6 +75,7 @@ export default function AccountCard({
       ? account?.cpa_subscription_expires_at ?? null
       : account?.cpa_expired_at ?? null,
   );
+  const credential = account ? getCpaCredentialMeta(account) : null;
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
   // Every non-Codex account — direct as well as non-Codex CPA (e.g. Claude) —
   // gets the dual-row signal strip so both card variants share the same height.
@@ -195,6 +197,14 @@ export default function AccountCard({
               )}
             >
               {expiry.label}
+            </span>
+          ) : null}
+          {credential ? (
+            <span
+              className="rounded-full bg-status-red/10 px-2 py-0.5 text-status-red"
+              title={credential.detail}
+            >
+              {credential.label}
             </span>
           ) : null}
         </div>

@@ -20,6 +20,10 @@ type Account struct {
 	CpaExpiredAt             string `json:"cpa_expired_at,omitempty"`
 	CpaLastRefreshAt         string `json:"cpa_last_refresh_at,omitempty"`
 	CpaDisabled              bool   `json:"cpa_disabled,omitempty"`
+	CpaCredentialStatus      string `json:"cpa_credential_status,omitempty"`
+	CpaCredentialReason      string `json:"cpa_credential_reason,omitempty"`
+	CpaCredentialLastError   string `json:"cpa_credential_last_error,omitempty"`
+	CpaCredentialCheckedAt   string `json:"cpa_credential_checked_at,omitempty"`
 	CpaSubscriptionExpiresAt string `json:"cpa_subscription_expires_at,omitempty"`
 	CpaSubscriptionFetchedAt string `json:"cpa_subscription_fetched_at,omitempty"`
 	CpaSubscriptionLastError string `json:"cpa_subscription_last_error,omitempty"`

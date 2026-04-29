@@ -156,6 +156,38 @@ func (s *Store) GetOverview() (*Overview, error) {
 		}
 	}
 
+	credentialRows, err := s.db.Query(`
+		SELECT a.id, a.label, a.cpa_credential_reason, a.cpa_credential_last_error,
+			COALESCE((
+				SELECT pm.pool_id
+				FROM pool_members pm
+				JOIN pools p ON p.id = pm.pool_id
+				WHERE pm.account_id = a.id AND pm.enabled = 1 AND p.enabled = 1
+				ORDER BY p.priority, p.id
+				LIMIT 1
+			), 0) AS pool_id
+		FROM accounts a
+		WHERE a.source_kind = 'cpa'
+		  AND a.cpa_credential_status = 'needs_login'
+		  AND a.enabled = 1`,
+	)
+	if err == nil {
+		defer credentialRows.Close()
+		for credentialRows.Next() {
+			var id int64
+			var label, reason, lastError string
+			var poolID int64
+			if err := credentialRows.Scan(&id, &label, &reason, &lastError, &poolID); err != nil {
+				continue
+			}
+			o.Alerts = append(o.Alerts, Alert{
+				Type:    "cpa_credential_error",
+				Message: fmt.Sprintf("Account %q CPA credential requires login: %s", label, credentialDetail(reason, lastError)),
+				PoolID:  poolID,
+			})
+		}
+	}
+
 	// alerts: pools without any routable account
 	poolAlertRows, err := s.db.Query(`
 		SELECT p.id, p.label,

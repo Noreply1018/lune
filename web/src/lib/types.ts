@@ -24,6 +24,10 @@ export interface Account {
   cpa_expired_at: string | null;
   cpa_last_refresh_at: string | null;
   cpa_disabled: boolean;
+  cpa_credential_status?: "unknown" | "ok" | "needs_login";
+  cpa_credential_reason?: string;
+  cpa_credential_last_error?: string;
+  cpa_credential_checked_at?: string | null;
   cpa_subscription_expires_at?: string | null;
   cpa_subscription_fetched_at?: string | null;
   cpa_subscription_last_error?: string;
@@ -125,6 +129,7 @@ export interface OverviewAlert {
     | "error"
     | "account_expiring"
     | "account_error"
+    | "cpa_credential_error"
     | "pool_unhealthy"
     | string;
   message: string;

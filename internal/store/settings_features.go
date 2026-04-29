@@ -74,6 +74,45 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 		return nil, err
 	}
 
+	credentialRows, err := s.db.Query(
+		`SELECT id, label, cpa_credential_reason, cpa_credential_last_error
+		 FROM accounts
+		 WHERE source_kind = 'cpa'
+		   AND cpa_credential_status = 'needs_login'
+		   AND enabled = 1
+		 ORDER BY cpa_credential_checked_at DESC, id DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer credentialRows.Close()
+
+	for credentialRows.Next() {
+		var (
+			accountID int64
+			label     string
+			reason    string
+			lastError string
+		)
+		if err := credentialRows.Scan(&accountID, &label, &reason, &lastError); err != nil {
+			return nil, err
+		}
+		detail := credentialDetail(reason, lastError)
+		accountIDCopy := accountID
+		notifications = append(notifications, SystemNotification{
+			Type:      "cpa_credential_error",
+			Severity:  "critical",
+			Title:     "CPA credential requires login",
+			Message:   fmt.Sprintf("Account %q CPA credential requires login: %s", label, detail),
+			AccountID: &accountIDCopy,
+			Label:     label,
+			LastError: detail,
+		})
+	}
+	if err := credentialRows.Err(); err != nil {
+		return nil, err
+	}
+
 	accountRows, err := s.db.Query(
 		`SELECT id, label, last_error
 		 FROM accounts
@@ -153,6 +192,16 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 	}
 
 	return notifications, nil
+}
+
+func credentialDetail(reason, lastError string) string {
+	if lastError != "" {
+		return lastError
+	}
+	if reason != "" {
+		return reason
+	}
+	return "needs login"
 }
 
 func parseCpaExpiry(raw string) (time.Time, error) {

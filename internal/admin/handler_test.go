@@ -317,11 +317,11 @@ func TestGetNotificationsReturnsSettingsAndSubscriptions(t *testing.T) {
 	if resp.Data.Settings.Enabled {
 		t.Fatalf("expected settings to default to disabled")
 	}
-	if len(resp.Data.Subscriptions) != 4 {
-		t.Fatalf("expected 4 subscriptions, got %d", len(resp.Data.Subscriptions))
+	if len(resp.Data.Subscriptions) != 5 {
+		t.Fatalf("expected 5 subscriptions, got %d", len(resp.Data.Subscriptions))
 	}
-	if len(resp.Data.EventTypes) != 4 {
-		t.Fatalf("expected 4 event types, got %d", len(resp.Data.EventTypes))
+	if len(resp.Data.EventTypes) != 5 {
+		t.Fatalf("expected 5 event types, got %d", len(resp.Data.EventTypes))
 	}
 }
 

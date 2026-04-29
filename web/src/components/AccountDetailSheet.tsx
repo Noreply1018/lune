@@ -26,6 +26,7 @@ import {
   ensureArray,
   getAccessLabel,
   getAccountHealth,
+  getCpaCredentialMeta,
   getExpiryMeta,
   parseQuotaDisplay,
 } from "@/lib/lune";
@@ -89,6 +90,7 @@ export default function AccountDetailSheet({
   const expiry = getExpiryMeta(
     isCodexCpa ? account.cpa_subscription_expires_at ?? null : account.cpa_expired_at ?? null,
   );
+  const credential = getCpaCredentialMeta(account);
   const quota = parseQuotaDisplay(account.quota_display ?? "");
   const codexQuota = parseCodexQuota(account);
   const models = ensureArray(account.models);
@@ -132,6 +134,11 @@ export default function AccountDetailSheet({
                   )}
                 >
                   {expiry.label}
+                </span>
+              ) : null}
+              {credential ? (
+                <span className="rounded-full bg-status-red/10 px-2.5 py-1 text-status-red">
+                  {credential.label}
                 </span>
               ) : null}
               <span className="inline-flex items-center gap-1 text-moon-400">
@@ -182,6 +189,16 @@ export default function AccountDetailSheet({
                   baseUrl={account.runtime?.base_url || account.base_url || "--"}
                   subscriptionExpiry={isCodexCpa ? account.cpa_subscription_expires_at ?? null : null}
                   credentialExpiry={account.cpa_expired_at ?? null}
+                  credentialStatus={
+                    account.source_kind === "cpa" ? account.cpa_credential_status ?? "unknown" : null
+                  }
+                  credentialReason={account.source_kind === "cpa" ? account.cpa_credential_reason ?? "" : ""}
+                  credentialLastError={
+                    account.source_kind === "cpa" ? account.cpa_credential_last_error ?? "" : ""
+                  }
+                  credentialCheckedAt={
+                    account.source_kind === "cpa" ? account.cpa_credential_checked_at ?? null : null
+                  }
                   lastCheckedAt={account.last_checked_at ?? null}
                   lastError={account.last_error ?? null}
                 />
@@ -602,6 +619,10 @@ function DebugPanel({
   baseUrl,
   subscriptionExpiry,
   credentialExpiry,
+  credentialStatus,
+  credentialReason,
+  credentialLastError,
+  credentialCheckedAt,
   lastCheckedAt,
   lastError,
 }: {
@@ -609,6 +630,10 @@ function DebugPanel({
   baseUrl: string;
   subscriptionExpiry: string | null;
   credentialExpiry: string | null;
+  credentialStatus: string | null;
+  credentialReason: string;
+  credentialLastError: string;
+  credentialCheckedAt: string | null;
   lastCheckedAt: string | null;
   lastError: string | null;
 }) {
@@ -624,9 +649,19 @@ function DebugPanel({
       ) : null}
       {credentialExpiry ? (
         <DebugRow
-          label="CPA Credential Expires"
+          label="CPA Token Expires"
           value={`${credentialExpiry} · ${relativeTime(credentialExpiry)}`}
         />
+      ) : null}
+      {credentialStatus ? (
+        <>
+          <DebugRow label="CPA Credential Status" value={credentialStatus} />
+          {credentialReason ? <DebugRow label="CPA Credential Reason" value={credentialReason} /> : null}
+          {credentialLastError ? (
+            <DebugRow label="CPA Credential Error" value={credentialLastError} tone="danger" />
+          ) : null}
+          <DebugRow label="CPA Credential Checked" value={relativeTime(credentialCheckedAt) || "--"} />
+        </>
       ) : null}
       <DebugRow label="Last Checked" value={relativeTime(lastCheckedAt) || "--"} />
       <DebugRow

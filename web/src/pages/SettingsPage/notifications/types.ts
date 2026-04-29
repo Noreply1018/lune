@@ -52,6 +52,18 @@ const EVENT_PLACEHOLDERS: Record<string, EventPlaceholderSpec[]> = {
       sampleKey: "expires_at",
     },
   ],
+  cpa_credential_error: [
+    {
+      display: "【账号】",
+      template: "{{ .Vars.account_label }}",
+      sampleKey: "account_label",
+    },
+    {
+      display: "【失效原因】",
+      template: "{{ .Vars.last_error }}",
+      sampleKey: "last_error",
+    },
+  ],
   account_error: [
     {
       display: "【账号】",
@@ -91,7 +103,8 @@ const EVENT_PLACEHOLDERS: Record<string, EventPlaceholderSpec[]> = {
 };
 
 export const EVENT_TRIGGER_DESCRIPTION: Record<string, string> = {
-  account_expiring: "账号凭据在阈值内即将过期",
+  account_expiring: "账号订阅或非 Codex CPA 凭据在阈值内即将过期",
+  cpa_credential_error: "CPA 登录态失效，需要用户重新登录",
   account_error: "账号健康检查连续失败",
   cpa_service_error: "内置 CPA 运行状态检查失败",
   test: "手动点击 Send Test 触发",

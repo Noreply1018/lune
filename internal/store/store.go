@@ -19,7 +19,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 14
+const v3SchemaVersion = 15
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS accounts (
     cpa_expired_at      TEXT NOT NULL DEFAULT '',
     cpa_last_refresh_at TEXT NOT NULL DEFAULT '',
     cpa_disabled        INTEGER NOT NULL DEFAULT 0,
+    cpa_credential_status TEXT NOT NULL DEFAULT 'unknown',
+    cpa_credential_reason TEXT NOT NULL DEFAULT '',
+    cpa_credential_last_error TEXT NOT NULL DEFAULT '',
+    cpa_credential_checked_at TEXT NOT NULL DEFAULT '',
     cpa_subscription_expires_at TEXT NOT NULL DEFAULT '',
     cpa_subscription_fetched_at TEXT NOT NULL DEFAULT '',
     cpa_subscription_last_error TEXT NOT NULL DEFAULT '',
@@ -197,6 +201,7 @@ INSERT OR IGNORE INTO notification_settings (id) VALUES (1);
 
 INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_template) VALUES
     ('account_expiring',  1, '账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。'),
+    ('cpa_credential_error', 1, '账号 {{ .Vars.account_label }} 的 CPA 登录态失效：{{ .Vars.last_error }}。请重新登录。'),
     ('account_error',     1, '账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}'),
     ('cpa_service_error', 1, 'CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}'),
     ('test',              1, '这是一条用于验证渠道可达性的真实消息，可忽略。');
@@ -279,6 +284,11 @@ func (s *Store) migrateV3(dbPath string) error {
 		if ver < 14 {
 			if err := s.migrateCpaSubscriptionColumns(); err != nil {
 				return fmt.Errorf("migrate CPA subscription columns: %w", err)
+			}
+		}
+		if ver < 15 {
+			if err := s.migrateCpaCredentialColumns(); err != nil {
+				return fmt.Errorf("migrate CPA credential columns: %w", err)
 			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
@@ -427,6 +437,7 @@ func (s *Store) migrateNotificationTextOnly() error {
 	// to the richer concrete-field defaults.
 	bodyUpgrades := []struct{ event, body string }{
 		{"account_expiring", "账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。"},
+		{"cpa_credential_error", "账号 {{ .Vars.account_label }} 的 CPA 登录态失效：{{ .Vars.last_error }}。请重新登录。"},
 		{"account_error", "账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}"},
 		{"cpa_service_error", "CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}"},
 	}
@@ -520,7 +531,6 @@ func (s *Store) migrateProbeColumns() error {
 			return fmt.Errorf("add column %s: %w", a.col, err)
 		}
 	}
-
 	s.schemaMu.Lock()
 	delete(s.schemaCache, "accounts")
 	s.schemaMu.Unlock()
@@ -577,6 +587,46 @@ func (s *Store) migrateCpaSubscriptionColumns() error {
 		if _, err := s.db.Exec(a.ddl); err != nil {
 			return fmt.Errorf("add column %s: %w", a.col, err)
 		}
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "accounts")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migrateCpaCredentialColumns() error {
+	exists, err := s.tableExists("accounts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	adds := []struct{ col, ddl string }{
+		{"cpa_credential_status", `ALTER TABLE accounts ADD COLUMN cpa_credential_status TEXT NOT NULL DEFAULT 'unknown'`},
+		{"cpa_credential_reason", `ALTER TABLE accounts ADD COLUMN cpa_credential_reason TEXT NOT NULL DEFAULT ''`},
+		{"cpa_credential_last_error", `ALTER TABLE accounts ADD COLUMN cpa_credential_last_error TEXT NOT NULL DEFAULT ''`},
+		{"cpa_credential_checked_at", `ALTER TABLE accounts ADD COLUMN cpa_credential_checked_at TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, a := range adds {
+		has, err := s.hasColumn("accounts", a.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.col, err)
+		}
+	}
+	if _, err := s.db.Exec(
+		`INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_template) VALUES (?, 1, ?)`,
+		"cpa_credential_error",
+		"账号 {{ .Vars.account_label }} 的 CPA 登录态失效：{{ .Vars.last_error }}。请重新登录。",
+	); err != nil {
+		return fmt.Errorf("seed CPA credential notification subscription: %w", err)
 	}
 
 	s.schemaMu.Lock()

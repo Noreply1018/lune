@@ -197,6 +197,41 @@ export function getExpiryMeta(iso: string | null): {
   return { label: `${daysLeft} 天后到期`, tone: "default", daysLeft };
 }
 
+export function getCpaCredentialMeta(account: Account): {
+  label: string;
+  detail: string;
+  tone: "default" | "danger";
+} | null {
+  if (account.source_kind !== "cpa") return null;
+  if (account.cpa_credential_status !== "needs_login") return null;
+  const reason = account.cpa_credential_reason || "";
+  const detail = account.cpa_credential_last_error || cpaCredentialReasonLabel(reason);
+  return {
+    label: "需要重新登录",
+    detail,
+    tone: "danger",
+  };
+}
+
+export function cpaCredentialReasonLabel(reason: string): string {
+  switch (reason) {
+    case "disabled":
+      return "CPA 凭证已被禁用";
+    case "file_missing":
+      return "CPA 凭证文件缺失";
+    case "file_corrupt":
+      return "CPA 凭证文件损坏";
+    case "auth_index_missing":
+      return "CPA 无法定位该凭证";
+    case "refresh_failed":
+      return "CPA 自动刷新失败";
+    case "auth_failed":
+      return "CPA 授权失败";
+    default:
+      return "CPA 登录态失效";
+  }
+}
+
 export function parseQuotaDisplay(raw: string): string {
   if (!raw) return "--";
 

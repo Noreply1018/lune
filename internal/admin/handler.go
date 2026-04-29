@@ -2126,21 +2126,26 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 	if f.LastRefresh != "" {
 		lastRefreshAt = f.LastRefresh
 	}
+	credentialStatus, credentialReason, credentialLastError, credentialCheckedAt := cpaCredentialStateFromAuthFile(f)
 
 	account := &store.Account{
-		Label:            label,
-		SourceKind:       "cpa",
-		CpaServiceID:     &svc.ID,
-		CpaProvider:      f.Type,
-		CpaAccountKey:    accountKey,
-		CpaEmail:         f.Email,
-		CpaPlanType:      planType,
-		CpaOpenaiID:      openaiID,
-		CpaExpiredAt:     expiredAt,
-		CpaLastRefreshAt: lastRefreshAt,
-		CpaDisabled:      f.Disabled,
-		Enabled:          enabled,
-		Notes:            notes,
+		Label:                  label,
+		SourceKind:             "cpa",
+		CpaServiceID:           &svc.ID,
+		CpaProvider:            f.Type,
+		CpaAccountKey:          accountKey,
+		CpaEmail:               f.Email,
+		CpaPlanType:            planType,
+		CpaOpenaiID:            openaiID,
+		CpaExpiredAt:           expiredAt,
+		CpaLastRefreshAt:       lastRefreshAt,
+		CpaDisabled:            f.Disabled,
+		CpaCredentialStatus:    credentialStatus,
+		CpaCredentialReason:    credentialReason,
+		CpaCredentialLastError: credentialLastError,
+		CpaCredentialCheckedAt: credentialCheckedAt,
+		Enabled:                enabled,
+		Notes:                  notes,
 	}
 
 	id, err := h.store.CreateAccount(account)
@@ -2148,7 +2153,16 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			existing, findErr := h.store.FindAccountByCpaKey(svc.ID, accountKey)
 			if findErr == nil && existing != nil {
+				_ = h.store.UpdateAccountCpaMetadata(existing.ID, expiredAt, lastRefreshAt, f.Disabled)
+				_ = h.store.UpdateAccountCpaCredentialStatus(existing.ID, credentialStatus, credentialReason, credentialLastError, credentialCheckedAt)
 				h.fillAccountResponse(existing)
+				existing.CpaExpiredAt = expiredAt
+				existing.CpaLastRefreshAt = lastRefreshAt
+				existing.CpaDisabled = f.Disabled
+				existing.CpaCredentialStatus = credentialStatus
+				existing.CpaCredentialReason = credentialReason
+				existing.CpaCredentialLastError = credentialLastError
+				existing.CpaCredentialCheckedAt = credentialCheckedAt
 				return existing, nil
 			}
 		}
@@ -2158,6 +2172,14 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 	account.ID = id
 	h.fillAccountResponse(account)
 	return account, nil
+}
+
+func cpaCredentialStateFromAuthFile(f *cpa.CpaAuthFile) (status, reason, lastError, checkedAt string) {
+	checkedAt = time.Now().UTC().Format(time.RFC3339)
+	if f.Disabled {
+		return "needs_login", "disabled", "CPA credential disabled", checkedAt
+	}
+	return "ok", "", "", checkedAt
 }
 
 // --- CPA Import ---
@@ -2354,20 +2376,25 @@ func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request)
 		if f.LastRefresh != "" {
 			lastRefreshAt = f.LastRefresh
 		}
+		credentialStatus, credentialReason, credentialLastError, credentialCheckedAt := cpaCredentialStateFromAuthFile(f)
 
 		account := &store.Account{
-			Label:            fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType),
-			SourceKind:       "cpa",
-			CpaServiceID:     &svc.ID,
-			CpaProvider:      f.Type,
-			CpaAccountKey:    key,
-			CpaEmail:         f.Email,
-			CpaPlanType:      planType,
-			CpaOpenaiID:      openaiID,
-			CpaExpiredAt:     expiredAt,
-			CpaLastRefreshAt: lastRefreshAt,
-			CpaDisabled:      f.Disabled,
-			Enabled:          true,
+			Label:                  fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType),
+			SourceKind:             "cpa",
+			CpaServiceID:           &svc.ID,
+			CpaProvider:            f.Type,
+			CpaAccountKey:          key,
+			CpaEmail:               f.Email,
+			CpaPlanType:            planType,
+			CpaOpenaiID:            openaiID,
+			CpaExpiredAt:           expiredAt,
+			CpaLastRefreshAt:       lastRefreshAt,
+			CpaDisabled:            f.Disabled,
+			CpaCredentialStatus:    credentialStatus,
+			CpaCredentialReason:    credentialReason,
+			CpaCredentialLastError: credentialLastError,
+			CpaCredentialCheckedAt: credentialCheckedAt,
+			Enabled:                true,
 		}
 
 		accountID, err := h.store.CreateAccount(account)

@@ -93,7 +93,6 @@ func (c *Checker) checkAll(ctx context.Context) {
 
 	// sync CPA metadata from auth files
 	c.syncCpaMetadata()
-	c.fetchDirectBalances(ctx)
 	c.fetchCodexQuotas(ctx)
 	c.fetchCodexSubscriptions(ctx)
 	c.pruneRequestLogs()
@@ -139,7 +138,12 @@ func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		c.store.UpdateAccountHealth(acc.ID, "error", fmt.Sprintf("HTTP %d", resp.StatusCode))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
+		msg := formatHTTPStatusError(resp.StatusCode, body)
+		c.store.UpdateAccountHealth(acc.ID, "error", msg)
+		if acc.SourceKind == "cpa" && isCpaAuthFailure(resp.StatusCode, string(body)) {
+			c.markCpaCredentialNeedsLogin(acc.ID, credentialReasonFromAuthText(string(body)), msg)
+		}
 		return
 	}
 
@@ -155,6 +159,9 @@ func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 		c.store.UpdateAccountHealth(acc.ID, "degraded", fmt.Sprintf("slow response: %s", latency))
 	} else {
 		c.store.UpdateAccountHealth(acc.ID, "healthy", "")
+	}
+	if acc.SourceKind == "cpa" {
+		c.markCpaCredentialOK(acc.ID)
 	}
 
 	// Parse and refresh discovered models
@@ -197,7 +204,12 @@ func (c *Checker) DiscoverModels(ctx context.Context, acc store.Account) ([]stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
+		msg := formatHTTPStatusError(resp.StatusCode, body)
+		if acc.SourceKind == "cpa" && isCpaAuthFailure(resp.StatusCode, string(body)) {
+			c.markCpaCredentialNeedsLogin(acc.ID, credentialReasonFromAuthText(string(body)), msg)
+		}
+		return nil, fmt.Errorf("%s", msg)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -211,6 +223,9 @@ func (c *Checker) DiscoverModels(ctx context.Context, acc store.Account) ([]stri
 			return nil, fmt.Errorf("store models: %w", err)
 		}
 		c.cache.Invalidate()
+	}
+	if acc.SourceKind == "cpa" {
+		c.markCpaCredentialOK(acc.ID)
 	}
 
 	return models, nil
@@ -244,6 +259,9 @@ func (c *Checker) RefreshCodexQuota(ctx context.Context, acc store.Account) (boo
 	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
 	authIndex, err := c.findAuthIndex(ctx, client, acc.CpaAccountKey)
 	if err != nil {
+		if strings.Contains(err.Error(), "auth file not found") {
+			c.markCpaCredentialNeedsLogin(acc.ID, "auth_index_missing", err.Error())
+		}
 		return false, err
 	}
 	if err := c.fetchOneCodexQuota(ctx, client, acc, authIndex); err != nil {
@@ -277,6 +295,9 @@ func (c *Checker) RefreshCodexSubscription(ctx context.Context, acc store.Accoun
 	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
 	authIndex, err := c.findAuthIndex(ctx, client, acc.CpaAccountKey)
 	if err != nil {
+		if strings.Contains(err.Error(), "auth file not found") {
+			c.markCpaCredentialNeedsLogin(acc.ID, "auth_index_missing", err.Error())
+		}
 		return false, err
 	}
 	if err := c.fetchOneCodexSubscription(ctx, client, acc, authIndex); err != nil {
@@ -390,6 +411,7 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 	for _, acc := range targets {
 		authIndex, ok := keyToIndex[acc.CpaAccountKey]
 		if !ok || authIndex == "" {
+			c.markCpaCredentialNeedsLogin(acc.ID, "auth_index_missing", "CPA auth file not found")
 			continue
 		}
 		wg.Add(1)
@@ -450,6 +472,7 @@ func (c *Checker) fetchCodexSubscriptions(ctx context.Context) {
 	for _, acc := range targets {
 		authIndex, ok := keyToIndex[acc.CpaAccountKey]
 		if !ok || authIndex == "" {
+			c.markCpaCredentialNeedsLogin(acc.ID, "auth_index_missing", "CPA auth file not found")
 			continue
 		}
 		wg.Add(1)
@@ -506,6 +529,9 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
+		if isCpaAuthFailure(resp.StatusCode, resp.Body) {
+			c.markCpaCredentialNeedsLogin(acc.ID, credentialReasonFromAuthText(resp.Body), fmt.Sprintf("HTTP %d", resp.StatusCode))
+		}
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	body := strings.TrimSpace(resp.Body)
@@ -521,6 +547,7 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 	if err := c.store.UpdateAccountCodexQuota(acc.ID, body, fetchedAt); err != nil {
 		return fmt.Errorf("persist quota: %w", err)
 	}
+	c.markCpaCredentialOK(acc.ID)
 	c.cache.Invalidate()
 	return nil
 }
@@ -540,6 +567,9 @@ func (c *Checker) fetchOneCodexSubscription(ctx context.Context, client *cpa.Man
 	}
 	if resp.StatusCode != http.StatusOK {
 		msg := fmt.Sprintf("HTTP %d", resp.StatusCode)
+		if isCpaAuthFailure(resp.StatusCode, resp.Body) {
+			c.markCpaCredentialNeedsLogin(acc.ID, credentialReasonFromAuthText(resp.Body), msg)
+		}
 		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, msg)
 		return fmt.Errorf("%s", msg)
 	}
@@ -557,6 +587,7 @@ func (c *Checker) fetchOneCodexSubscription(ctx context.Context, client *cpa.Man
 	if err := c.store.UpdateAccountCpaSubscription(acc.ID, expiresAt, fetchedAt, ""); err != nil {
 		return fmt.Errorf("persist subscription: %w", err)
 	}
+	c.markCpaCredentialOK(acc.ID)
 	c.cache.Invalidate()
 	return nil
 }
@@ -577,13 +608,75 @@ func (c *Checker) syncCpaMetadata() {
 		if err != nil {
 			if os.IsNotExist(err) {
 				c.store.UpdateAccountHealth(acc.ID, "error", "Credential file not found")
+				c.markCpaCredentialNeedsLogin(acc.ID, "file_missing", "Credential file not found")
 			} else {
 				c.store.UpdateAccountHealth(acc.ID, "error", "Credential file corrupt")
+				c.markCpaCredentialNeedsLogin(acc.ID, "file_corrupt", "Credential file corrupt")
 			}
 			continue
 		}
 		c.store.UpdateAccountCpaMetadata(acc.ID, f.Expired, f.LastRefresh, f.Disabled)
+		if f.Disabled {
+			c.store.UpdateAccountHealth(acc.ID, "error", "CPA credential disabled")
+			c.markCpaCredentialNeedsLogin(acc.ID, "disabled", "CPA credential disabled")
+		}
 	}
+}
+
+func (c *Checker) markCpaCredentialOK(accountID int64) {
+	checkedAt := time.Now().UTC().Format(time.RFC3339)
+	if err := c.store.UpdateAccountCpaCredentialStatus(accountID, "ok", "", "", checkedAt); err != nil {
+		slog.Warn("mark cpa credential ok", "account_id", accountID, "err", err)
+		return
+	}
+	c.cache.Invalidate()
+}
+
+func (c *Checker) markCpaCredentialNeedsLogin(accountID int64, reason, lastError string) {
+	if reason == "" {
+		reason = "auth_failed"
+	}
+	if lastError == "" {
+		lastError = reason
+	}
+	checkedAt := time.Now().UTC().Format(time.RFC3339)
+	if err := c.store.UpdateAccountCpaCredentialStatus(accountID, "needs_login", reason, lastError, checkedAt); err != nil {
+		slog.Warn("mark cpa credential needs login", "account_id", accountID, "reason", reason, "err", err)
+		return
+	}
+	c.cache.Invalidate()
+}
+
+func isCpaAuthFailure(statusCode int, body string) bool {
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return true
+	}
+	text := strings.ToLower(body)
+	return strings.Contains(text, "invalid_token") ||
+		strings.Contains(text, "unauthorized") ||
+		strings.Contains(text, "access denied") ||
+		strings.Contains(text, "refresh token") ||
+		strings.Contains(text, "expired token")
+}
+
+func credentialReasonFromAuthText(text string) string {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "refresh") {
+		return "refresh_failed"
+	}
+	return "auth_failed"
+}
+
+func formatHTTPStatusError(statusCode int, body []byte) string {
+	msg := fmt.Sprintf("HTTP %d", statusCode)
+	bodyText := strings.TrimSpace(string(body))
+	if bodyText == "" {
+		return msg
+	}
+	if len(bodyText) > 240 {
+		bodyText = bodyText[:240]
+	}
+	return msg + ": " + bodyText
 }
 
 func (c *Checker) getInterval() time.Duration {

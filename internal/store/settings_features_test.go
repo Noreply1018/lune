@@ -103,6 +103,45 @@ func TestOverviewExpiryAlertsIgnoreCodexCredentials(t *testing.T) {
 	}
 }
 
+func TestCpaCredentialNeedsLoginCreatesDedicatedAlerts(t *testing.T) {
+	st := newTestStore(t)
+
+	if _, err := st.db.Exec(
+		`INSERT INTO accounts (label, source_kind, cpa_provider, cpa_credential_status, cpa_credential_reason, cpa_credential_last_error, enabled) VALUES (?, 'cpa', 'codex', 'needs_login', 'refresh_failed', 'refresh token invalid', 1)`,
+		"codex-login",
+	); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	overview, err := st.GetOverview()
+	if err != nil {
+		t.Fatalf("get overview: %v", err)
+	}
+	foundOverview := false
+	for _, alert := range overview.Alerts {
+		if alert.Type == "cpa_credential_error" && alert.Message == `Account "codex-login" CPA credential requires login: refresh token invalid` {
+			foundOverview = true
+		}
+	}
+	if !foundOverview {
+		t.Fatalf("missing CPA credential overview alert: %+v", overview.Alerts)
+	}
+
+	notifications, err := st.ListSystemNotifications()
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	foundNotification := false
+	for _, item := range notifications {
+		if item.Type == "cpa_credential_error" && item.Label == "codex-login" && item.LastError == "refresh token invalid" {
+			foundNotification = true
+		}
+	}
+	if !foundNotification {
+		t.Fatalf("missing CPA credential notification: %+v", notifications)
+	}
+}
+
 func TestPruneRequestLogsDeletesOnlyExpiredRows(t *testing.T) {
 	st := newTestStore(t)
 

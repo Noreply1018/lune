@@ -9,6 +9,7 @@ import (
 var accountColumns = `id, label, source_kind, base_url, api_key, provider,
 	cpa_service_id, cpa_provider, cpa_account_key, cpa_email, cpa_plan_type, cpa_openai_id,
 	cpa_expired_at, cpa_last_refresh_at, cpa_disabled,
+	cpa_credential_status, cpa_credential_reason, cpa_credential_last_error, cpa_credential_checked_at,
 	cpa_subscription_expires_at, cpa_subscription_fetched_at, cpa_subscription_last_error,
 	codex_quota_json, codex_quota_fetched_at,
 	probe_models, last_probe_status, last_probe_at, last_probe_error,
@@ -17,6 +18,7 @@ var accountColumns = `id, label, source_kind, base_url, api_key, provider,
 var accountColumnsWithAlias = `a.id, a.label, a.source_kind, a.base_url, a.api_key, a.provider,
 	a.cpa_service_id, a.cpa_provider, a.cpa_account_key, a.cpa_email, a.cpa_plan_type, a.cpa_openai_id,
 	a.cpa_expired_at, a.cpa_last_refresh_at, a.cpa_disabled,
+	a.cpa_credential_status, a.cpa_credential_reason, a.cpa_credential_last_error, a.cpa_credential_checked_at,
 	a.cpa_subscription_expires_at, a.cpa_subscription_fetched_at, a.cpa_subscription_last_error,
 	a.codex_quota_json, a.codex_quota_fetched_at,
 	a.probe_models, a.last_probe_status, a.last_probe_at, a.last_probe_error,
@@ -48,12 +50,14 @@ func (s *Store) CreateAccount(a *Account) (int64, error) {
 		`INSERT INTO accounts (label, source_kind, base_url, api_key, provider,
 			cpa_service_id, cpa_provider, cpa_account_key, cpa_email, cpa_plan_type, cpa_openai_id,
 			cpa_expired_at, cpa_last_refresh_at, cpa_disabled,
+			cpa_credential_status, cpa_credential_reason, cpa_credential_last_error, cpa_credential_checked_at,
 			cpa_subscription_expires_at, cpa_subscription_fetched_at, cpa_subscription_last_error,
 			enabled, status, notes, quota_display)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Label, a.SourceKind, a.BaseURL, a.APIKey, a.Provider,
 		a.CpaServiceID, a.CpaProvider, a.CpaAccountKey, a.CpaEmail, a.CpaPlanType, a.CpaOpenaiID,
 		a.CpaExpiredAt, a.CpaLastRefreshAt, a.CpaDisabled,
+		defaultCpaCredentialStatus(a.CpaCredentialStatus), a.CpaCredentialReason, a.CpaCredentialLastError, a.CpaCredentialCheckedAt,
 		a.CpaSubscriptionExpiresAt, a.CpaSubscriptionFetchedAt, a.CpaSubscriptionLastError,
 		a.Enabled, "healthy", a.Notes, a.QuotaDisplay,
 	)
@@ -163,6 +167,14 @@ func (s *Store) UpdateAccountCpaMetadata(id int64, expiredAt, lastRefreshAt stri
 	return err
 }
 
+func (s *Store) UpdateAccountCpaCredentialStatus(id int64, status, reason, lastError, checkedAt string) error {
+	_, err := s.db.Exec(
+		`UPDATE accounts SET cpa_credential_status=?, cpa_credential_reason=?, cpa_credential_last_error=?, cpa_credential_checked_at=?, updated_at=datetime('now') WHERE id=?`,
+		defaultCpaCredentialStatus(status), reason, lastError, checkedAt, id,
+	)
+	return err
+}
+
 func (s *Store) UpdateAccountCodexQuota(id int64, quotaJSON, fetchedAt string) error {
 	_, err := s.db.Exec(
 		`UPDATE accounts SET codex_quota_json=?, codex_quota_fetched_at=? WHERE id=?`,
@@ -249,6 +261,7 @@ func scanAccountRow(row rowScanner) (*Account, error) {
 		&a.ID, &a.Label, &a.SourceKind, &a.BaseURL, &a.APIKey, &a.Provider,
 		&cpaServiceID, &a.CpaProvider, &a.CpaAccountKey, &a.CpaEmail, &a.CpaPlanType, &a.CpaOpenaiID,
 		&a.CpaExpiredAt, &a.CpaLastRefreshAt, &cpaDisabled,
+		&a.CpaCredentialStatus, &a.CpaCredentialReason, &a.CpaCredentialLastError, &a.CpaCredentialCheckedAt,
 		&a.CpaSubscriptionExpiresAt, &a.CpaSubscriptionFetchedAt, &a.CpaSubscriptionLastError,
 		&a.CodexQuotaJSON, &a.CodexQuotaFetchedAt,
 		&probeModelsJSON, &a.LastProbeStatus, &lastProbeAt, &a.LastProbeError,
@@ -260,6 +273,7 @@ func scanAccountRow(row rowScanner) (*Account, error) {
 
 	a.Enabled = enabled != 0
 	a.CpaDisabled = cpaDisabled != 0
+	a.CpaCredentialStatus = defaultCpaCredentialStatus(a.CpaCredentialStatus)
 
 	if cpaServiceID.Valid {
 		id := cpaServiceID.Int64
@@ -293,4 +307,11 @@ func scanAccountRow(row rowScanner) (*Account, error) {
 	}
 
 	return &a, nil
+}
+
+func defaultCpaCredentialStatus(status string) string {
+	if status == "" {
+		return "unknown"
+	}
+	return status
 }

@@ -40,6 +40,16 @@ func EventTypes() []EventType {
 			},
 		},
 		{
+			Event:               "cpa_credential_error",
+			Label:               "CPA 登录态失效",
+			DefaultSeverity:     "critical",
+			DefaultBodyTemplate: `账号 {{ .Vars.account_label }} 的 CPA 登录态失效：{{ .Vars.last_error }}。请重新登录。`,
+			SampleVars: map[string]any{
+				"account_label": "account-1",
+				"last_error":    "refresh token invalid",
+			},
+		},
+		{
 			Event:               "account_error",
 			Label:               "账号不可用",
 			DefaultSeverity:     "critical",

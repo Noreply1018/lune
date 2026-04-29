@@ -203,12 +203,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		success := result.StatusCode >= 200 && result.StatusCode < 400
 		if success {
 			h.updateHealth(resolved.AccountID, "healthy", "")
+			if resolved.Account.SourceKind == "cpa" {
+				h.updateCpaCredential(resolved.AccountID, "ok", "", "")
+			}
 			// v3: update token last_used_at (no quota tracking)
 			if accessToken != nil {
 				go func() {
 					_ = h.store.UpdateTokenLastUsed(accessToken.ID)
 				}()
 			}
+		} else if resolved.Account.SourceKind == "cpa" && isGatewayAuthFailure(result.StatusCode, result.Body) {
+			msg := fmt.Sprintf("HTTP %d", result.StatusCode)
+			h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
+			h.updateHealth(resolved.AccountID, "error", msg)
 		}
 
 		h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, "", result.Usage, resolved.Account.SourceKind, attemptsUsed)
@@ -322,6 +329,32 @@ func (h *Handler) updateHealth(accountID int64, status, lastError string) {
 		_ = h.store.UpdateAccountHealth(accountID, status, lastError)
 		h.cache.Invalidate()
 	}()
+}
+
+func (h *Handler) updateCpaCredential(accountID int64, status, reason, lastError string) {
+	go func() {
+		_ = h.store.UpdateAccountCpaCredentialStatus(accountID, status, reason, lastError, time.Now().UTC().Format(time.RFC3339))
+		h.cache.Invalidate()
+	}()
+}
+
+func isGatewayAuthFailure(statusCode int, body []byte) bool {
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return true
+	}
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "invalid_token") ||
+		strings.Contains(text, "unauthorized") ||
+		strings.Contains(text, "access denied") ||
+		strings.Contains(text, "refresh token") ||
+		strings.Contains(text, "expired token")
+}
+
+func gatewayCredentialReason(body []byte) string {
+	if strings.Contains(strings.ToLower(string(body)), "refresh") {
+		return "refresh_failed"
+	}
+	return "auth_failed"
 }
 
 func (h *Handler) getMaxRetries() int {
