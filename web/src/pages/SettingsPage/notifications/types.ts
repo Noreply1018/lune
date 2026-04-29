@@ -93,7 +93,7 @@ const EVENT_PLACEHOLDERS: Record<string, EventPlaceholderSpec[]> = {
 export const EVENT_TRIGGER_DESCRIPTION: Record<string, string> = {
   account_expiring: "账号凭据在阈值内即将过期",
   account_error: "账号健康检查连续失败",
-  cpa_service_error: "CPA 上游服务 health check 失败",
+  cpa_service_error: "内置 CPA 运行状态检查失败",
   test: "手动点击 Send Test 触发",
 };
 

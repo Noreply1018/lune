@@ -164,7 +164,7 @@ CREATE TABLE notification_deliveries (
 	wantBodies := map[string]string{
 		"account_expiring":  "账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。",
 		"account_error":     "账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}",
-		"cpa_service_error": "CPA 服务 {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}",
+		"cpa_service_error": "CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}",
 		"test":              "这是一条用于验证渠道可达性的真实消息，可忽略。",
 	}
 	for _, sub := range subs {
@@ -258,7 +258,7 @@ INSERT INTO notification_subscriptions (event, subscribed, title_template, body_
 	}
 	wantUpgraded := map[string]string{
 		"account_expiring":  "账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。",
-		"cpa_service_error": "CPA 服务 {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}",
+		"cpa_service_error": "CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}",
 	}
 	for event, want := range wantUpgraded {
 		if got := bodies[event]; got != want {

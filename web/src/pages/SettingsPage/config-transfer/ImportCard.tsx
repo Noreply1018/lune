@@ -185,7 +185,7 @@ export default function ImportCard({ onImported }: ImportCardProps) {
             {preview.ignored_accounts + preview.ignored_services > 0 ? (
               <p className="mt-2 text-[11px] leading-4 text-moon-400">
                 文件中的 {preview.ignored_accounts} 个账号 /{" "}
-                {preview.ignored_services} 个 CPA Service 不会被导入（需手动在
+                {preview.ignored_services} 个 CPA runtime 配置不会被导入（需手动在
                 Overview / Settings 重新接入）。
               </p>
             ) : null}

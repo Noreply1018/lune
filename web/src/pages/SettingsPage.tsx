@@ -69,6 +69,8 @@ import ConfigTransferSection from "./SettingsPage/config-transfer/ConfigTransfer
 type EditableSettingField =
   | "request_timeout"
   | "max_retry_attempts"
+  | "gateway_max_body_mb"
+  | "gateway_memory_body_mb"
   | "health_check_interval"
   | "data_retention_days";
 
@@ -119,6 +121,8 @@ export default function SettingsPage() {
   const [gatewayForm, setGatewayForm] = useState({
     request_timeout: 120,
     max_retry_attempts: 3,
+    gateway_max_body_mb: 100,
+    gateway_memory_body_mb: 8,
     health_check_interval: 60,
   });
   const [savingField, setSavingField] = useState<EditableSettingField | null>(
@@ -167,6 +171,8 @@ export default function SettingsPage() {
         setGatewayForm({
           request_timeout: settingsData.request_timeout,
           max_retry_attempts: settingsData.max_retry_attempts,
+          gateway_max_body_mb: settingsData.gateway_max_body_mb,
+          gateway_memory_body_mb: settingsData.gateway_memory_body_mb,
           health_check_interval: settingsData.health_check_interval,
         });
       })
@@ -290,6 +296,8 @@ export default function SettingsPage() {
         if (
           field === "request_timeout" ||
           field === "max_retry_attempts" ||
+          field === "gateway_max_body_mb" ||
+          field === "gateway_memory_body_mb" ||
           field === "health_check_interval"
         ) {
           setGatewayForm((current) => ({
@@ -590,7 +598,7 @@ export default function SettingsPage() {
       <SideTOC sections={SETTINGS_SECTIONS} ready={!loading} />
       <PageHeader
         title="Settings"
-        description="管理网关行为、访问凭证与系统连接。"
+        description="管理网关行为、访问凭证与运行状态。"
       />
 
       <section
@@ -600,9 +608,12 @@ export default function SettingsPage() {
         <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
           <SectionHeading
             title="Runtime"
-            description="控制请求超时、重试与健康检查节奏。"
+            description="控制请求执行、重放缓存与健康检查节奏。"
           />
           <div className="mt-4 flex-1 divide-y divide-moon-200/30">
+            <p className="pb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-moon-300">
+              Execution
+            </p>
             <SettingsNumericRow
               label="Request Timeout"
               value={gatewayForm.request_timeout}
@@ -631,6 +642,46 @@ export default function SettingsPage() {
                 void saveSetting("max_retry_attempts", value);
               }}
             />
+            <div className="pt-4">
+              <p className="pb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-moon-300">
+                Payload
+              </p>
+            </div>
+            <SettingsNumericRow
+              label="Max Request Body"
+              value={gatewayForm.gateway_max_body_mb}
+              suffix="MB"
+              min={1}
+              helper="超过上限的请求会被拒绝并记录到 Activity。"
+              saving={savingField === "gateway_max_body_mb"}
+              onCommit={(value) => {
+                setGatewayForm((current) => ({
+                  ...current,
+                  gateway_max_body_mb: value,
+                  gateway_memory_body_mb: Math.min(
+                    current.gateway_memory_body_mb,
+                    value,
+                  ),
+                }));
+                void saveSetting("gateway_max_body_mb", value);
+              }}
+            />
+            <SettingsNumericRow
+              label="Memory Body Threshold"
+              value={gatewayForm.gateway_memory_body_mb}
+              suffix="MB"
+              min={1}
+              helper="超过阈值的请求写入磁盘重放，用于重试。"
+              saving={savingField === "gateway_memory_body_mb"}
+              onCommit={(value) => {
+                const next = Math.min(value, gatewayForm.gateway_max_body_mb);
+                setGatewayForm((current) => ({
+                  ...current,
+                  gateway_memory_body_mb: next,
+                }));
+                void saveSetting("gateway_memory_body_mb", next);
+              }}
+            />
             <SettingsNumericRow
               label="Health Check Interval"
               value={gatewayForm.health_check_interval}
@@ -651,25 +702,41 @@ export default function SettingsPage() {
 
         <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
           <SectionHeading
-            title="CPA Service"
-            description="查看当前 CPA 通道状态。"
+            title="CPA Runtime"
+            description="查看内置 CPA 运行状态。"
           />
           <div className="mt-4 flex flex-1 flex-col">
             {service ? (
-              // 3-row grid: Status/Label, Base URL/Last Checked, [空 / Test Connection]。
-              // 按钮放进右列第三行，让它与上面的 InfoBlock 对齐同一列，而不是在
-              // 整块 grid 底下单起一行横跨两列。
               <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
                 <InfoBlock
                   label="Status"
                   value={
-                    <StatusBadge ok={service.status === "healthy"}>
-                      {service.status === "healthy" ? "Healthy" : "Error"}
+                    <StatusBadge
+                      ok={service.status === "healthy"}
+                      pending={service.status === "unknown"}
+                    >
+                      {service.status === "healthy"
+                        ? "Healthy"
+                        : service.status === "unknown"
+                          ? "Pending"
+                          : "Error"}
                     </StatusBadge>
                   }
                 />
-                <InfoBlock label="Label" value={service.label || "--"} />
-                <InfoBlock label="Base URL" value={service.base_url || "--"} />
+                <InfoBlock label="Mode" value={service.runtime_mode || "embedded"} />
+                <InfoBlock label="Auth Dir" value={service.auth_dir || "--"} />
+                <InfoBlock
+                  label="CPA Version"
+                  value={service.current_version || "Unknown"}
+                />
+                <InfoBlock
+                  label="Latest Version"
+                  value={
+                    service.latest_version
+                      ? service.latest_version
+                      : "随 Lune 镜像更新"
+                  }
+                />
                 <InfoBlock
                   label="Last Checked"
                   value={
@@ -677,6 +744,10 @@ export default function SettingsPage() {
                       ? shortDate(service.last_checked_at)
                       : "尚未检查"
                   }
+                />
+                <InfoBlock
+                  label="Last Error"
+                  value={service.last_error || "None"}
                 />
                 <div className="flex items-end justify-start sm:col-start-1">
                   <Button
@@ -691,13 +762,13 @@ export default function SettingsPage() {
                     ) : (
                       <CircleDot className="size-4" />
                     )}
-                    Test Connection
+                    Check Runtime
                   </Button>
                 </div>
               </div>
             ) : (
               <div className="flex h-full flex-col gap-3 rounded-[1.35rem] border border-dashed border-moon-200/55 px-4 py-4 text-sm text-moon-500">
-                <p>请通过环境变量完成 CPA 配置</p>
+                <p>内置 CPA 服务未就绪，请稍后重试或检查容器日志。</p>
               </div>
             )}
           </div>
@@ -1010,7 +1081,7 @@ function SettingsNumericRow({
           onBlur={commit}
           onKeyDown={handleKeyDown}
         />
-        <span className="w-5 text-sm text-moon-350">{suffix ?? ""}</span>
+        <span className="w-8 text-sm text-moon-350">{suffix ?? ""}</span>
         {saving ? (
           <RefreshCw className="size-4 animate-spin text-moon-350" />
         ) : (
@@ -1281,14 +1352,24 @@ function InfoBlock({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function StatusBadge({ ok, children }: { ok: boolean; children: string }) {
+function StatusBadge({
+  ok,
+  pending,
+  children,
+}: {
+  ok: boolean;
+  pending?: boolean;
+  children: string;
+}) {
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium",
         ok
           ? "bg-status-green/12 text-status-green"
-          : "bg-status-red/10 text-status-red",
+          : pending
+            ? "bg-moon-100/80 text-moon-500"
+            : "bg-status-red/10 text-status-red",
       )}
     >
       {children}

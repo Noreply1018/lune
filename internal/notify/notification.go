@@ -51,9 +51,9 @@ func EventTypes() []EventType {
 		},
 		{
 			Event:               "cpa_service_error",
-			Label:               "CPA 服务异常",
+			Label:               "CPA Runtime 异常",
 			DefaultSeverity:     "critical",
-			DefaultBodyTemplate: `CPA 服务 {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}`,
+			DefaultBodyTemplate: `CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}`,
 			SampleVars: map[string]any{
 				"service_label": "default-cpa",
 				"last_error":    "healthz returned 500",

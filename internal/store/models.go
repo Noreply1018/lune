@@ -125,19 +125,24 @@ type AccountModel struct {
 }
 
 type CpaService struct {
-	ID            int64   `json:"id"`
-	Label         string  `json:"label"`
-	BaseURL       string  `json:"base_url"`
-	APIKey        string  `json:"api_key,omitempty"`
-	ManagementKey string  `json:"management_key,omitempty"`
-	APIKeySet     bool    `json:"api_key_set"`
-	APIKeyMasked  string  `json:"api_key_masked"`
-	Enabled       bool    `json:"enabled"`
-	Status        string  `json:"status"`
-	LastCheckedAt *string `json:"last_checked_at"`
-	LastError     string  `json:"last_error"`
-	CreatedAt     string  `json:"created_at"`
-	UpdatedAt     string  `json:"updated_at"`
+	ID              int64   `json:"id"`
+	Label           string  `json:"label"`
+	BaseURL         string  `json:"base_url"`
+	APIKey          string  `json:"api_key,omitempty"`
+	ManagementKey   string  `json:"management_key,omitempty"`
+	APIKeySet       bool    `json:"api_key_set"`
+	APIKeyMasked    string  `json:"api_key_masked"`
+	Enabled         bool    `json:"enabled"`
+	Status          string  `json:"status"`
+	LastCheckedAt   *string `json:"last_checked_at"`
+	LastError       string  `json:"last_error"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+	RuntimeMode     string  `json:"runtime_mode,omitempty"`
+	AuthDir         string  `json:"auth_dir,omitempty"`
+	CurrentVersion  string  `json:"current_version,omitempty"`
+	LatestVersion   string  `json:"latest_version,omitempty"`
+	UpdateAvailable bool    `json:"update_available,omitempty"`
 }
 
 type UsageStats struct {
@@ -230,12 +235,12 @@ type DataRetentionSummary struct {
 }
 
 type DataRetentionPreview struct {
-	RetentionDays            int   `json:"retention_days"`
-	LogsToDelete             int64 `json:"logs_to_delete"`
-	LogsToDeleteSizeBytes    int64 `json:"logs_to_delete_size_bytes"`
-	DeliveriesToDelete       int64 `json:"deliveries_to_delete"`
-	OutboxToDelete           int64 `json:"outbox_to_delete"`
-	OutboxSafetyDays         int   `json:"outbox_safety_days"`
+	RetentionDays         int   `json:"retention_days"`
+	LogsToDelete          int64 `json:"logs_to_delete"`
+	LogsToDeleteSizeBytes int64 `json:"logs_to_delete_size_bytes"`
+	DeliveriesToDelete    int64 `json:"deliveries_to_delete"`
+	OutboxToDelete        int64 `json:"outbox_to_delete"`
+	OutboxSafetyDays      int   `json:"outbox_safety_days"`
 }
 
 // LatencyBucket holds percentile latencies for a single time bucket.

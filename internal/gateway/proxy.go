@@ -32,21 +32,28 @@ type ProxyResult struct {
 	StatusCode int
 	Usage      Usage
 	Err        error
-	Body       []byte            // non-stream: buffered body (not yet written to client)
-	Headers    http.Header       // non-stream: buffered response headers
-	Written    bool              // true if response was already written (streaming)
+	Body       []byte      // non-stream: buffered body (not yet written to client)
+	Headers    http.Header // non-stream: buffered response headers
+	Written    bool        // true if response was already written (streaming)
 }
 
-func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, pathSuffix string, body []byte, isStream bool, requestID string, timeout time.Duration) *ProxyResult {
+func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, pathSuffix string, body *ReplayBody, isStream bool, requestID string, timeout time.Duration) *ProxyResult {
 	// build upstream URL
 	baseURL := strings.TrimRight(target.BaseURL, "/")
 	upstreamURL := baseURL + "/" + pathSuffix
 
+	bodyReader, err := body.Reader()
+	if err != nil {
+		return &ProxyResult{Err: fmt.Errorf("open replay body: %w", err)}
+	}
+	defer bodyReader.Close()
+
 	// create upstream request
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(body))
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bodyReader)
 	if err != nil {
 		return &ProxyResult{Err: fmt.Errorf("create request: %w", err)}
 	}
+	upstreamReq.ContentLength = body.Size()
 
 	// copy headers
 	for k, vv := range r.Header {

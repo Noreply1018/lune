@@ -134,8 +134,8 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 		notifications = append(notifications, SystemNotification{
 			Type:      "cpa_service_error",
 			Severity:  "critical",
-			Title:     "CPA service unhealthy",
-			Message:   fmt.Sprintf("CPA service %q is unhealthy: %s", label, lastError),
+			Title:     "CPA runtime unhealthy",
+			Message:   fmt.Sprintf("CPA runtime %q is unhealthy: %s", label, lastError),
 			ServiceID: &serviceIDCopy,
 			Label:     label,
 			LastError: lastError,

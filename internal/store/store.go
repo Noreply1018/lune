@@ -194,7 +194,7 @@ INSERT OR IGNORE INTO notification_settings (id) VALUES (1);
 INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_template) VALUES
     ('account_expiring',  1, '账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。'),
     ('account_error',     1, '账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}'),
-    ('cpa_service_error', 1, 'CPA 服务 {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}'),
+    ('cpa_service_error', 1, 'CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}'),
     ('test',              1, '这是一条用于验证渠道可达性的真实消息，可忽略。');
 `
 
@@ -414,7 +414,7 @@ func (s *Store) migrateNotificationTextOnly() error {
 	bodyUpgrades := []struct{ event, body string }{
 		{"account_expiring", "账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。"},
 		{"account_error", "账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}"},
-		{"cpa_service_error", "CPA 服务 {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}"},
+		{"cpa_service_error", "CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}"},
 	}
 	for _, upgrade := range bodyUpgrades {
 		if _, err := s.db.Exec(

@@ -6,6 +6,8 @@ const (
 	DefaultHealthCheckInterval      = 60
 	DefaultRequestTimeout           = 120
 	DefaultMaxRetryAttempts         = 3
+	DefaultGatewayMaxBodyMB         = 100
+	DefaultGatewayMemoryBodyMB      = 8
 	DefaultNotificationExpiringDays = 7
 	DefaultDataRetentionDays        = 30
 	DefaultCodexQuotaFetchInterval  = 600
@@ -15,6 +17,8 @@ var allowedSettingKeys = map[string]struct{}{
 	"health_check_interval":      {},
 	"request_timeout":            {},
 	"max_retry_attempts":         {},
+	"gateway_max_body_mb":        {},
+	"gateway_memory_body_mb":     {},
 	"notification_expiring_days": {},
 	"data_retention_days":        {},
 	"codex_quota_fetch_interval": {},

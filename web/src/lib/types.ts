@@ -173,6 +173,8 @@ export interface SystemSettings {
   health_check_interval: number;
   request_timeout: number;
   max_retry_attempts: number;
+  gateway_max_body_mb: number;
+  gateway_memory_body_mb: number;
   notification_expiring_days: number;
   data_retention_days: number;
 }
@@ -293,6 +295,11 @@ export interface CpaService {
   last_error: string;
   created_at: string;
   updated_at: string;
+  runtime_mode?: string;
+  auth_dir?: string;
+  current_version?: string;
+  latest_version?: string;
+  update_available?: boolean;
 }
 
 export interface CpaServiceTestResult {

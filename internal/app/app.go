@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"lune/internal/gateway"
 	"lune/internal/health"
 	"lune/internal/httpserver"
 	"lune/internal/notify"
@@ -35,6 +36,7 @@ type Config struct {
 	CpaBaseURL       string        `yaml:"cpa_base_url"`
 	CpaAPIKey        string        `yaml:"cpa_api_key"`
 	CpaManagementKey string        `yaml:"cpa_management_key"`
+	GatewayTmpDir    string        `yaml:"gateway_tmp_dir"`
 	Logging          LoggingConfig `yaml:"logging"`
 }
 
@@ -78,6 +80,9 @@ func LoadConfig() Config {
 	}
 	if v := os.Getenv("LUNE_CPA_MANAGEMENT_KEY"); v != "" {
 		cfg.CpaManagementKey = v
+	}
+	if v := os.Getenv("LUNE_GATEWAY_TMP_DIR"); v != "" {
+		cfg.GatewayTmpDir = v
 	}
 	if v := os.Getenv("LUNE_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
@@ -132,6 +137,15 @@ func New(cfg Config) (*App, error) {
 			return nil, fmt.Errorf("create cpa auth dir: %w", err)
 		}
 	}
+	if cfg.GatewayTmpDir == "" {
+		cfg.GatewayTmpDir = filepath.Join(cfg.DataDir, "tmp")
+	}
+	if err := os.MkdirAll(cfg.GatewayTmpDir, 0755); err != nil {
+		return nil, fmt.Errorf("create gateway tmp dir: %w", err)
+	}
+	if err := gateway.CleanupReplayDir(cfg.GatewayTmpDir); err != nil {
+		return nil, fmt.Errorf("cleanup gateway tmp dir: %w", err)
+	}
 
 	dbPath := filepath.Join(cfg.DataDir, "lune.db")
 	st, err := store.New(dbPath)
@@ -159,7 +173,7 @@ func (a *App) Run() error {
 	// resolve admin token
 	adminToken, tokenSource := a.resolveAdminToken()
 
-	// auto-configure default CPA service if env vars are set
+	// auto-configure default embedded CPA runtime if env vars are set
 	a.ensureDefaultCpa()
 
 	registry := notify.NewRegistry(
@@ -170,7 +184,7 @@ func (a *App) Run() error {
 	// create health checker (needed by admin handler for model discovery)
 	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, notifier)
 
-	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, hc, notifier)
+	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, a.cfg.GatewayTmpDir, hc, notifier)
 
 	// Prefer an explicit IPv4 listener so WSL localhost forwarding can
 	// consistently expose the service to Windows browsers.
@@ -249,20 +263,60 @@ func (a *App) ensureDefaultCpa() {
 	}
 	existing, _ := a.store.GetCpaService()
 	if existing != nil {
+		if a.syncDefaultCpa(existing) {
+			a.cache.Invalidate()
+		}
 		return
 	}
 	svc := &store.CpaService{
-		Label:   "Default CPA",
-		BaseURL: a.cfg.CpaBaseURL,
-		APIKey:  a.cfg.CpaAPIKey,
-		Enabled: true,
+		Label:         "Default CPA",
+		BaseURL:       a.cfg.CpaBaseURL,
+		APIKey:        a.cfg.CpaAPIKey,
+		ManagementKey: a.cfg.CpaManagementKey,
+		Enabled:       true,
 	}
 	if _, err := a.store.CreateCpaService(svc); err != nil {
 		slog.Error("auto-configure CPA", "err", err)
 		return
 	}
 	a.cache.Invalidate()
-	slog.Info("CPA service auto-configured", "base_url", a.cfg.CpaBaseURL)
+	slog.Info("CPA runtime auto-configured", "base_url", a.cfg.CpaBaseURL)
+}
+
+func (a *App) syncDefaultCpa(existing *store.CpaService) bool {
+	if existing == nil {
+		return false
+	}
+
+	updated := *existing
+	changed := false
+	isManagedDefault := existing.Label == "Default CPA"
+	isOldComposeURL := strings.TrimRight(existing.BaseURL, "/") == "http://cpa:8317"
+
+	if isManagedDefault || isOldComposeURL {
+		if updated.BaseURL != a.cfg.CpaBaseURL {
+			updated.BaseURL = a.cfg.CpaBaseURL
+			changed = true
+		}
+		if updated.APIKey != a.cfg.CpaAPIKey {
+			updated.APIKey = a.cfg.CpaAPIKey
+			changed = true
+		}
+		if updated.ManagementKey != a.cfg.CpaManagementKey {
+			updated.ManagementKey = a.cfg.CpaManagementKey
+			changed = true
+		}
+	}
+
+	if !changed {
+		return false
+	}
+	if err := a.store.UpdateCpaService(existing.ID, &updated); err != nil {
+		slog.Error("sync default CPA", "err", err)
+		return false
+	}
+	slog.Info("CPA runtime auto-config updated", "base_url", updated.BaseURL)
+	return true
 }
 
 func maskToken(token string) string {

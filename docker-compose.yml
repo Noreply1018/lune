@@ -9,26 +9,14 @@ services:
       LUNE_PORT: "${LUNE_PORT:-7788}"
       LUNE_DATA_DIR: "/app/data"
       LUNE_ADMIN_TOKEN: "${LUNE_ADMIN_TOKEN:-}"
-      LUNE_CPA_AUTH_DIR: "/app/cpa-auth"
-      LUNE_CPA_BASE_URL: "http://cpa:8317"
+      LUNE_CPA_AUTH_DIR: "/app/data/cpa-auth"
+      LUNE_GATEWAY_TMP_DIR: "/app/data/tmp"
+      LUNE_CPA_BASE_URL: "http://127.0.0.1:8317"
       LUNE_CPA_API_KEY: "${CPA_API_KEY:-sk-cpa-default}"
       LUNE_CPA_MANAGEMENT_KEY: "${LUNE_CPA_MANAGEMENT_KEY:-lune-cpa-management-dev}"
-    volumes:
-      - lune-data:/app/data
-      - cpa-auth:/app/cpa-auth
-
-  cpa:
-    image: eceasy/cli-proxy-api:latest
-    container_name: lune-cpa
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8317:8317"
-    environment:
       CPA_API_KEY: "${CPA_API_KEY:-sk-cpa-default}"
     volumes:
-      - ./cpa-config.yaml:/CLIProxyAPI/config.yaml:ro
-      - cpa-auth:/app/cpa-auth
+      - lune-data:/app/data
 
 volumes:
   lune-data:
-  cpa-auth:

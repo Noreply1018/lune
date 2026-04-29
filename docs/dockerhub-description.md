@@ -15,12 +15,14 @@ Lune is a personal-first LLM gateway with an OpenAI-compatible API, a built-in a
 ```bash
 curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/docker-compose.prod.yml
 curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/.env.example
-curl -O https://raw.githubusercontent.com/Noreply1018/lune/main/cpa-config.yaml
-
 cp .env.example .env
 
 docker compose -f docker-compose.prod.yml --env-file .env up -d
 ```
+
+The Lune image includes the CPA runtime by default, so no separate CPA image or `cpa-config.yaml` is required. A single Docker volume mounted at `/app/data` stores SQLite data, CPA auth files, and gateway temporary replay files.
+
+Gateway request bodies default to a 100 MB limit. Requests above 8 MB are replayed from disk for retries instead of being kept entirely in memory.
 
 By default the production compose file pulls from GHCR:
 

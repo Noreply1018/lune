@@ -21,17 +21,19 @@ type Server struct {
 	cache            *store.RoutingCache
 	cpaAuthDir       string
 	cpaManagementKey string
+	gatewayTmpDir    string
 	healthChecker    *health.Checker
 	notifier         *notify.Service
 }
 
-func New(st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, notifier *notify.Service) *Server {
+func New(st *store.Store, cache *store.RoutingCache, cpaAuthDir, cpaManagementKey, gatewayTmpDir string, hc *health.Checker, notifier *notify.Service) *Server {
 	s := &Server{
 		mux:              http.NewServeMux(),
 		store:            st,
 		cache:            cache,
 		cpaAuthDir:       cpaAuthDir,
 		cpaManagementKey: cpaManagementKey,
+		gatewayTmpDir:    gatewayTmpDir,
 		healthChecker:    hc,
 		notifier:         notifier,
 	}
@@ -69,7 +71,7 @@ func (s *Server) routes() {
 
 	// gateway
 	rt := router.New(s.cache)
-	gw := gateway.NewHandler(rt, s.cache, s.store)
+	gw := gateway.NewHandler(rt, s.cache, s.store, s.gatewayTmpDir)
 	gwAuth := auth.GatewayAuth(gw, s.cache)
 
 	// GET /v1/models — no auth required
@@ -100,11 +102,29 @@ func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
+		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r)
 		slog.Info("request completed",
 			"method", r.Method,
 			"path", r.URL.Path,
+			"status", rw.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }

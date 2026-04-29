@@ -649,7 +649,7 @@ export default function AddAccountDrawer() {
 
   async function startCpaLogin() {
     if (!cpaService) {
-      toast("请先在 Settings 配置 CPA Service", "error");
+      toast("内置 CPA 服务未就绪，请稍后重试或检查容器日志。", "error");
       return;
     }
     if (!provider) {
@@ -1043,7 +1043,7 @@ export default function AddAccountDrawer() {
                         </p>
                       </div>
                       {!cpaService ? (
-                        <p className="text-sm text-status-red">请先在 Settings 配置 CPA Service。</p>
+                        <p className="text-sm text-status-red">内置 CPA 服务未就绪，请稍后重试或检查容器日志。</p>
                       ) : (
                         <p className="text-sm text-moon-400">
                           授权完成后无需手动刷新，此页会自动继续。

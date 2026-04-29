@@ -129,7 +129,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("POST /admin/api/import", h.importConfig)
 	handle("GET /admin/api/usage/latency", h.getLatencyStats)
 
-	// CPA Service
+	// CPA runtime
 	handle("GET /admin/api/cpa/service", h.getCpaService)
 	handle("PUT /admin/api/cpa/service", h.upsertCpaService)
 	handle("DELETE /admin/api/cpa/service", h.deleteCpaService)
@@ -956,6 +956,8 @@ type systemSettingsResponse struct {
 	HealthCheckInterval      int    `json:"health_check_interval"`
 	RequestTimeout           int    `json:"request_timeout"`
 	MaxRetryAttempts         int    `json:"max_retry_attempts"`
+	GatewayMaxBodyMB         int    `json:"gateway_max_body_mb"`
+	GatewayMemoryBodyMB      int    `json:"gateway_memory_body_mb"`
 	NotificationExpiringDays int    `json:"notification_expiring_days"`
 	DataRetentionDays        int    `json:"data_retention_days"`
 }
@@ -972,8 +974,13 @@ func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 		HealthCheckInterval:      syscfg.ParsePositiveInt(settings["health_check_interval"], syscfg.DefaultHealthCheckInterval),
 		RequestTimeout:           syscfg.ParsePositiveInt(settings["request_timeout"], syscfg.DefaultRequestTimeout),
 		MaxRetryAttempts:         syscfg.ParsePositiveInt(settings["max_retry_attempts"], syscfg.DefaultMaxRetryAttempts),
+		GatewayMaxBodyMB:         syscfg.ParsePositiveInt(settings["gateway_max_body_mb"], syscfg.DefaultGatewayMaxBodyMB),
+		GatewayMemoryBodyMB:      syscfg.ParsePositiveInt(settings["gateway_memory_body_mb"], syscfg.DefaultGatewayMemoryBodyMB),
 		NotificationExpiringDays: syscfg.ParsePositiveInt(settings["notification_expiring_days"], syscfg.DefaultNotificationExpiringDays),
 		DataRetentionDays:        syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays),
+	}
+	if resp.GatewayMemoryBodyMB > resp.GatewayMaxBodyMB {
+		resp.GatewayMemoryBodyMB = resp.GatewayMaxBodyMB
 	}
 	webutil.WriteData(w, 200, resp)
 }
@@ -1027,7 +1034,7 @@ func normalizeSettingValue(key string, raw json.RawMessage) (string, error) {
 	}
 	value := int(num)
 	switch key {
-	case "health_check_interval", "request_timeout", "max_retry_attempts", "notification_expiring_days":
+	case "health_check_interval", "request_timeout", "max_retry_attempts", "notification_expiring_days", "gateway_max_body_mb", "gateway_memory_body_mb":
 		if value <= 0 {
 			return "", fmt.Errorf("setting %s must be greater than 0", key)
 		}
@@ -1488,7 +1495,7 @@ func (h *Handler) getLatencyStats(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteData(w, 200, stats)
 }
 
-// --- CPA Service ---
+// --- CPA runtime ---
 
 func (h *Handler) getCpaService(w http.ResponseWriter, r *http.Request) {
 	svc, err := h.store.GetCpaService()
@@ -1500,11 +1507,18 @@ func (h *Handler) getCpaService(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteData(w, 200, nil)
 		return
 	}
+	h.decorateCpaRuntime(svc)
 	svc.APIKeyMasked = maskKey(svc.APIKey)
 	svc.APIKeySet = svc.APIKey != ""
 	svc.APIKey = ""
 	svc.ManagementKey = ""
 	webutil.WriteData(w, 200, svc)
+}
+
+func (h *Handler) decorateCpaRuntime(svc *store.CpaService) {
+	svc.RuntimeMode = "embedded"
+	svc.AuthDir = h.cpaAuthDir
+	svc.CurrentVersion = os.Getenv("LUNE_EMBEDDED_CPA_VERSION")
 }
 
 func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
@@ -1692,12 +1706,14 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var serviceID int64
 	if req.BaseURL == "" {
 		svc, err := h.store.GetCpaService()
 		if err != nil || svc == nil {
 			webutil.WriteAdminError(w, 400, "bad_request", "no CPA service configured and no base_url provided")
 			return
 		}
+		serviceID = svc.ID
 		req.BaseURL = svc.BaseURL
 		req.APIKey = svc.APIKey
 	}
@@ -1727,6 +1743,7 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		result.Error = err.Error()
+		h.recordCpaServiceTest(serviceID, result.Reachable, result.Error)
 		webutil.WriteData(w, 200, result)
 		return
 	}
@@ -1734,11 +1751,13 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 
 	if healthResp.StatusCode != 200 {
 		result.Error = fmt.Sprintf("healthz returned HTTP %d", healthResp.StatusCode)
+		h.recordCpaServiceTest(serviceID, result.Reachable, result.Error)
 		webutil.WriteData(w, 200, result)
 		return
 	}
 
 	result.Reachable = true
+	h.recordCpaServiceTest(serviceID, result.Reachable, "")
 
 	modelsReq, err := http.NewRequest("GET", baseURL+"/v1/models", nil)
 	if err != nil {
@@ -1773,6 +1792,21 @@ func (h *Handler) testCpaService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	webutil.WriteData(w, 200, result)
+}
+
+func (h *Handler) recordCpaServiceTest(serviceID int64, reachable bool, errMsg string) {
+	if serviceID == 0 {
+		return
+	}
+	status := "error"
+	if reachable {
+		status = "healthy"
+	}
+	if err := h.store.UpdateCpaServiceHealth(serviceID, status, errMsg); err != nil {
+		slog.Error("failed to update CPA runtime health", "service_id", serviceID, "err", err)
+		return
+	}
+	h.cache.Invalidate()
 }
 
 func (h *Handler) enableCpaService(w http.ResponseWriter, r *http.Request) {

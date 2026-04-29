@@ -3,10 +3,8 @@ package gateway
 import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -25,10 +23,11 @@ type Handler struct {
 	router *router.Router
 	cache  *store.RoutingCache
 	store  *store.Store
+	tmpDir string
 }
 
-func NewHandler(rt *router.Router, cache *store.RoutingCache, st *store.Store) *Handler {
-	return &Handler{router: rt, cache: cache, store: st}
+func NewHandler(rt *router.Router, cache *store.RoutingCache, st *store.Store, tmpDir string) *Handler {
+	return &Handler{router: rt, cache: cache, store: st, tmpDir: tmpDir}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -45,24 +44,34 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// read body (limit 10 MB to prevent memory exhaustion)
-	const maxBodySize = 10 << 20
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-	body, err := io.ReadAll(r.Body)
+	maxBodyBytes := int64(h.getGatewayMaxBodyMB()) << 20
+	memoryBodyBytes := int64(h.getGatewayMemoryBodyMB()) << 20
+	body, err := NewReplayBody(r, maxBodyBytes, memoryBodyBytes, h.tmpDir)
 	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			webutil.WriteGatewayError(w, 413, "request_too_large", "request body exceeds 10MB limit")
+		if errors.Is(err, ErrBodyTooLarge) {
+			msg := fmt.Sprintf("request body exceeds %dMB limit", h.getGatewayMaxBodyMB())
+			webutil.WriteGatewayError(w, 413, "request_too_large", msg)
+			h.logRequest(requestID, accessToken, "", nil, 413, start, false, r, false, msg, Usage{}, "gateway", 0)
 			return
 		}
 		webutil.WriteGatewayError(w, 400, "bad_request", "failed to read request body")
+		h.logRequest(requestID, accessToken, "", nil, 400, start, false, r, false, "failed to read request body", Usage{}, "gateway", 0)
 		return
 	}
+	defer body.Close()
+	slog.Debug("gateway request body prepared", "request_id", requestID, "size_bytes", body.Size(), "storage", body.Storage())
 
 	// parse model and stream fields
-	model, isStream := parseRequestBody(body)
+	env, err := ParseRequestEnvelope(body)
+	if err != nil {
+		webutil.WriteGatewayError(w, 400, "bad_request", "malformed JSON request body")
+		h.logRequest(requestID, accessToken, "", nil, 400, start, false, r, false, "malformed JSON request body", Usage{}, "gateway", 0)
+		return
+	}
+	model, isStream := env.Model, env.Stream
 	if model == "" {
 		webutil.WriteGatewayError(w, 400, "bad_request", "missing model field in request body")
+		h.logRequest(requestID, accessToken, "", nil, 400, start, isStream, r, false, "missing model field in request body", Usage{}, "gateway", 0)
 		return
 	}
 
@@ -85,17 +94,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, router.ErrNoRoute) {
 			webutil.WriteGatewayError(w, 404, "no_route", fmt.Sprintf("no route for model: %s", model))
-			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "", 0)
+			h.logRequest(requestID, accessToken, model, nil, 404, start, isStream, r, false, err.Error(), Usage{}, "", 0)
 			return
 		}
 		if errors.Is(err, router.ErrPoolDisabled) {
 			webutil.WriteGatewayError(w, 503, "pool_disabled", "pool is disabled")
-			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "", 0)
+			h.logRequest(requestID, accessToken, model, nil, 503, start, isStream, r, false, err.Error(), Usage{}, "", 0)
 			return
 		}
 		if errors.Is(err, router.ErrNoHealthyAccount) {
 			webutil.WriteGatewayError(w, 503, "no_healthy_account", "no healthy account available")
-			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "", 0)
+			h.logRequest(requestID, accessToken, model, nil, 503, start, isStream, r, false, err.Error(), Usage{}, "", 0)
 			return
 		}
 		if errors.Is(err, router.ErrModelNotOnAccount) {
@@ -105,7 +114,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			webutil.WriteGatewayError(w, 404, "model_not_on_account",
 				fmt.Sprintf("account %d does not list model: %s", accID, model))
-			h.logRequest(requestID, accessToken, model, nil, 0, start, isStream, r, false, err.Error(), Usage{}, "", 0)
+			h.logRequest(requestID, accessToken, model, nil, 404, start, isStream, r, false, err.Error(), Usage{}, "", 0)
 			return
 		}
 		webutil.WriteGatewayError(w, 500, "internal", err.Error())
@@ -321,6 +330,19 @@ func (h *Handler) getRequestTimeout() time.Duration {
 	return time.Duration(syscfg.ParsePositiveInt(h.cache.GetSetting("request_timeout"), syscfg.DefaultRequestTimeout)) * time.Second
 }
 
+func (h *Handler) getGatewayMaxBodyMB() int {
+	return syscfg.ParsePositiveInt(h.cache.GetSetting("gateway_max_body_mb"), syscfg.DefaultGatewayMaxBodyMB)
+}
+
+func (h *Handler) getGatewayMemoryBodyMB() int {
+	maxMB := h.getGatewayMaxBodyMB()
+	memoryMB := syscfg.ParsePositiveInt(h.cache.GetSetting("gateway_memory_body_mb"), syscfg.DefaultGatewayMemoryBodyMB)
+	if memoryMB > maxMB {
+		return maxMB
+	}
+	return memoryMB
+}
+
 func extractPathSuffix(path string) string {
 	if strings.HasPrefix(path, "/openai/v1/") {
 		return strings.TrimPrefix(path, "/openai/v1/")
@@ -329,17 +351,6 @@ func extractPathSuffix(path string) string {
 		return strings.TrimPrefix(path, "/v1/")
 	}
 	return strings.TrimPrefix(path, "/")
-}
-
-func parseRequestBody(body []byte) (model string, stream bool) {
-	var req struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		return "", false
-	}
-	return req.Model, req.Stream
 }
 
 func generateRequestID() string {
