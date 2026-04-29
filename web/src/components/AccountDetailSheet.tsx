@@ -178,7 +178,7 @@ export default function AccountDetailSheet({
                 <DebugPanel
                   accountId={account.id}
                   baseUrl={account.runtime?.base_url || account.base_url || "--"}
-                  expiry={account.cpa_expired_at ?? null}
+                  expiry={isCodexCpa ? null : account.cpa_expired_at ?? null}
                   lastCheckedAt={account.last_checked_at ?? null}
                   lastError={account.last_error ?? null}
                 />
@@ -611,10 +611,12 @@ function DebugPanel({
     <div className="space-y-4 text-sm">
       <DebugRow label="Account ID" value={String(accountId)} copyable />
       <DebugRow label="Runtime Base URL" value={baseUrl} copyable breakAll />
-      <DebugRow
-        label="CPA Expires"
-        value={expiry ? `${expiry} · ${relativeTime(expiry)}` : "--"}
-      />
+      {expiry ? (
+        <DebugRow
+          label="CPA Credential Expires"
+          value={`${expiry} · ${relativeTime(expiry)}`}
+        />
+      ) : null}
       <DebugRow label="Last Checked" value={relativeTime(lastCheckedAt) || "--"} />
       <DebugRow
         label="Last Error"

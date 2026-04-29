@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -30,12 +31,14 @@ func TestListSystemNotificationsHandlesRFC3339Expiry(t *testing.T) {
 	expiredAt := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
 	expiringSoon := time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)
 	outsideWindow := time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339)
+	codexExpiringSoon := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
 
 	if _, err := st.db.Exec(
-		`INSERT INTO accounts (label, source_kind, cpa_expired_at) VALUES (?, 'cpa', ?), (?, 'cpa', ?), (?, 'cpa', ?)`,
+		`INSERT INTO accounts (label, source_kind, cpa_provider, cpa_expired_at) VALUES (?, 'cpa', '', ?), (?, 'cpa', '', ?), (?, 'cpa', '', ?), (?, 'cpa', 'codex', ?)`,
 		"expired-account", expiredAt,
 		"expiring-account", expiringSoon,
 		"future-account", outsideWindow,
+		"codex-credential", codexExpiringSoon,
 	); err != nil {
 		t.Fatalf("seed accounts: %v", err)
 	}
@@ -58,6 +61,30 @@ func TestListSystemNotificationsHandlesRFC3339Expiry(t *testing.T) {
 	}
 	if byTitle["CPA account expiring soon"].Severity != "warning" {
 		t.Fatalf("expected expiring notification to be warning, got %q", byTitle["CPA account expiring soon"].Severity)
+	}
+}
+
+func TestOverviewExpiryAlertsIgnoreCodexCredentials(t *testing.T) {
+	st := newTestStore(t)
+
+	expiringSoon := time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)
+	if _, err := st.db.Exec(
+		`INSERT INTO accounts (label, source_kind, cpa_provider, cpa_expired_at, enabled) VALUES (?, 'cpa', '', ?, 1), (?, 'cpa', 'Codex', ?, 1)`,
+		"claude-credential", expiringSoon,
+		"codex-credential", expiringSoon,
+	); err != nil {
+		t.Fatalf("seed accounts: %v", err)
+	}
+
+	overview, err := st.GetOverview()
+	if err != nil {
+		t.Fatalf("get overview: %v", err)
+	}
+	if len(overview.Alerts) != 1 {
+		t.Fatalf("expected one non-codex expiry alert, got %+v", overview.Alerts)
+	}
+	if overview.Alerts[0].Message != fmt.Sprintf("Account %q expires at %s", "claude-credential", expiringSoon) {
+		t.Fatalf("unexpected alert: %+v", overview.Alerts[0])
 	}
 }
 

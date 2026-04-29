@@ -22,6 +22,7 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 		`SELECT id, label, cpa_expired_at
 		 FROM accounts
 		 WHERE source_kind = 'cpa'
+		   AND lower(cpa_provider) != 'codex'
 		   AND cpa_expired_at != ''
 		   AND enabled = 1
 		 ORDER BY cpa_expired_at ASC, id ASC`,

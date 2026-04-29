@@ -319,7 +319,6 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 		syscfg.DefaultCodexQuotaFetchInterval,
 	)
 	cutoff := time.Now().UTC().Add(-time.Duration(interval) * time.Second)
-	now := time.Now().UTC()
 
 	var targets []store.Account
 	for _, acc := range c.cache.GetAccounts() {
@@ -331,11 +330,6 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 		}
 		if acc.CpaOpenaiID == "" {
 			continue
-		}
-		if acc.CpaExpiredAt != "" {
-			if exp, err := time.Parse(time.RFC3339, acc.CpaExpiredAt); err == nil && !exp.IsZero() && exp.Before(now) {
-				continue
-			}
 		}
 		if acc.CodexQuotaFetchedAt != "" {
 			if t, err := time.Parse("2006-01-02 15:04:05", acc.CodexQuotaFetchedAt); err == nil && t.After(cutoff) {

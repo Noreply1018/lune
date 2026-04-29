@@ -87,7 +87,7 @@ func (s *Store) GetOverview() (*Overview, error) {
 				LIMIT 1
 			), 0) AS pool_id
 		FROM accounts a
-		WHERE a.source_kind = 'cpa' AND a.cpa_expired_at != '' AND a.enabled = 1`,
+		WHERE a.source_kind = 'cpa' AND lower(a.cpa_provider) != 'codex' AND a.cpa_expired_at != '' AND a.enabled = 1`,
 	)
 	if err == nil {
 		defer expiringRows.Close()
