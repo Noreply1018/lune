@@ -250,63 +250,82 @@ func scanAccounts(rows *sql.Rows) ([]Account, error) {
 
 func scanAccountRow(row rowScanner) (*Account, error) {
 	var a Account
-	var enabled, cpaDisabled int
-	var cpaServiceID sql.NullInt64
-	var lastCheckedAt sql.NullString
-	var createdAt, updatedAt sql.NullString
-	var probeModelsJSON string
-	var lastProbeAt sql.NullString
 
-	err := row.Scan(
+	state := newAccountScanState(&a)
+	if err := row.Scan(state.targets()...); err != nil {
+		return nil, err
+	}
+	state.apply()
+	return &a, nil
+}
+
+type accountScanState struct {
+	account *Account
+
+	enabled         int
+	cpaDisabled     int
+	cpaServiceID    sql.NullInt64
+	lastCheckedAt   sql.NullString
+	createdAt       sql.NullString
+	updatedAt       sql.NullString
+	probeModelsJSON string
+	lastProbeAt     sql.NullString
+}
+
+func newAccountScanState(account *Account) *accountScanState {
+	return &accountScanState{account: account}
+}
+
+func (s *accountScanState) targets() []any {
+	a := s.account
+	return []any{
 		&a.ID, &a.Label, &a.SourceKind, &a.BaseURL, &a.APIKey, &a.Provider,
-		&cpaServiceID, &a.CpaProvider, &a.CpaAccountKey, &a.CpaEmail, &a.CpaPlanType, &a.CpaOpenaiID,
-		&a.CpaExpiredAt, &a.CpaLastRefreshAt, &cpaDisabled,
+		&s.cpaServiceID, &a.CpaProvider, &a.CpaAccountKey, &a.CpaEmail, &a.CpaPlanType, &a.CpaOpenaiID,
+		&a.CpaExpiredAt, &a.CpaLastRefreshAt, &s.cpaDisabled,
 		&a.CpaCredentialStatus, &a.CpaCredentialReason, &a.CpaCredentialLastError, &a.CpaCredentialCheckedAt,
 		&a.CpaSubscriptionExpiresAt, &a.CpaSubscriptionFetchedAt, &a.CpaSubscriptionLastError,
 		&a.CodexQuotaJSON, &a.CodexQuotaFetchedAt,
-		&probeModelsJSON, &a.LastProbeStatus, &lastProbeAt, &a.LastProbeError,
-		&enabled, &a.Status, &a.Notes, &a.QuotaDisplay, &lastCheckedAt, &a.LastError, &createdAt, &updatedAt,
-	)
-	if err != nil {
-		return nil, err
+		&s.probeModelsJSON, &a.LastProbeStatus, &s.lastProbeAt, &a.LastProbeError,
+		&s.enabled, &a.Status, &a.Notes, &a.QuotaDisplay, &s.lastCheckedAt, &a.LastError, &s.createdAt, &s.updatedAt,
 	}
+}
 
-	a.Enabled = enabled != 0
-	a.CpaDisabled = cpaDisabled != 0
+func (s *accountScanState) apply() {
+	a := s.account
+	a.Enabled = s.enabled != 0
+	a.CpaDisabled = s.cpaDisabled != 0
 	a.CpaCredentialStatus = defaultCpaCredentialStatus(a.CpaCredentialStatus)
 
-	if cpaServiceID.Valid {
-		id := cpaServiceID.Int64
+	if s.cpaServiceID.Valid {
+		id := s.cpaServiceID.Int64
 		a.CpaServiceID = &id
 	}
-	if lastCheckedAt.Valid {
-		a.LastCheckedAt = &lastCheckedAt.String
+	if s.lastCheckedAt.Valid {
+		a.LastCheckedAt = &s.lastCheckedAt.String
 	}
-	if createdAt.Valid {
-		a.CreatedAt = createdAt.String
+	if s.createdAt.Valid {
+		a.CreatedAt = s.createdAt.String
 	}
-	if updatedAt.Valid {
-		a.UpdatedAt = updatedAt.String
+	if s.updatedAt.Valid {
+		a.UpdatedAt = s.updatedAt.String
 	}
 	if a.SourceKind == "" {
 		a.SourceKind = "openai_compat"
 	}
 
 	a.ProbeModels = []string{}
-	if probeModelsJSON != "" {
+	if s.probeModelsJSON != "" {
 		// Silently tolerate legacy/garbage payloads — the probe config is
 		// advisory; a broken value shouldn't take the account read offline.
-		_ = json.Unmarshal([]byte(probeModelsJSON), &a.ProbeModels)
+		_ = json.Unmarshal([]byte(s.probeModelsJSON), &a.ProbeModels)
 		if a.ProbeModels == nil {
 			a.ProbeModels = []string{}
 		}
 	}
-	if lastProbeAt.Valid {
-		s := lastProbeAt.String
-		a.LastProbeAt = &s
+	if s.lastProbeAt.Valid {
+		value := s.lastProbeAt.String
+		a.LastProbeAt = &value
 	}
-
-	return &a, nil
 }
 
 func defaultCpaCredentialStatus(status string) string {
