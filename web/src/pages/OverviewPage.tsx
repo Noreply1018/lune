@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, Copy } from "lucide-react";
 import EmptyState from "@/components/EmptyState";
 import ErrorState from "@/components/ErrorState";
 import { useAdminUI } from "@/components/AdminUI";
+import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { ensureArray, getAccountHealth } from "@/lib/lune";
+import { ensureArray, getAccountHealth, getApiBaseUrl } from "@/lib/lune";
 import { useRouter } from "@/lib/router";
 import type {
   Overview,
@@ -153,6 +155,7 @@ export default function OverviewPage() {
   );
   const moonTone = useMemo(() => getMoonTone(visibleAlerts), [visibleAlerts]);
   const phaseName = useMemo(() => getMoonPhaseName(getMoonPhase()), []);
+  const gatewayBaseUrl = getApiBaseUrl();
   const handlePhaseRevealDismiss = useCallback(() => setPhaseRevealAt(null), []);
 
   // Prune dismissed entries whose matching alerts no longer exist.
@@ -271,6 +274,87 @@ export default function OverviewPage() {
         />
       </div>
 
+      <div className="absolute bottom-6 right-6 z-10">
+        <GatewayBaseUrlInscription baseUrl={gatewayBaseUrl} />
+      </div>
+
+    </div>
+  );
+}
+
+function GatewayBaseUrlInscription({ baseUrl }: { baseUrl: string }) {
+  const [awake, setAwake] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const awakeTimerRef = useRef<number | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (awakeTimerRef.current) window.clearTimeout(awakeTimerRef.current);
+      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  function soften() {
+    if (awakeTimerRef.current) window.clearTimeout(awakeTimerRef.current);
+    awakeTimerRef.current = window.setTimeout(() => setAwake(false), 1200);
+  }
+
+  async function copyBaseUrl() {
+    try {
+      await navigator.clipboard.writeText(baseUrl);
+      setCopied(true);
+      toast("已复制");
+      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      toast("复制失败", "error");
+    }
+  }
+
+  return (
+    <div
+      onMouseEnter={() => {
+        setAwake(true);
+        if (awakeTimerRef.current) {
+          window.clearTimeout(awakeTimerRef.current);
+          awakeTimerRef.current = null;
+        }
+      }}
+      onMouseLeave={soften}
+      onFocus={() => setAwake(true)}
+      onBlur={soften}
+      className={[
+        "pointer-events-auto w-[calc(100vw-3rem)] max-w-[30rem] select-none transition-opacity duration-700",
+        awake || copied ? "opacity-100" : "opacity-40",
+      ].join(" ")}
+    >
+      <div className="rounded-[1rem] border border-moon-200/55 bg-white/80 px-3.5 py-3 shadow-[0_18px_40px_-30px_rgba(33,40,63,0.4)] backdrop-blur-md">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <p className="text-[10px] uppercase tracking-[0.28em] text-moon-400">
+              Gateway Base URL
+            </p>
+            <code className="block truncate font-mono text-[12px] text-moon-700" title={baseUrl}>
+              {baseUrl}
+            </code>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0 rounded-full text-moon-500"
+            onClick={copyBaseUrl}
+            aria-label="复制 Gateway Base URL"
+            title="复制 Gateway Base URL"
+          >
+            {copied ? (
+              <Check className="size-3.5 text-status-green" />
+            ) : (
+              <Copy className="size-3.5" />
+            )}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
