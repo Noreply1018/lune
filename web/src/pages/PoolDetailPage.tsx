@@ -71,10 +71,12 @@ export default function PoolDetailPage() {
   const [dialogToken, setDialogToken] = useState<string>("");
   const [selfChecking, setSelfChecking] = useState(false);
   const [flashMap, setFlashMap] = useState<Record<number, FlashState>>({});
+  const [refreshingAccountIds, setRefreshingAccountIds] = useState<Set<number>>(() => new Set());
   const loadSeqRef = useRef(0);
   const hasLoadedRef = useRef(false);
   const flashTimersRef = useRef<Map<number, number>>(new Map());
   const selfCheckingRef = useRef(false);
+  const refreshingAccountIdsRef = useRef<Set<number>>(new Set());
   // Promise-caching de-dup for reveal endpoints. Storing the in-flight
   // promise (not just a boolean) lets concurrent callers share the same
   // request AND await it, so we never hit the POST twice for the same
@@ -114,6 +116,8 @@ export default function PoolDetailPage() {
 
   useEffect(() => {
     hasLoadedRef.current = false;
+    refreshingAccountIdsRef.current.clear();
+    setRefreshingAccountIds(new Set());
   }, [hasValidPoolId, poolId]);
 
   useEffect(() => {
@@ -297,6 +301,9 @@ export default function PoolDetailPage() {
   }
 
   async function refreshAccount(member: PoolMember) {
+    if (refreshingAccountIdsRef.current.has(member.account_id)) return;
+    refreshingAccountIdsRef.current.add(member.account_id);
+    setRefreshingAccountIds((prev) => new Set(prev).add(member.account_id));
     try {
       const result = await api.post<{
         models?: string[];
@@ -312,9 +319,18 @@ export default function PoolDetailPage() {
         const extras = [result.quota_refreshed ? "额度" : "", result.subscription_refreshed ? "订阅" : ""].filter(Boolean);
         toast(extras.length > 0 ? `模型、${extras.join("、")}已刷新` : "账号已刷新");
       }
+      setFlash(member.id, refreshErrors.length > 0 ? "error" : "success");
       refreshData();
     } catch (err) {
+      setFlash(member.id, "error");
       toast(err instanceof Error ? err.message : "刷新失败", "error");
+    } finally {
+      refreshingAccountIdsRef.current.delete(member.account_id);
+      setRefreshingAccountIds((prev) => {
+        const next = new Set(prev);
+        next.delete(member.account_id);
+        return next;
+      });
     }
   }
 
@@ -596,6 +612,7 @@ export default function PoolDetailPage() {
               selected={isSelected}
               dimmed={spotlightActive && !isSelected}
               flashState={flashMap[member.id] ?? null}
+              refreshing={refreshingAccountIds.has(member.account_id)}
               onOpenDetails={() => setDetailMemberId(member.id)}
               onToggleEnabled={() => toggleMember(member, !member.enabled)}
               onDelete={() => setDeleteTarget(member)}
@@ -637,7 +654,7 @@ export default function PoolDetailPage() {
   );
 }
 
-function InlineCopyIcon({ value }: { value: string }) {
+function InlineCopyIcon({ value, label = "Token" }: { value: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   // Track the pending "revert to idle" timer so we can cancel it on unmount
   // (otherwise the setTimeout fires a setState on an unmounted component and
@@ -665,8 +682,8 @@ function InlineCopyIcon({ value }: { value: string }) {
       variant="outline"
       size="icon-sm"
       onClick={handle}
-      aria-label="复制 Token"
-      title="复制 Token"
+      aria-label={`复制 ${label}`}
+      title={`复制 ${label}`}
       className="rounded-full border-moon-200/55 bg-white/45"
     >
       {copied ? (

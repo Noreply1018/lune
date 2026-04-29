@@ -200,7 +200,7 @@ export default function CodexSetupDialog({
   );
   const bashrcLine = useMemo(
     () =>
-      `{ grep -v '^export ${key}=' ~/.bashrc 2>/dev/null; printf '\\nexport ${key}=%s\\n' ${shellQuote(token)}; } > ~/.bashrc.lune.tmp && mv ~/.bashrc.lune.tmp ~/.bashrc`,
+      `touch ~/.bashrc && perl -0pi -e 's/^export ${key}=.*\\n?//mg' ~/.bashrc && printf "\\nexport ${key}='%s'\\n" ${shellQuote(token)} >> ~/.bashrc`,
     [key, token],
   );
   const config = useMemo(

@@ -39,6 +39,7 @@ export default function AccountCard({
   selected = false,
   dimmed = false,
   flashState = null,
+  refreshing = false,
   onOpenDetails,
   onToggleEnabled,
   onDelete,
@@ -54,6 +55,7 @@ export default function AccountCard({
   selected?: boolean;
   dimmed?: boolean;
   flashState?: FlashState;
+  refreshing?: boolean;
   onOpenDetails: () => void;
   onToggleEnabled: () => void;
   onDelete: () => void;
@@ -112,6 +114,9 @@ export default function AccountCard({
     ? "ring-2 ring-lunar-300/70 scale-[1.01] shadow-[0_26px_52px_-30px_rgba(134,125,193,0.45)]"
     : "";
   const dimmedClass = dimmed && !selected ? "opacity-60 saturate-75" : "";
+  const refreshingClass = refreshing
+    ? "ring-2 ring-lunar-300/55 shadow-[0_24px_50px_-30px_rgba(134,125,193,0.42)]"
+    : "";
 
   return (
     <article
@@ -126,6 +131,7 @@ export default function AccountCard({
         isActive ? "min-h-[9.4rem] px-3.5 py-3" : "px-3 py-2.5",
         selectedClass,
         dimmedClass,
+        refreshingClass,
         flashRingClass,
       )}
     >
@@ -221,7 +227,7 @@ export default function AccountCard({
 
         <div className="mt-auto flex items-center justify-between gap-2 pt-1">
           <p className="truncate text-[10.5px] text-moon-400">
-            {showDirectSignal ? "\u00a0" : relativeTime(account.last_checked_at ?? null)}
+            {refreshing ? "刷新中…" : showDirectSignal ? "\u00a0" : relativeTime(account.last_checked_at ?? null)}
           </p>
           <div className="flex items-center gap-0.5">
             <Button
@@ -241,14 +247,16 @@ export default function AccountCard({
               variant="ghost"
               size="icon"
               className="size-7 rounded-full text-moon-500"
+              disabled={refreshing}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
+                if (refreshing) return;
                 onRefresh();
               }}
-              title="刷新"
+              title={refreshing ? "刷新中" : "刷新"}
             >
-              <RefreshCw className="size-3.5" />
+              <RefreshCw className={cn("size-3.5", refreshing ? "animate-spin" : "")} />
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger

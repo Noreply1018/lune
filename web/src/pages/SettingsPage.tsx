@@ -456,111 +456,35 @@ export default function SettingsPage() {
 
       <section
         id="settings-gateway"
-        className="scroll-mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-stretch"
+        className="surface-section scroll-mt-6 overflow-hidden px-0 py-0"
       >
-        <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
+        <div className="border-b border-moon-200/45 px-5 py-5 sm:px-6">
           <SectionHeading
-            title="Runtime"
-            description="控制请求执行、重放缓存与健康检查节奏。"
+            title="System Runtime"
+            description="网关执行、请求重放、健康检查与内置 CPA runtime 状态。"
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                onClick={testService}
+                disabled={testingService || !service}
+              >
+                {testingService ? (
+                  <RefreshCw className="size-4 animate-spin" />
+                ) : (
+                  <CircleDot className="size-4" />
+                )}
+                Check Runtime
+              </Button>
+            }
           />
-          <div className="mt-4 flex-1 divide-y divide-moon-200/30">
-            <p className="pb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-moon-300">
-              Execution
-            </p>
-            <SettingsNumericRow
-              label="Request Timeout"
-              value={gatewayForm.request_timeout}
-              suffix="秒"
-              min={1}
-              saving={savingField === "request_timeout"}
-              onCommit={(value) => {
-                setGatewayForm((current) => ({
-                  ...current,
-                  request_timeout: value,
-                }));
-                void saveSetting("request_timeout", value);
-              }}
-            />
-            <SettingsNumericRow
-              label="Max Retry Attempts"
-              value={gatewayForm.max_retry_attempts}
-              suffix="次"
-              min={1}
-              saving={savingField === "max_retry_attempts"}
-              onCommit={(value) => {
-                setGatewayForm((current) => ({
-                  ...current,
-                  max_retry_attempts: value,
-                }));
-                void saveSetting("max_retry_attempts", value);
-              }}
-            />
-            <div className="pt-4">
-              <p className="pb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-moon-300">
-                Payload
-              </p>
-            </div>
-            <SettingsNumericRow
-              label="Max Request Body"
-              value={gatewayForm.gateway_max_body_mb}
-              suffix="MB"
-              min={1}
-              helper="超过上限的请求会被拒绝并记录到 Activity。"
-              saving={savingField === "gateway_max_body_mb"}
-              onCommit={(value) => {
-                setGatewayForm((current) => ({
-                  ...current,
-                  gateway_max_body_mb: value,
-                  gateway_memory_body_mb: Math.min(
-                    current.gateway_memory_body_mb,
-                    value,
-                  ),
-                }));
-                void saveSetting("gateway_max_body_mb", value);
-              }}
-            />
-            <SettingsNumericRow
-              label="Memory Body Threshold"
-              value={gatewayForm.gateway_memory_body_mb}
-              suffix="MB"
-              min={1}
-              helper="超过阈值的请求写入磁盘重放，用于重试。"
-              saving={savingField === "gateway_memory_body_mb"}
-              onCommit={(value) => {
-                const next = Math.min(value, gatewayForm.gateway_max_body_mb);
-                setGatewayForm((current) => ({
-                  ...current,
-                  gateway_memory_body_mb: next,
-                }));
-                void saveSetting("gateway_memory_body_mb", next);
-              }}
-            />
-            <SettingsNumericRow
-              label="Health Check Interval"
-              value={gatewayForm.health_check_interval}
-              suffix="秒"
-              min={1}
-              helper="健康检查跳动周期；越短越快发现故障。"
-              saving={savingField === "health_check_interval"}
-              onCommit={(value) => {
-                setGatewayForm((current) => ({
-                  ...current,
-                  health_check_interval: value,
-                }));
-                void saveSetting("health_check_interval", value);
-              }}
-            />
-          </div>
         </div>
 
-        <div className="surface-section flex h-full flex-col px-5 py-5 sm:px-6">
-          <SectionHeading
-            title="CPA Runtime"
-            description="查看内置 CPA 运行状态。"
-          />
-          <div className="mt-4 flex flex-1 flex-col">
-            {service ? (
-              <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+        <div className="px-5 py-5 sm:px-6">
+          {service ? (
+            <div className="space-y-5">
+              <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2 xl:grid-cols-5">
                 <InfoBlock
                   label="Status"
                   value={
@@ -577,7 +501,6 @@ export default function SettingsPage() {
                   }
                 />
                 <InfoBlock label="Mode" value={service.runtime_mode || "embedded"} />
-                <InfoBlock label="Auth Dir" value={service.auth_dir || "--"} />
                 <InfoBlock
                   label="CPA Version"
                   value={service.current_version || "Unknown"}
@@ -598,32 +521,113 @@ export default function SettingsPage() {
                       : "尚未检查"
                   }
                 />
-                <InfoBlock
-                  label="Last Error"
-                  value={service.last_error || "None"}
-                />
-                <div className="flex items-end justify-start sm:col-start-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="rounded-full"
-                    onClick={testService}
-                    disabled={testingService}
-                  >
-                    {testingService ? (
-                      <RefreshCw className="size-4 animate-spin" />
-                    ) : (
-                      <CircleDot className="size-4" />
-                    )}
-                    Check Runtime
-                  </Button>
-                </div>
               </div>
-            ) : (
-              <div className="flex h-full flex-col gap-3 rounded-[1.35rem] border border-dashed border-moon-200/55 px-4 py-4 text-sm text-moon-500">
-                <p>内置 CPA 服务未就绪，请稍后重试或检查容器日志。</p>
+
+              <div className="grid gap-4 border-y border-moon-200/35 py-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+                <InfoBlock label="Auth Dir" value={service.auth_dir || "--"} />
+                <InfoBlock label="Last Error" value={service.last_error || "None"} />
               </div>
-            )}
+            </div>
+          ) : (
+            <div className="border-y border-dashed border-moon-200/55 py-4 text-sm text-moon-500">
+              内置 CPA 服务未就绪，请稍后重试或检查容器日志。
+            </div>
+          )}
+        </div>
+
+        <div className="grid border-t border-moon-200/45 lg:grid-cols-2">
+          <div className="px-5 py-5 sm:px-6 lg:border-r lg:border-moon-200/35">
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-moon-300">
+              Execution
+            </p>
+            <div className="divide-y divide-moon-200/30">
+              <SettingsNumericRow
+                label="Request Timeout"
+                value={gatewayForm.request_timeout}
+                suffix="秒"
+                min={1}
+                saving={savingField === "request_timeout"}
+                onCommit={(value) => {
+                  setGatewayForm((current) => ({
+                    ...current,
+                    request_timeout: value,
+                  }));
+                  void saveSetting("request_timeout", value);
+                }}
+              />
+              <SettingsNumericRow
+                label="Max Retry Attempts"
+                value={gatewayForm.max_retry_attempts}
+                suffix="次"
+                min={1}
+                saving={savingField === "max_retry_attempts"}
+                onCommit={(value) => {
+                  setGatewayForm((current) => ({
+                    ...current,
+                    max_retry_attempts: value,
+                  }));
+                  void saveSetting("max_retry_attempts", value);
+                }}
+              />
+              <SettingsNumericRow
+                label="Health Check Interval"
+                value={gatewayForm.health_check_interval}
+                suffix="秒"
+                min={1}
+                helper="健康检查跳动周期；越短越快发现故障。"
+                saving={savingField === "health_check_interval"}
+                onCommit={(value) => {
+                  setGatewayForm((current) => ({
+                    ...current,
+                    health_check_interval: value,
+                  }));
+                  void saveSetting("health_check_interval", value);
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="border-t border-moon-200/45 px-5 py-5 sm:px-6 lg:border-t-0">
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-moon-300">
+              Payload
+            </p>
+            <div className="divide-y divide-moon-200/30">
+              <SettingsNumericRow
+                label="Max Request Body"
+                value={gatewayForm.gateway_max_body_mb}
+                suffix="MB"
+                min={1}
+                helper="超过上限的请求会被拒绝并记录到 Activity。"
+                saving={savingField === "gateway_max_body_mb"}
+                onCommit={(value) => {
+                  setGatewayForm((current) => ({
+                    ...current,
+                    gateway_max_body_mb: value,
+                    gateway_memory_body_mb: Math.min(
+                      current.gateway_memory_body_mb,
+                      value,
+                    ),
+                  }));
+                  void saveSetting("gateway_max_body_mb", value);
+                }}
+              />
+              <SettingsNumericRow
+                label="Memory Body Threshold"
+                value={gatewayForm.gateway_memory_body_mb}
+                suffix="MB"
+                min={1}
+                helper="超过阈值的请求写入磁盘重放，用于重试。"
+                saving={savingField === "gateway_memory_body_mb"}
+                onCommit={(value) => {
+                  const next = Math.min(value, gatewayForm.gateway_max_body_mb);
+                  setGatewayForm((current) => ({
+                    ...current,
+                    gateway_memory_body_mb: next,
+                  }));
+                  void saveSetting("gateway_memory_body_mb", next);
+                }}
+              />
+            </div>
           </div>
         </div>
       </section>
