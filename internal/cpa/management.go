@@ -20,16 +20,17 @@ type ManagementClient struct {
 // AuthFile mirrors one entry from GET /v0/management/auth-files.
 // Only the fields Lune consumes are declared; extra fields are ignored.
 type AuthFile struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	AuthIndex  string `json:"auth_index"`
-	Type       string `json:"type"`
-	Provider   string `json:"provider"`
-	Email      string `json:"email"`
-	Status     string `json:"status"`
-	IDToken    struct {
-		ChatGPTAccountID string `json:"chatgpt_account_id"`
-		PlanType         string `json:"plan_type"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	AuthIndex string `json:"auth_index"`
+	Type      string `json:"type"`
+	Provider  string `json:"provider"`
+	Email     string `json:"email"`
+	Status    string `json:"status"`
+	IDToken   struct {
+		ChatGPTAccountID               string `json:"chatgpt_account_id"`
+		PlanType                       string `json:"plan_type"`
+		ChatGPTSubscriptionActiveUntil string `json:"chatgpt_subscription_active_until"`
 	} `json:"id_token"`
 }
 

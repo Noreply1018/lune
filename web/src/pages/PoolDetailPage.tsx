@@ -36,7 +36,7 @@ type AccountStatsEntry = {
 
 function latestModel(models: string[]) {
   const unique = Array.from(new Set(models.filter(Boolean)));
-  if (unique.length === 0) return "gpt-5";
+  if (unique.length === 0) return "gpt-5.5";
   return unique
     .map((model, index) => ({ model, index, score: scoreModel(model) }))
     .sort((a, b) => b.score - a.score || b.index - a.index)[0].model;
@@ -191,13 +191,7 @@ export default function PoolDetailPage() {
   const primaryTokenDisplay = primaryPoolToken
     ? primaryTokenRevealed ?? primaryPoolToken.token_masked
     : "Pool Token 尚未就绪";
-  const defaultPoolModel = useMemo(() => {
-    const models = [
-      ...ensureArray(pool?.models),
-      ...enabledMembers.flatMap((member) => ensureArray(member.account?.models)),
-    ];
-    return latestModel(models);
-  }, [enabledMembers, pool]);
+  const defaultPoolModel = "gpt-5.5";
 
   // When the token set changes, drop the "connect" choice so the next Codex
   // setup open re-picks the current Pool token.
@@ -570,7 +564,7 @@ export default function PoolDetailPage() {
               className="rounded-full border-moon-200/55 bg-white/45"
             >
               <KeyRound className="size-3.5" />
-              Codex Setup
+              Codex CLI
             </Button>
           </>
         }
@@ -626,7 +620,6 @@ export default function PoolDetailPage() {
       <CodexSetupDialog
         open={setupOpen}
         onOpenChange={setSetupOpen}
-        poolId={pool.id}
         poolLabel={pool.label}
         baseUrl={baseUrl}
         token={dialogToken}

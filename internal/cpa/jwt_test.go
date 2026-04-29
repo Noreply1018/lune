@@ -10,8 +10,9 @@ func TestParseAccountInfoFromTokensPrefersIDToken(t *testing.T) {
 	idToken := testJWT(map[string]any{
 		"email": "user@example.com",
 		"https://api.openai.com/auth": map[string]any{
-			"chatgpt_plan_type":  "plus",
-			"chatgpt_account_id": "acct_123",
+			"chatgpt_plan_type":                  "plus",
+			"chatgpt_account_id":                 "acct_123",
+			"chatgpt_subscription_active_until":  "2026-05-08T05:02:45+00:00",
 		},
 	})
 
@@ -27,6 +28,12 @@ func TestParseAccountInfoFromTokensPrefersIDToken(t *testing.T) {
 	}
 	if info.AccountID != "acct_123" {
 		t.Fatalf("AccountID = %q, want %q", info.AccountID, "acct_123")
+	}
+	if info.ChatGPTSubscriptionActiveUntil != "2026-05-08T05:02:45+00:00" {
+		t.Fatalf("ChatGPTSubscriptionActiveUntil = %q", info.ChatGPTSubscriptionActiveUntil)
+	}
+	if got := SubscriptionActiveUntilFromTokens(idToken, ""); got != "2026-05-08T05:02:45Z" {
+		t.Fatalf("SubscriptionActiveUntilFromTokens = %q", got)
 	}
 }
 

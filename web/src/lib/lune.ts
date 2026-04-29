@@ -213,6 +213,23 @@ export function getCpaCredentialMeta(account: Account): {
   };
 }
 
+export function getCpaSubscriptionErrorMeta(account: Account): {
+  label: string;
+  detail: string;
+  tone: "warning";
+} | null {
+  if (account.source_kind !== "cpa") return null;
+  if (account.cpa_provider.toLowerCase() !== "codex") return null;
+  if (account.cpa_subscription_expires_at) return null;
+  const detail = account.cpa_subscription_last_error || "";
+  if (!detail) return null;
+  return {
+    label: "订阅到期获取失败",
+    detail,
+    tone: "warning",
+  };
+}
+
 export function cpaCredentialReasonLabel(reason: string): string {
   switch (reason) {
     case "disabled":

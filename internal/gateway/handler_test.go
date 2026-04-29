@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -83,6 +84,64 @@ func TestGatewayNoHealthyAccountLogsHTTPStatus(t *testing.T) {
 	assertLatestLogStatus(t, st, 503)
 }
 
+func TestGatewaySuccessClearsCpaCredentialError(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/responses") {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:               "Codex",
+		SourceKind:          "cpa",
+		CpaServiceID:        &serviceID,
+		CpaProvider:         "codex",
+		CpaCredentialStatus: "needs_login",
+		CpaCredentialReason: "refresh_failed",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if err := st.RefreshAccountModels(accountID, []string{"gpt-5-codex"}); err != nil {
+		t.Fatalf("RefreshAccountModels: %v", err)
+	}
+	if err := st.UpdateAccountHealth(accountID, "healthy", ""); err != nil {
+		t.Fatalf("UpdateAccountHealth: %v", err)
+	}
+	if _, err := st.AddPoolMember(*token.PoolID, accountID); err != nil {
+		t.Fatalf("AddPoolMember: %v", err)
+	}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","messages":[{"role":"user","content":"hi"}]}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	waitForGatewayTest(t, func() bool {
+		acc, err := st.GetAccount(accountID)
+		return err == nil && acc != nil && acc.CpaCredentialStatus == "ok"
+	})
+}
+
 type authedGatewayRequest struct {
 	http.Handler
 	*http.Request
@@ -113,4 +172,18 @@ func assertLatestLogStatus(t *testing.T, st *store.Store, expected int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("expected a request log with status %d", expected)
+}
+
+func waitForGatewayTest(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !condition() {
+		t.Fatalf("condition not met before timeout")
+	}
 }

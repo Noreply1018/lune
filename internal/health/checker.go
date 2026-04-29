@@ -141,9 +141,6 @@ func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
 		msg := formatHTTPStatusError(resp.StatusCode, body)
 		c.store.UpdateAccountHealth(acc.ID, "error", msg)
-		if acc.SourceKind == "cpa" && isCpaAuthFailure(resp.StatusCode, string(body)) {
-			c.markCpaCredentialNeedsLogin(acc.ID, credentialReasonFromAuthText(string(body)), msg)
-		}
 		return
 	}
 
@@ -159,9 +156,6 @@ func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 		c.store.UpdateAccountHealth(acc.ID, "degraded", fmt.Sprintf("slow response: %s", latency))
 	} else {
 		c.store.UpdateAccountHealth(acc.ID, "healthy", "")
-	}
-	if acc.SourceKind == "cpa" {
-		c.markCpaCredentialOK(acc.ID)
 	}
 
 	// Parse and refresh discovered models
@@ -206,9 +200,6 @@ func (c *Checker) DiscoverModels(ctx context.Context, acc store.Account) ([]stri
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
 		msg := formatHTTPStatusError(resp.StatusCode, body)
-		if acc.SourceKind == "cpa" && isCpaAuthFailure(resp.StatusCode, string(body)) {
-			c.markCpaCredentialNeedsLogin(acc.ID, credentialReasonFromAuthText(string(body)), msg)
-		}
 		return nil, fmt.Errorf("%s", msg)
 	}
 
@@ -224,10 +215,6 @@ func (c *Checker) DiscoverModels(ctx context.Context, acc store.Account) ([]stri
 		}
 		c.cache.Invalidate()
 	}
-	if acc.SourceKind == "cpa" {
-		c.markCpaCredentialOK(acc.ID)
-	}
-
 	return models, nil
 }
 
@@ -293,17 +280,24 @@ func (c *Checker) RefreshCodexSubscription(ctx context.Context, acc store.Accoun
 	}
 
 	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
-	authIndex, err := c.findAuthIndex(ctx, client, acc.CpaAccountKey)
+	authMeta, err := c.findAuthMetadata(ctx, client, acc.CpaAccountKey)
 	if err != nil {
-		if strings.Contains(err.Error(), "auth file not found") {
-			c.markCpaCredentialNeedsLogin(acc.ID, "auth_index_missing", err.Error())
+		fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, err.Error())
+		return false, err
+	}
+	if authMeta.subscriptionExpiresAt != "" {
+		fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+		if err := c.store.UpdateAccountCpaSubscription(acc.ID, authMeta.subscriptionExpiresAt, fetchedAt, ""); err != nil {
+			return false, fmt.Errorf("persist subscription: %w", err)
 		}
-		return false, err
+		c.cache.Invalidate()
+		return true, nil
 	}
-	if err := c.fetchOneCodexSubscription(ctx, client, acc, authIndex); err != nil {
-		return false, err
-	}
-	return true, nil
+	fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	msg := "subscription metadata missing"
+	_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, msg)
+	return false, fmt.Errorf("%s", msg)
 }
 
 func parseModelList(body []byte) []string {
@@ -400,7 +394,7 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 	}
 
 	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
-	keyToIndex, err := c.listAuthIndexes(ctx, client)
+	keyToMeta, err := c.listAuthMetadata(ctx, client)
 	if err != nil {
 		slog.Warn("fetch codex quotas: list auth-files", "err", err)
 		return
@@ -409,8 +403,8 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
 	for _, acc := range targets {
-		authIndex, ok := keyToIndex[acc.CpaAccountKey]
-		if !ok || authIndex == "" {
+		authMeta, ok := keyToMeta[acc.CpaAccountKey]
+		if !ok || authMeta.authIndex == "" {
 			c.markCpaCredentialNeedsLogin(acc.ID, "auth_index_missing", "CPA auth file not found")
 			continue
 		}
@@ -422,7 +416,7 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 			if err := c.fetchOneCodexQuota(ctx, client, a, idx); err != nil {
 				slog.Warn("fetch codex quota", "account_id", a.ID, "err", err)
 			}
-		}(acc, authIndex)
+		}(acc, authMeta.authIndex)
 	}
 	wg.Wait()
 }
@@ -461,39 +455,46 @@ func (c *Checker) fetchCodexSubscriptions(ctx context.Context) {
 	}
 
 	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
-	keyToIndex, err := c.listAuthIndexes(ctx, client)
+	keyToMeta, err := c.listAuthMetadata(ctx, client)
 	if err != nil {
 		slog.Warn("fetch codex subscriptions: list auth-files", "err", err)
 		return
 	}
 
-	sem := make(chan struct{}, maxConcurrency)
-	var wg sync.WaitGroup
 	for _, acc := range targets {
-		authIndex, ok := keyToIndex[acc.CpaAccountKey]
-		if !ok || authIndex == "" {
-			c.markCpaCredentialNeedsLogin(acc.ID, "auth_index_missing", "CPA auth file not found")
+		authMeta, ok := keyToMeta[acc.CpaAccountKey]
+		if !ok || authMeta.authIndex == "" {
+			fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+			if err := c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, "CPA auth file not found"); err != nil {
+				slog.Warn("fetch codex subscription: persist missing auth file", "account_id", acc.ID, "err", err)
+			}
 			continue
 		}
-		wg.Add(1)
-		go func(a store.Account, idx string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if err := c.fetchOneCodexSubscription(ctx, client, a, idx); err != nil {
-				slog.Warn("fetch codex subscription", "account_id", a.ID, "err", err)
+		if authMeta.subscriptionExpiresAt != "" {
+			fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+			if err := c.store.UpdateAccountCpaSubscription(acc.ID, authMeta.subscriptionExpiresAt, fetchedAt, ""); err != nil {
+				slog.Warn("fetch codex subscription: persist metadata", "account_id", acc.ID, "err", err)
 			}
-		}(acc, authIndex)
+			continue
+		}
+		fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+		if err := c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, "subscription metadata missing"); err != nil {
+			slog.Warn("fetch codex subscription: persist missing metadata", "account_id", acc.ID, "err", err)
+		}
 	}
-	wg.Wait()
 }
 
-func (c *Checker) listAuthIndexes(ctx context.Context, client *cpa.ManagementClient) (map[string]string, error) {
+type authFileMetadata struct {
+	authIndex             string
+	subscriptionExpiresAt string
+}
+
+func (c *Checker) listAuthMetadata(ctx context.Context, client *cpa.ManagementClient) (map[string]authFileMetadata, error) {
 	files, err := client.ListAuthFiles(ctx)
 	if err != nil {
 		return nil, err
 	}
-	keyToIndex := make(map[string]string, len(files))
+	keyToMeta := make(map[string]authFileMetadata, len(files))
 	for _, f := range files {
 		key := strings.TrimSuffix(f.ID, ".json")
 		if key == "" {
@@ -502,21 +503,36 @@ func (c *Checker) listAuthIndexes(ctx context.Context, client *cpa.ManagementCli
 		if key == "" || f.AuthIndex == "" {
 			continue
 		}
-		keyToIndex[key] = f.AuthIndex
+		keyToMeta[key] = authFileMetadata{
+			authIndex:             f.AuthIndex,
+			subscriptionExpiresAt: cpa.NormalizeSubscriptionActiveUntil(f.IDToken.ChatGPTSubscriptionActiveUntil),
+		}
 	}
-	return keyToIndex, nil
+	return keyToMeta, nil
 }
 
 func (c *Checker) findAuthIndex(ctx context.Context, client *cpa.ManagementClient, accountKey string) (string, error) {
-	keyToIndex, err := c.listAuthIndexes(ctx, client)
+	keyToMeta, err := c.listAuthMetadata(ctx, client)
 	if err != nil {
 		return "", err
 	}
-	authIndex := keyToIndex[accountKey]
-	if authIndex == "" {
+	authMeta, ok := keyToMeta[accountKey]
+	if !ok || authMeta.authIndex == "" {
 		return "", fmt.Errorf("CPA auth file not found")
 	}
-	return authIndex, nil
+	return authMeta.authIndex, nil
+}
+
+func (c *Checker) findAuthMetadata(ctx context.Context, client *cpa.ManagementClient, accountKey string) (authFileMetadata, error) {
+	keyToMeta, err := c.listAuthMetadata(ctx, client)
+	if err != nil {
+		return authFileMetadata{}, err
+	}
+	authMeta, ok := keyToMeta[accountKey]
+	if !ok || authMeta.authIndex == "" {
+		return authFileMetadata{}, fmt.Errorf("CPA auth file not found")
+	}
+	return authMeta, nil
 }
 
 func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.ManagementClient, acc store.Account, authIndex string) error {
@@ -552,46 +568,6 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 	return nil
 }
 
-func (c *Checker) fetchOneCodexSubscription(ctx context.Context, client *cpa.ManagementClient, acc store.Account, authIndex string) error {
-	header := map[string]string{
-		"Authorization": "Bearer $TOKEN$",
-	}
-	if acc.CpaOpenaiID != "" {
-		header["ChatGPT-Account-Id"] = acc.CpaOpenaiID
-	}
-	resp, err := client.APICall(ctx, authIndex, http.MethodGet, "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27", header)
-	fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
-	if err != nil {
-		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, err.Error())
-		return err
-	}
-	if resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("HTTP %d", resp.StatusCode)
-		if isCpaAuthFailure(resp.StatusCode, resp.Body) {
-			c.markCpaCredentialNeedsLogin(acc.ID, credentialReasonFromAuthText(resp.Body), msg)
-		}
-		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, msg)
-		return fmt.Errorf("%s", msg)
-	}
-	body := strings.TrimSpace(resp.Body)
-	if body == "" {
-		msg := "empty subscription response"
-		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, msg)
-		return fmt.Errorf("%s", msg)
-	}
-	expiresAt, err := parseCodexSubscriptionExpiry([]byte(body), acc.CpaOpenaiID)
-	if err != nil {
-		_ = c.store.UpdateAccountCpaSubscription(acc.ID, acc.CpaSubscriptionExpiresAt, fetchedAt, err.Error())
-		return err
-	}
-	if err := c.store.UpdateAccountCpaSubscription(acc.ID, expiresAt, fetchedAt, ""); err != nil {
-		return fmt.Errorf("persist subscription: %w", err)
-	}
-	c.markCpaCredentialOK(acc.ID)
-	c.cache.Invalidate()
-	return nil
-}
-
 func (c *Checker) syncCpaMetadata() {
 	if c.cpaAuthDir == "" {
 		return
@@ -616,6 +592,12 @@ func (c *Checker) syncCpaMetadata() {
 			continue
 		}
 		c.store.UpdateAccountCpaMetadata(acc.ID, f.Expired, f.LastRefresh, f.Disabled)
+		if strings.ToLower(f.Type) == "codex" {
+			if expiresAt := cpa.SubscriptionActiveUntilFromTokens(f.IDToken, f.AccessToken); expiresAt != "" {
+				fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+				_ = c.store.UpdateAccountCpaSubscription(acc.ID, expiresAt, fetchedAt, "")
+			}
+		}
 		if f.Disabled {
 			c.store.UpdateAccountHealth(acc.ID, "error", "CPA credential disabled")
 			c.markCpaCredentialNeedsLogin(acc.ID, "disabled", "CPA credential disabled")

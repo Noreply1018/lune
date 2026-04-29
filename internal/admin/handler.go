@@ -2127,25 +2127,28 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 		lastRefreshAt = f.LastRefresh
 	}
 	credentialStatus, credentialReason, credentialLastError, credentialCheckedAt := cpaCredentialStateFromAuthFile(f)
+	subscriptionExpiresAt, subscriptionFetchedAt := cpaSubscriptionStateFromAuthFile(f)
 
 	account := &store.Account{
-		Label:                  label,
-		SourceKind:             "cpa",
-		CpaServiceID:           &svc.ID,
-		CpaProvider:            f.Type,
-		CpaAccountKey:          accountKey,
-		CpaEmail:               f.Email,
-		CpaPlanType:            planType,
-		CpaOpenaiID:            openaiID,
-		CpaExpiredAt:           expiredAt,
-		CpaLastRefreshAt:       lastRefreshAt,
-		CpaDisabled:            f.Disabled,
-		CpaCredentialStatus:    credentialStatus,
-		CpaCredentialReason:    credentialReason,
-		CpaCredentialLastError: credentialLastError,
-		CpaCredentialCheckedAt: credentialCheckedAt,
-		Enabled:                enabled,
-		Notes:                  notes,
+		Label:                    label,
+		SourceKind:               "cpa",
+		CpaServiceID:             &svc.ID,
+		CpaProvider:              f.Type,
+		CpaAccountKey:            accountKey,
+		CpaEmail:                 f.Email,
+		CpaPlanType:              planType,
+		CpaOpenaiID:              openaiID,
+		CpaExpiredAt:             expiredAt,
+		CpaLastRefreshAt:         lastRefreshAt,
+		CpaDisabled:              f.Disabled,
+		CpaCredentialStatus:      credentialStatus,
+		CpaCredentialReason:      credentialReason,
+		CpaCredentialLastError:   credentialLastError,
+		CpaCredentialCheckedAt:   credentialCheckedAt,
+		CpaSubscriptionExpiresAt: subscriptionExpiresAt,
+		CpaSubscriptionFetchedAt: subscriptionFetchedAt,
+		Enabled:                  enabled,
+		Notes:                    notes,
 	}
 
 	id, err := h.store.CreateAccount(account)
@@ -2155,6 +2158,9 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 			if findErr == nil && existing != nil {
 				_ = h.store.UpdateAccountCpaMetadata(existing.ID, expiredAt, lastRefreshAt, f.Disabled)
 				_ = h.store.UpdateAccountCpaCredentialStatus(existing.ID, credentialStatus, credentialReason, credentialLastError, credentialCheckedAt)
+				if subscriptionExpiresAt != "" {
+					_ = h.store.UpdateAccountCpaSubscription(existing.ID, subscriptionExpiresAt, subscriptionFetchedAt, "")
+				}
 				h.fillAccountResponse(existing)
 				existing.CpaExpiredAt = expiredAt
 				existing.CpaLastRefreshAt = lastRefreshAt
@@ -2163,6 +2169,11 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 				existing.CpaCredentialReason = credentialReason
 				existing.CpaCredentialLastError = credentialLastError
 				existing.CpaCredentialCheckedAt = credentialCheckedAt
+				if subscriptionExpiresAt != "" {
+					existing.CpaSubscriptionExpiresAt = subscriptionExpiresAt
+					existing.CpaSubscriptionFetchedAt = subscriptionFetchedAt
+					existing.CpaSubscriptionLastError = ""
+				}
 				return existing, nil
 			}
 		}
@@ -2180,6 +2191,17 @@ func cpaCredentialStateFromAuthFile(f *cpa.CpaAuthFile) (status, reason, lastErr
 		return "needs_login", "disabled", "CPA credential disabled", checkedAt
 	}
 	return "ok", "", "", checkedAt
+}
+
+func cpaSubscriptionStateFromAuthFile(f *cpa.CpaAuthFile) (expiresAt, fetchedAt string) {
+	if strings.ToLower(f.Type) != "codex" {
+		return "", ""
+	}
+	expiresAt = cpa.SubscriptionActiveUntilFromTokens(f.IDToken, f.AccessToken)
+	if expiresAt == "" {
+		return "", ""
+	}
+	return expiresAt, time.Now().UTC().Format("2006-01-02 15:04:05")
 }
 
 // --- CPA Import ---
@@ -2377,24 +2399,27 @@ func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request)
 			lastRefreshAt = f.LastRefresh
 		}
 		credentialStatus, credentialReason, credentialLastError, credentialCheckedAt := cpaCredentialStateFromAuthFile(f)
+		subscriptionExpiresAt, subscriptionFetchedAt := cpaSubscriptionStateFromAuthFile(f)
 
 		account := &store.Account{
-			Label:                  fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType),
-			SourceKind:             "cpa",
-			CpaServiceID:           &svc.ID,
-			CpaProvider:            f.Type,
-			CpaAccountKey:          key,
-			CpaEmail:               f.Email,
-			CpaPlanType:            planType,
-			CpaOpenaiID:            openaiID,
-			CpaExpiredAt:           expiredAt,
-			CpaLastRefreshAt:       lastRefreshAt,
-			CpaDisabled:            f.Disabled,
-			CpaCredentialStatus:    credentialStatus,
-			CpaCredentialReason:    credentialReason,
-			CpaCredentialLastError: credentialLastError,
-			CpaCredentialCheckedAt: credentialCheckedAt,
-			Enabled:                true,
+			Label:                    fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType),
+			SourceKind:               "cpa",
+			CpaServiceID:             &svc.ID,
+			CpaProvider:              f.Type,
+			CpaAccountKey:            key,
+			CpaEmail:                 f.Email,
+			CpaPlanType:              planType,
+			CpaOpenaiID:              openaiID,
+			CpaExpiredAt:             expiredAt,
+			CpaLastRefreshAt:         lastRefreshAt,
+			CpaDisabled:              f.Disabled,
+			CpaCredentialStatus:      credentialStatus,
+			CpaCredentialReason:      credentialReason,
+			CpaCredentialLastError:   credentialLastError,
+			CpaCredentialCheckedAt:   credentialCheckedAt,
+			CpaSubscriptionExpiresAt: subscriptionExpiresAt,
+			CpaSubscriptionFetchedAt: subscriptionFetchedAt,
+			Enabled:                  true,
 		}
 
 		accountID, err := h.store.CreateAccount(account)

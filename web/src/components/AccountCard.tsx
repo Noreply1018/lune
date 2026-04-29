@@ -20,6 +20,7 @@ import {
   getAccessLabel,
   getAccountHealth,
   getCpaCredentialMeta,
+  getCpaSubscriptionErrorMeta,
   getExpiryMeta,
   parseQuotaDisplay,
 } from "@/lib/lune";
@@ -76,6 +77,7 @@ export default function AccountCard({
       : account?.cpa_expired_at ?? null,
   );
   const credential = account ? getCpaCredentialMeta(account) : null;
+  const subscriptionError = account ? getCpaSubscriptionErrorMeta(account) : null;
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
   // Every non-Codex account — direct as well as non-Codex CPA (e.g. Claude) —
   // gets the dual-row signal strip so both card variants share the same height.
@@ -205,6 +207,14 @@ export default function AccountCard({
               title={credential.detail}
             >
               {credential.label}
+            </span>
+          ) : null}
+          {subscriptionError ? (
+            <span
+              className="rounded-full bg-status-yellow/12 px-2 py-0.5 text-status-yellow"
+              title={subscriptionError.detail}
+            >
+              {subscriptionError.label}
             </span>
           ) : null}
         </div>

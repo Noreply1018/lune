@@ -33,7 +33,7 @@ http://127.0.0.1:7788/admin
 
 Do not publish port `8317`; it is only used inside the container for Lune-to-CPA traffic.
 
-After adding accounts, open a Pool detail page and use **Codex Setup** to generate the Codex CLI `config.toml` snippet for that Pool.
+After adding accounts, open a Pool detail page and use **Codex CLI** to generate the Codex CLI `config.toml` snippet for that Pool.
 
 ## Compose quick start
 

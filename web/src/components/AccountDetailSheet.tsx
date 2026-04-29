@@ -27,6 +27,7 @@ import {
   getAccessLabel,
   getAccountHealth,
   getCpaCredentialMeta,
+  getCpaSubscriptionErrorMeta,
   getExpiryMeta,
   parseQuotaDisplay,
 } from "@/lib/lune";
@@ -91,6 +92,7 @@ export default function AccountDetailSheet({
     isCodexCpa ? account.cpa_subscription_expires_at ?? null : account.cpa_expired_at ?? null,
   );
   const credential = getCpaCredentialMeta(account);
+  const subscriptionError = getCpaSubscriptionErrorMeta(account);
   const quota = parseQuotaDisplay(account.quota_display ?? "");
   const codexQuota = parseCodexQuota(account);
   const models = ensureArray(account.models);
@@ -141,6 +143,14 @@ export default function AccountDetailSheet({
                   {credential.label}
                 </span>
               ) : null}
+              {subscriptionError ? (
+                <span
+                  className="rounded-full bg-status-yellow/12 px-2.5 py-1 text-status-yellow"
+                  title={subscriptionError.detail}
+                >
+                  {subscriptionError.label}
+                </span>
+              ) : null}
               <span className="inline-flex items-center gap-1 text-moon-400">
                 <Clock3 className="size-3" />
                 {relativeTime(account.last_checked_at ?? null)}
@@ -188,6 +198,7 @@ export default function AccountDetailSheet({
                   accountId={account.id}
                   baseUrl={account.runtime?.base_url || account.base_url || "--"}
                   subscriptionExpiry={isCodexCpa ? account.cpa_subscription_expires_at ?? null : null}
+                  subscriptionLastError={isCodexCpa ? account.cpa_subscription_last_error ?? "" : ""}
                   credentialExpiry={account.cpa_expired_at ?? null}
                   credentialStatus={
                     account.source_kind === "cpa" ? account.cpa_credential_status ?? "unknown" : null
@@ -618,6 +629,7 @@ function DebugPanel({
   accountId,
   baseUrl,
   subscriptionExpiry,
+  subscriptionLastError,
   credentialExpiry,
   credentialStatus,
   credentialReason,
@@ -629,6 +641,7 @@ function DebugPanel({
   accountId: number;
   baseUrl: string;
   subscriptionExpiry: string | null;
+  subscriptionLastError: string;
   credentialExpiry: string | null;
   credentialStatus: string | null;
   credentialReason: string;
@@ -645,6 +658,14 @@ function DebugPanel({
         <DebugRow
           label="ChatGPT Subscription Expires"
           value={`${subscriptionExpiry} · ${relativeTime(subscriptionExpiry)}`}
+        />
+      ) : null}
+      {subscriptionLastError ? (
+        <DebugRow
+          label="ChatGPT Subscription Error"
+          value={subscriptionLastError}
+          tone="danger"
+          breakAll
         />
       ) : null}
       {credentialExpiry ? (

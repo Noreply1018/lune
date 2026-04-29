@@ -9,9 +9,10 @@ import (
 )
 
 type AccountInfo struct {
-	Email     string `json:"email"`
-	PlanType  string `json:"plan_type"`
-	AccountID string `json:"account_id"`
+	Email                          string `json:"email"`
+	PlanType                       string `json:"plan_type"`
+	AccountID                      string `json:"account_id"`
+	ChatGPTSubscriptionActiveUntil string `json:"chatgpt_subscription_active_until"`
 }
 
 func ParseAccountInfo(token string) (*AccountInfo, error) {
@@ -87,6 +88,9 @@ func extractAccountInfo(claims map[string]any) *AccountInfo {
 	if accountID, ok := claims["chatgpt_account_id"].(string); ok && accountID != "" {
 		info.AccountID = accountID
 	}
+	if activeUntil, ok := claims["chatgpt_subscription_active_until"].(string); ok {
+		info.ChatGPTSubscriptionActiveUntil = activeUntil
+	}
 
 	// extract email from https://api.openai.com/profile claim
 	if profile, ok := claims["https://api.openai.com/profile"].(map[string]any); ok {
@@ -102,6 +106,9 @@ func extractAccountInfo(claims map[string]any) *AccountInfo {
 		}
 		if accountID, ok := auth["chatgpt_account_id"].(string); ok {
 			info.AccountID = accountID
+		}
+		if activeUntil, ok := auth["chatgpt_subscription_active_until"].(string); ok {
+			info.ChatGPTSubscriptionActiveUntil = activeUntil
 		}
 	}
 

@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -23,6 +24,253 @@ func newTestStore(t *testing.T) *store.Store {
 		_ = st.Close()
 	})
 	return st
+}
+
+func TestFetchCodexSubscriptionsUsesAuthFileMetadata(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"files": []map[string]any{
+					{
+						"id":         "codex-user@example.com-plus.json",
+						"auth_index": "idx_1",
+						"id_token": map[string]any{
+							"chatgpt_subscription_active_until": "2026-05-08T05:02:45+00:00",
+						},
+					},
+				},
+			})
+		case "/v0/management/api-call":
+			t.Fatalf("subscription refresh must not use api-call")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       server.URL,
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:         "Codex",
+		SourceKind:    "cpa",
+		CpaServiceID:  &serviceID,
+		CpaProvider:   "codex",
+		CpaAccountKey: "codex-user@example.com-plus",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.fetchCodexSubscriptions(context.Background())
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.CpaSubscriptionExpiresAt != "2026-05-08T05:02:45Z" {
+		t.Fatalf("subscription expiry = %q", acc.CpaSubscriptionExpiresAt)
+	}
+	if acc.CpaSubscriptionLastError != "" {
+		t.Fatalf("subscription error = %q", acc.CpaSubscriptionLastError)
+	}
+}
+
+func TestFetchCodexSubscriptionMissingMetadataDoesNotMarkNeedsLogin(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"files": []map[string]any{
+					{
+						"id":         "codex-user@example.com-plus.json",
+						"auth_index": "idx_1",
+						"id_token":   map[string]any{},
+					},
+				},
+			})
+		case "/v0/management/api-call":
+			t.Fatalf("subscription refresh must not use api-call")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       server.URL,
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:                    "Codex",
+		SourceKind:               "cpa",
+		CpaServiceID:             &serviceID,
+		CpaProvider:              "codex",
+		CpaAccountKey:            "codex-user@example.com-plus",
+		CpaCredentialStatus:      "unknown",
+		CpaSubscriptionExpiresAt: "2026-05-01T00:00:00Z",
+		Enabled:                  true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.fetchCodexSubscriptions(context.Background())
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.CpaCredentialStatus == "needs_login" {
+		t.Fatalf("credential status should not become needs_login after missing subscription metadata")
+	}
+	if acc.CpaSubscriptionExpiresAt != "2026-05-01T00:00:00Z" {
+		t.Fatalf("subscription expiry should be preserved, got %q", acc.CpaSubscriptionExpiresAt)
+	}
+	if acc.CpaSubscriptionLastError != "subscription metadata missing" {
+		t.Fatalf("subscription error = %q", acc.CpaSubscriptionLastError)
+	}
+}
+
+func TestDiscoverModelsSuccessDoesNotClearCpaCredentialError(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/provider/codex/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"id": "gpt-5-codex"}},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:               "Codex",
+		SourceKind:          "cpa",
+		CpaServiceID:        &serviceID,
+		CpaProvider:         "codex",
+		CpaCredentialStatus: "needs_login",
+		CpaCredentialReason: "refresh_failed",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, "", "", nil)
+	if _, err := checker.DiscoverModels(context.Background(), *acc); err != nil {
+		t.Fatalf("discover models: %v", err)
+	}
+
+	acc, err = st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account after discover: %v", err)
+	}
+	if acc.CpaCredentialStatus != "needs_login" || acc.CpaCredentialReason != "refresh_failed" {
+		t.Fatalf("credential state was cleared: status=%q reason=%q", acc.CpaCredentialStatus, acc.CpaCredentialReason)
+	}
+}
+
+func TestDiscoverModelsFailureDoesNotMarkCpaCredentialError(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/provider/codex/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"access denied"}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:               "Codex",
+		SourceKind:          "cpa",
+		CpaServiceID:        &serviceID,
+		CpaProvider:         "codex",
+		CpaCredentialStatus: "unknown",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, "", "", nil)
+	if _, err := checker.DiscoverModels(context.Background(), *acc); err == nil {
+		t.Fatalf("expected discover models failure")
+	}
+
+	acc, err = st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account after discover: %v", err)
+	}
+	if acc.CpaCredentialStatus == "needs_login" {
+		t.Fatalf("credential state should not be changed by models failure")
+	}
 }
 
 func newTestNotifier(st *store.Store) *notify.Service {
