@@ -302,13 +302,21 @@ export default function PoolDetailPage() {
     }
   }
 
-  async function refreshModels(member: PoolMember) {
+  async function refreshAccount(member: PoolMember) {
     try {
-      await api.post(`/accounts/${member.account_id}/discover-models`);
-      toast("模型刷新任务已触发");
+      const result = await api.post<{
+        models?: string[];
+        quota_refreshed?: boolean;
+        quota_error?: string;
+      }>(`/accounts/${member.account_id}/discover-models`);
+      if (result.quota_error) {
+        toast(`模型已刷新，额度刷新失败：${result.quota_error}`, "error");
+      } else {
+        toast(result.quota_refreshed ? "模型与额度已刷新" : "账号已刷新");
+      }
       refreshData();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "刷新模型失败", "error");
+      toast(err instanceof Error ? err.message : "刷新失败", "error");
     }
   }
 
@@ -593,7 +601,7 @@ export default function PoolDetailPage() {
               onOpenDetails={() => setDetailMemberId(member.id)}
               onToggleEnabled={() => toggleMember(member, !member.enabled)}
               onDelete={() => setDeleteTarget(member)}
-              onRefreshModels={() => refreshModels(member)}
+              onRefresh={() => refreshAccount(member)}
             />
           );
         }}

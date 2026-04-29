@@ -213,6 +213,42 @@ func (c *Checker) DiscoverModels(ctx context.Context, acc store.Account) ([]stri
 	return models, nil
 }
 
+func (c *Checker) RefreshCodexQuota(ctx context.Context, acc store.Account) (bool, error) {
+	if acc.SourceKind != "cpa" || acc.CpaProvider != "codex" {
+		return false, nil
+	}
+	if !acc.Enabled || acc.CpaDisabled {
+		return false, nil
+	}
+	if acc.CpaOpenaiID == "" {
+		return false, fmt.Errorf("missing ChatGPT account id")
+	}
+	if acc.CpaServiceID == nil {
+		return false, fmt.Errorf("missing CPA service")
+	}
+	svc := c.cache.GetCpaService(*acc.CpaServiceID)
+	if svc == nil || !svc.Enabled {
+		return false, fmt.Errorf("CPA service unreachable")
+	}
+	managementKey := svc.ManagementKey
+	if managementKey == "" {
+		managementKey = c.managementKey
+	}
+	if managementKey == "" {
+		return false, fmt.Errorf("CPA management key is empty")
+	}
+
+	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
+	authIndex, err := c.findAuthIndex(ctx, client, acc.CpaAccountKey)
+	if err != nil {
+		return false, err
+	}
+	if err := c.fetchOneCodexQuota(ctx, client, acc, authIndex); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func parseModelList(body []byte) []string {
 	var resp struct {
 		Data []struct {
@@ -313,24 +349,10 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 	}
 
 	client := cpa.NewManagementClient(svc.BaseURL, managementKey)
-	files, err := client.ListAuthFiles(ctx)
+	keyToIndex, err := c.listAuthIndexes(ctx, client)
 	if err != nil {
 		slog.Warn("fetch codex quotas: list auth-files", "err", err)
 		return
-	}
-
-	// CPA `auth-files[i].id` is `<cpa_account_key>.json`; strip the suffix to
-	// match Lune's stored `cpa_account_key`.
-	keyToIndex := make(map[string]string, len(files))
-	for _, f := range files {
-		key := strings.TrimSuffix(f.ID, ".json")
-		if key == "" {
-			key = strings.TrimSuffix(f.Name, ".json")
-		}
-		if key == "" || f.AuthIndex == "" {
-			continue
-		}
-		keyToIndex[key] = f.AuthIndex
 	}
 
 	sem := make(chan struct{}, maxConcurrency)
@@ -345,42 +367,72 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			c.fetchOneCodexQuota(ctx, client, a, idx)
+			if err := c.fetchOneCodexQuota(ctx, client, a, idx); err != nil {
+				slog.Warn("fetch codex quota", "account_id", a.ID, "err", err)
+			}
 		}(acc, authIndex)
 	}
 	wg.Wait()
 }
 
-func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.ManagementClient, acc store.Account, authIndex string) {
+func (c *Checker) listAuthIndexes(ctx context.Context, client *cpa.ManagementClient) (map[string]string, error) {
+	files, err := client.ListAuthFiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	keyToIndex := make(map[string]string, len(files))
+	for _, f := range files {
+		key := strings.TrimSuffix(f.ID, ".json")
+		if key == "" {
+			key = strings.TrimSuffix(f.Name, ".json")
+		}
+		if key == "" || f.AuthIndex == "" {
+			continue
+		}
+		keyToIndex[key] = f.AuthIndex
+	}
+	return keyToIndex, nil
+}
+
+func (c *Checker) findAuthIndex(ctx context.Context, client *cpa.ManagementClient, accountKey string) (string, error) {
+	keyToIndex, err := c.listAuthIndexes(ctx, client)
+	if err != nil {
+		return "", err
+	}
+	authIndex := keyToIndex[accountKey]
+	if authIndex == "" {
+		return "", fmt.Errorf("CPA auth file not found")
+	}
+	return authIndex, nil
+}
+
+func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.ManagementClient, acc store.Account, authIndex string) error {
 	header := map[string]string{
 		"Authorization":      "Bearer $TOKEN$",
 		"ChatGPT-Account-Id": acc.CpaOpenaiID,
 	}
 	resp, err := client.APICall(ctx, authIndex, http.MethodGet, "https://chatgpt.com/backend-api/wham/usage", header)
 	if err != nil {
-		slog.Warn("fetch codex quota", "account_id", acc.ID, "err", err)
-		return
+		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		slog.Warn("fetch codex quota: non-200", "account_id", acc.ID, "status", resp.StatusCode)
-		return
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	body := strings.TrimSpace(resp.Body)
 	if body == "" {
-		return
+		return fmt.Errorf("empty quota response")
 	}
 	var sanity map[string]any
 	if err := json.Unmarshal([]byte(body), &sanity); err != nil {
-		slog.Warn("fetch codex quota: invalid JSON", "account_id", acc.ID, "err", err)
-		return
+		return fmt.Errorf("invalid quota JSON: %w", err)
 	}
 
 	fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 	if err := c.store.UpdateAccountCodexQuota(acc.ID, body, fetchedAt); err != nil {
-		slog.Error("fetch codex quota: persist", "account_id", acc.ID, "err", err)
-		return
+		return fmt.Errorf("persist quota: %w", err)
 	}
 	c.cache.Invalidate()
+	return nil
 }
 
 func (c *Checker) syncCpaMetadata() {

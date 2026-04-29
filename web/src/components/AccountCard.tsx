@@ -40,7 +40,7 @@ export default function AccountCard({
   onOpenDetails,
   onToggleEnabled,
   onDelete,
-  onRefreshModels,
+  onRefresh,
   dragHandleProps,
 }: {
   member: PoolMember;
@@ -55,7 +55,7 @@ export default function AccountCard({
   onOpenDetails: () => void;
   onToggleEnabled: () => void;
   onDelete: () => void;
-  onRefreshModels: () => void;
+  onRefresh: () => void;
   dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 }) {
   const account = member.account;
@@ -213,6 +213,19 @@ export default function AccountCard({
             >
               <Info className="size-3.5" />
             </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 rounded-full text-moon-500"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRefresh();
+              }}
+              title="刷新"
+            >
+              <RefreshCw className="size-3.5" />
+            </Button>
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
@@ -227,14 +240,6 @@ export default function AccountCard({
                 <MoreHorizontal className="size-3.5" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuItem onClick={onOpenDetails}>
-                  <Info className="size-4" />
-                  查看详情
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onRefreshModels}>
-                  <RefreshCw className="size-4" />
-                  刷新模型
-                </DropdownMenuItem>
                 <DropdownMenuItem onClick={onToggleEnabled}>
                   <Power className="size-4" />
                   {enabled ? "移入禁用区" : "重新启用"}

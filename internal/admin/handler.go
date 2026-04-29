@@ -71,7 +71,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("DELETE /admin/api/accounts/{id}", h.deleteAccount)
 	handle("POST /admin/api/accounts/test-connection", h.testConnection)
 
-	// Account model discovery
+	// Account refresh
 	handle("POST /admin/api/accounts/{id}/discover-models", h.discoverModels)
 	handle("GET /admin/api/accounts/{id}/models", h.getAccountModels)
 
@@ -307,7 +307,7 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
 }
 
-// --- Account Model Discovery ---
+// --- Account Refresh ---
 
 func (h *Handler) discoverModels(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
@@ -324,13 +324,28 @@ func (h *Handler) discoverModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.healthChecker == nil {
+		webutil.WriteAdminError(w, 503, "refresh_unavailable", "account refresh is unavailable")
+		return
+	}
+
 	models, err := h.healthChecker.DiscoverModels(r.Context(), *acc)
 	if err != nil {
 		webutil.WriteAdminError(w, 502, "discovery_failed", fmt.Sprintf("model discovery failed: %v", err))
 		return
 	}
+	quotaRefreshed := false
+	quotaErr := ""
+	quotaRefreshed, err = h.healthChecker.RefreshCodexQuota(r.Context(), *acc)
+	if err != nil {
+		quotaErr = err.Error()
+	}
 	h.cache.Invalidate()
-	webutil.WriteData(w, 200, map[string]any{"models": models})
+	webutil.WriteData(w, 200, map[string]any{
+		"models":          models,
+		"quota_refreshed": quotaRefreshed,
+		"quota_error":     quotaErr,
+	})
 }
 
 func (h *Handler) getAccountModels(w http.ResponseWriter, r *http.Request) {
