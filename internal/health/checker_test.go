@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"lune/internal/cpa"
 	"lune/internal/notify"
 	"lune/internal/notify/drivers"
 	"lune/internal/store"
@@ -140,6 +141,14 @@ func TestFetchCodexSubscriptionsUsesAuthFileMetadata(t *testing.T) {
 
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -185,7 +194,7 @@ func TestFetchCodexSubscriptionsUsesAuthFileMetadata(t *testing.T) {
 	}
 	cache.Invalidate()
 
-	checker := NewChecker(st, cache, "", "", nil)
+	checker := NewChecker(st, cache, authDir, "", nil)
 	checker.fetchCodexSubscriptions(context.Background())
 
 	acc, err := st.GetAccount(accountID)
@@ -205,6 +214,14 @@ func TestFetchCodexSubscriptionMissingMetadataDoesNotMarkNeedsLogin(t *testing.T
 
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -250,7 +267,7 @@ func TestFetchCodexSubscriptionMissingMetadataDoesNotMarkNeedsLogin(t *testing.T
 	}
 	cache.Invalidate()
 
-	checker := NewChecker(st, cache, "", "", nil)
+	checker := NewChecker(st, cache, authDir, "", nil)
 	checker.fetchCodexSubscriptions(context.Background())
 
 	acc, err := st.GetAccount(accountID)
@@ -263,8 +280,183 @@ func TestFetchCodexSubscriptionMissingMetadataDoesNotMarkNeedsLogin(t *testing.T
 	if acc.CpaSubscriptionExpiresAt != "2026-05-01T00:00:00Z" {
 		t.Fatalf("subscription expiry should be preserved, got %q", acc.CpaSubscriptionExpiresAt)
 	}
-	if acc.CpaSubscriptionLastError != "subscription metadata missing" {
+	if acc.CpaSubscriptionLastError != "subscription metadata pending" {
 		t.Fatalf("subscription error = %q", acc.CpaSubscriptionLastError)
+	}
+}
+
+func TestRefreshAccountWaitsForCpaAuthIndex(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+		Disabled:  false,
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	authFilesAttempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			authFilesAttempts++
+			files := []map[string]any{}
+			if authFilesAttempts >= 3 {
+				files = append(files, map[string]any{
+					"id":         "codex-user@example.com-plus.json",
+					"auth_index": "idx_1",
+					"provider":   "codex",
+					"email":      "user@example.com",
+					"id_token": map[string]any{
+						"plan_type": "plus",
+					},
+				})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"files": files})
+		case "/api/provider/codex/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{"id": "gpt-5-codex"}},
+			})
+		case "/v0/management/api-call":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status_code": 200,
+				"body":        `{"period":"day","used":1}`,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       server.URL,
+		APIKey:        "service-key",
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:         "Codex",
+		SourceKind:    "cpa",
+		CpaServiceID:  &serviceID,
+		CpaProvider:   "codex",
+		CpaAccountKey: "codex-user@example.com-plus",
+		CpaOpenaiID:   "acct_123",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, authDir, "", nil)
+	checker.client = server.Client()
+	result, err := checker.RefreshAccount(context.Background(), *acc, RefreshOptions{
+		Models:        true,
+		Quota:         true,
+		Subscription:  true,
+		WaitAuthIndex: true,
+	})
+	if err != nil && result.QuotaError != "" && result.ModelsError != "" {
+		t.Fatalf("refresh account: result=%+v err=%v", result, err)
+	}
+	if authFilesAttempts < 3 {
+		t.Fatalf("expected auth-files retry, got %d attempts", authFilesAttempts)
+	}
+	if !result.ModelsRefreshed || !result.QuotaRefreshed {
+		t.Fatalf("expected models and quota refreshed, got %+v", result)
+	}
+	acc, err = st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account after refresh: %v", err)
+	}
+	if acc.CpaCredentialStatus != "ok" {
+		t.Fatalf("expected credential ok, got status=%q reason=%q", acc.CpaCredentialStatus, acc.CpaCredentialReason)
+	}
+	if acc.CodexQuotaJSON == "" {
+		t.Fatalf("expected quota JSON to be persisted")
+	}
+}
+
+func TestRefreshAccountPendingAuthIndexDoesNotMarkNeedsLogin(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v0/management/auth-files" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       server.URL,
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:         "Codex",
+		SourceKind:    "cpa",
+		CpaServiceID:  &serviceID,
+		CpaProvider:   "codex",
+		CpaAccountKey: "codex-user@example.com-plus",
+		CpaOpenaiID:   "acct_123",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, authDir, "", nil)
+	checker.client = server.Client()
+	_, err = checker.RefreshAccount(context.Background(), *acc, RefreshOptions{Quota: true})
+	if err == nil {
+		t.Fatalf("expected pending auth index error")
+	}
+	acc, err = st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account after refresh: %v", err)
+	}
+	if acc.CpaCredentialStatus == "needs_login" {
+		t.Fatalf("pending auth index should not require login")
+	}
+	if acc.CpaCredentialStatus != "runtime_pending" || acc.CpaCredentialReason != "auth_index_pending" {
+		t.Fatalf("unexpected credential state: status=%q reason=%q", acc.CpaCredentialStatus, acc.CpaCredentialReason)
 	}
 }
 
@@ -273,6 +465,14 @@ func TestDiscoverModelsSuccessDoesNotClearCpaCredentialError(t *testing.T) {
 
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/provider/codex/v1/models" {
@@ -299,6 +499,7 @@ func TestDiscoverModelsSuccessDoesNotClearCpaCredentialError(t *testing.T) {
 		SourceKind:          "cpa",
 		CpaServiceID:        &serviceID,
 		CpaProvider:         "codex",
+		CpaAccountKey:       "codex-user@example.com-plus",
 		CpaCredentialStatus: "needs_login",
 		CpaCredentialReason: "refresh_failed",
 		Enabled:             true,
@@ -312,7 +513,7 @@ func TestDiscoverModelsSuccessDoesNotClearCpaCredentialError(t *testing.T) {
 	if err != nil || acc == nil {
 		t.Fatalf("get account: %v", err)
 	}
-	checker := NewChecker(st, cache, "", "", nil)
+	checker := NewChecker(st, cache, authDir, "", nil)
 	if _, err := checker.DiscoverModels(context.Background(), *acc); err != nil {
 		t.Fatalf("discover models: %v", err)
 	}
@@ -331,6 +532,14 @@ func TestDiscoverModelsFailureDoesNotMarkCpaCredentialError(t *testing.T) {
 
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/provider/codex/v1/models" {
@@ -356,6 +565,7 @@ func TestDiscoverModelsFailureDoesNotMarkCpaCredentialError(t *testing.T) {
 		SourceKind:          "cpa",
 		CpaServiceID:        &serviceID,
 		CpaProvider:         "codex",
+		CpaAccountKey:       "codex-user@example.com-plus",
 		CpaCredentialStatus: "unknown",
 		Enabled:             true,
 	})
@@ -368,7 +578,7 @@ func TestDiscoverModelsFailureDoesNotMarkCpaCredentialError(t *testing.T) {
 	if err != nil || acc == nil {
 		t.Fatalf("get account: %v", err)
 	}
-	checker := NewChecker(st, cache, "", "", nil)
+	checker := NewChecker(st, cache, authDir, "", nil)
 	if _, err := checker.DiscoverModels(context.Background(), *acc); err == nil {
 		t.Fatalf("expected discover models failure")
 	}

@@ -220,7 +220,12 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 
 	// trigger async model discovery
 	acc := req.Account
-	go h.healthChecker.DiscoverModels(context.Background(), acc)
+	go h.healthChecker.RefreshAccount(context.Background(), acc, health.RefreshOptions{
+		Models:        true,
+		Quota:         true,
+		Subscription:  true,
+		WaitAuthIndex: true,
+	})
 
 	webutil.WriteData(w, 201, req.Account)
 }
@@ -329,30 +334,30 @@ func (h *Handler) discoverModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models, err := h.healthChecker.DiscoverModels(r.Context(), *acc)
-	if err != nil {
+	result, err := h.healthChecker.RefreshAccount(r.Context(), *acc, health.RefreshOptions{
+		Models:        true,
+		Quota:         true,
+		Subscription:  true,
+		Force:         true,
+		WaitAuthIndex: true,
+	})
+	if err != nil && result != nil && result.ModelsError != "" && result.QuotaError == "" && result.SubscriptionError == "" {
 		webutil.WriteAdminError(w, 502, "discovery_failed", fmt.Sprintf("model discovery failed: %v", err))
 		return
 	}
-	quotaRefreshed := false
-	quotaErr := ""
-	quotaRefreshed, err = h.healthChecker.RefreshCodexQuota(r.Context(), *acc)
-	if err != nil {
-		quotaErr = err.Error()
-	}
-	subscriptionRefreshed := false
-	subscriptionErr := ""
-	subscriptionRefreshed, err = h.healthChecker.RefreshCodexSubscription(r.Context(), *acc)
-	if err != nil {
-		subscriptionErr = err.Error()
+	if result == nil {
+		webutil.WriteAdminError(w, 502, "refresh_failed", fmt.Sprintf("account refresh failed: %v", err))
+		return
 	}
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, map[string]any{
-		"models":                 models,
-		"quota_refreshed":        quotaRefreshed,
-		"quota_error":            quotaErr,
-		"subscription_refreshed": subscriptionRefreshed,
-		"subscription_error":     subscriptionErr,
+		"models":                 result.Models,
+		"quota_refreshed":        result.QuotaRefreshed,
+		"quota_error":            result.QuotaError,
+		"subscription_refreshed": result.SubscriptionRefreshed,
+		"subscription_error":     result.SubscriptionError,
+		"credential_status":      result.CredentialStatus,
+		"credential_reason":      result.CredentialReason,
 	})
 }
 
@@ -669,7 +674,12 @@ func (h *Handler) addPoolMember(w http.ResponseWriter, r *http.Request) {
 
 	acc, _ := h.store.GetAccount(req.AccountID)
 	if acc != nil {
-		go h.healthChecker.DiscoverModels(context.Background(), *acc)
+		go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
+			Models:        true,
+			Quota:         true,
+			Subscription:  true,
+			WaitAuthIndex: true,
+		})
 	}
 
 	webutil.WriteData(w, 201, map[string]any{"id": memberID})
@@ -2026,9 +2036,26 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 		}
 	}
 
-	// trigger async model discovery
+	// Force the first CPA refresh while the login flow is still active. CPA may
+	// need a short moment to index the auth file written above, so the refresh
+	// path waits before falling back to a runtime_pending credential state.
 	if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
-		go h.healthChecker.DiscoverModels(context.Background(), *acc)
+		if _, refreshErr := h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
+			Models:        true,
+			Quota:         true,
+			Subscription:  true,
+			Force:         true,
+			WaitAuthIndex: true,
+		}); refreshErr != nil {
+			slog.Warn("finalizeLogin: initial CPA refresh incomplete", "account_id", acc.ID, "err", refreshErr)
+			go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
+				Models:        true,
+				Quota:         true,
+				Subscription:  true,
+				Force:         true,
+				WaitAuthIndex: true,
+			})
+		}
 	}
 
 	h.sessions.CompleteSession(session.ID, account.ID, account)
@@ -2339,7 +2366,12 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 
 	// trigger async model discovery
 	if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
-		go h.healthChecker.DiscoverModels(context.Background(), *acc)
+		go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
+			Models:        true,
+			Quota:         true,
+			Subscription:  true,
+			WaitAuthIndex: true,
+		})
 	}
 
 	h.cache.Invalidate()
