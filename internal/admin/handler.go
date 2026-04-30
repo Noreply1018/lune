@@ -352,8 +352,10 @@ func (h *Handler) discoverModels(w http.ResponseWriter, r *http.Request) {
 	webutil.WriteData(w, 200, map[string]any{
 		"models":                 result.Models,
 		"quota_refreshed":        result.QuotaRefreshed,
+		"quota_pending":          result.QuotaPending,
 		"quota_error":            result.QuotaError,
 		"subscription_refreshed": result.SubscriptionRefreshed,
+		"subscription_pending":   result.SubscriptionPending,
 		"subscription_error":     result.SubscriptionError,
 		"credential_status":      result.CredentialStatus,
 		"credential_reason":      result.CredentialReason,

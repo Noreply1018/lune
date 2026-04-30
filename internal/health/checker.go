@@ -42,6 +42,8 @@ type RefreshResult struct {
 	ModelsRefreshed       bool `json:"models_refreshed"`
 	QuotaRefreshed        bool `json:"quota_refreshed"`
 	SubscriptionRefreshed bool `json:"subscription_refreshed"`
+	QuotaPending          bool `json:"quota_pending"`
+	SubscriptionPending   bool `json:"subscription_pending"`
 
 	ModelsError       string `json:"models_error"`
 	QuotaError        string `json:"quota_error"`
@@ -448,8 +450,7 @@ func (c *Checker) RefreshAccount(ctx context.Context, acc store.Account, opts Re
 		return result, nil
 	}
 
-	needAuthIndex := opts.Quota || (opts.Subscription && strings.ToLower(acc.CpaProvider) == "codex")
-	rt, err := c.resolveCpaRuntime(ctx, acc, resolveOptions{NeedAuthIndex: needAuthIndex, WaitAuthIndex: opts.WaitAuthIndex})
+	rt, err := c.resolveCpaRuntime(ctx, acc, resolveOptions{})
 	if err != nil {
 		result.CredentialStatus, result.CredentialReason = cpaResolveState(err)
 		if opts.Models {
@@ -463,7 +464,7 @@ func (c *Checker) RefreshAccount(ctx context.Context, acc store.Account, opts Re
 		}
 		return result, err
 	}
-	result.CredentialStatus = "ok"
+	result.CredentialStatus = rt.account.CpaCredentialStatus
 
 	var firstErr error
 	if opts.Models {
@@ -476,23 +477,94 @@ func (c *Checker) RefreshAccount(ctx context.Context, acc store.Account, opts Re
 			result.ModelsRefreshed = true
 		}
 	}
-	if opts.Quota && strings.ToLower(acc.CpaProvider) == "codex" {
-		refreshed, err := c.refreshCodexQuotaResolved(ctx, rt)
-		result.QuotaRefreshed = refreshed
-		if err != nil {
-			result.QuotaError = err.Error()
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
 	if opts.Subscription && strings.ToLower(acc.CpaProvider) == "codex" {
 		refreshed, err := c.refreshCodexSubscriptionResolved(rt)
 		result.SubscriptionRefreshed = refreshed
 		if err != nil {
-			result.SubscriptionError = err.Error()
-			if firstErr == nil {
+			if err.Error() == "subscription metadata pending" {
+				result.SubscriptionPending = true
+			} else {
+				result.SubscriptionError = err.Error()
+			}
+			if firstErr == nil && result.SubscriptionError != "" {
 				firstErr = err
+			}
+		}
+	}
+	if opts.Quota && strings.ToLower(acc.CpaProvider) == "codex" {
+		authRuntime, err := c.resolveCpaRuntime(ctx, acc, resolveOptions{NeedAuthIndex: true, WaitAuthIndex: opts.WaitAuthIndex})
+		if err != nil {
+			status, reason := cpaResolveState(err)
+			result.CredentialStatus = status
+			result.CredentialReason = reason
+			if status == "runtime_pending" && reason == "auth_index_pending" {
+				result.QuotaPending = true
+				if opts.Subscription && !result.SubscriptionRefreshed && result.SubscriptionError == "" {
+					result.SubscriptionPending = true
+				}
+			} else {
+				result.QuotaError = err.Error()
+			}
+			if firstErr == nil && result.QuotaError != "" {
+				firstErr = err
+			}
+		} else {
+			result.CredentialStatus = "ok"
+			refreshed, err := c.refreshCodexQuotaResolved(ctx, authRuntime)
+			result.QuotaRefreshed = refreshed
+			if err != nil {
+				result.QuotaError = err.Error()
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			if opts.Subscription && result.SubscriptionPending {
+				refreshed, err := c.refreshCodexSubscriptionResolved(authRuntime)
+				result.SubscriptionRefreshed = refreshed
+				result.SubscriptionPending = false
+				if err != nil {
+					if err.Error() == "subscription metadata pending" {
+						result.SubscriptionPending = true
+					} else {
+						result.SubscriptionError = err.Error()
+					}
+					if firstErr == nil && result.SubscriptionError != "" {
+						firstErr = err
+					}
+				}
+			}
+		}
+	} else if opts.Subscription && strings.ToLower(acc.CpaProvider) == "codex" && result.SubscriptionPending {
+		authRuntime, err := c.resolveCpaRuntime(ctx, acc, resolveOptions{NeedAuthIndex: true, WaitAuthIndex: opts.WaitAuthIndex})
+		if err != nil {
+			status, reason := cpaResolveState(err)
+			result.CredentialStatus = status
+			result.CredentialReason = reason
+			if status == "runtime_pending" && reason == "auth_index_pending" {
+				result.SubscriptionPending = true
+				result.SubscriptionError = ""
+			} else {
+				result.SubscriptionPending = false
+				result.SubscriptionError = err.Error()
+			}
+			if firstErr == nil && result.SubscriptionError != "" {
+				firstErr = err
+			}
+		} else {
+			result.CredentialStatus = "ok"
+			refreshed, err := c.refreshCodexSubscriptionResolved(authRuntime)
+			result.SubscriptionRefreshed = refreshed
+			result.SubscriptionPending = false
+			if err != nil {
+				if err.Error() == "subscription metadata pending" {
+					result.SubscriptionPending = true
+					result.SubscriptionError = ""
+				} else {
+					result.SubscriptionError = err.Error()
+					if firstErr == nil {
+						firstErr = err
+					}
+				}
 			}
 		}
 	}

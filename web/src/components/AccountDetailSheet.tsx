@@ -139,7 +139,15 @@ export default function AccountDetailSheet({
                 </span>
               ) : null}
               {credential ? (
-                <span className="rounded-full bg-status-red/10 px-2.5 py-1 text-status-red">
+                <span
+                  className={cn(
+                    "rounded-full px-2.5 py-1",
+                    credential.tone === "danger"
+                      ? "bg-status-red/10 text-status-red"
+                      : "bg-moon-100/80 text-moon-500",
+                  )}
+                  title={credential.detail}
+                >
                   {credential.label}
                 </span>
               ) : null}

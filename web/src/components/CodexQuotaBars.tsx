@@ -49,19 +49,19 @@ export function CodexQuotaBarsCompact({
 
 export function CodexQuotaBarsPendingCompact() {
   return (
-    <div className="space-y-1 rounded-[0.9rem] border border-dashed border-moon-200/70 bg-white/42 px-3 py-2">
-      <div className="flex items-center gap-2 text-[11px] text-moon-500">
-        <Clock3 className="size-3.5 text-moon-400" />
-        <span className="font-medium">额度抓取中</span>
-      </div>
-      <div className="grid grid-cols-[1.25rem_minmax(0,1fr)_2.25rem] items-center gap-2 text-[11px] tabular-nums">
-        <span className="text-moon-400">5h</span>
-        <div className="h-1.5 rounded-full bg-moon-200/55" />
-        <span className="text-right text-moon-350">--</span>
-        <span className="text-moon-400">7d</span>
-        <div className="h-1.5 rounded-full bg-moon-200/55" />
-        <span className="text-right text-moon-350">--</span>
-      </div>
+    <div className="space-y-1" title="额度待 CPA runtime 加载后自动补齐">
+      <PendingCompactRow label="5h" />
+      <PendingCompactRow label="7d" />
+    </div>
+  );
+}
+
+function PendingCompactRow({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 text-[11px] tabular-nums">
+      <span className="w-5 shrink-0 text-moon-400">{label}</span>
+      <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-moon-200/55" />
+      <span className="w-9 shrink-0 text-right text-moon-350">--</span>
     </div>
   );
 }

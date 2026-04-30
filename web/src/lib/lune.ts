@@ -206,11 +206,11 @@ export function getCpaCredentialMeta(account: Account): {
   const status = account.cpa_credential_status || "unknown";
   if (!["needs_login", "runtime_pending", "runtime_error"].includes(status)) return null;
   const reason = account.cpa_credential_reason || "";
-  const detail = account.cpa_credential_last_error || cpaCredentialReasonLabel(reason);
+  const reasonLabel = cpaCredentialReasonLabel(reason);
   const pending = status === "runtime_pending";
   return {
     label: pending ? "CPA 凭据加载中" : status === "runtime_error" ? "CPA Runtime 异常" : "需要重新登录",
-    detail,
+    detail: pending ? reasonLabel : account.cpa_credential_last_error || reasonLabel,
     tone: pending ? "default" : "danger",
   };
 }
@@ -241,7 +241,7 @@ export function cpaCredentialReasonLabel(reason: string): string {
     case "file_corrupt":
       return "CPA 凭证文件损坏";
     case "auth_index_pending":
-      return "CPA runtime 尚未加载该凭证";
+      return "CPA runtime 正在加载凭据";
     case "runtime_unreachable":
       return "CPA runtime 不可用";
     case "service_missing":

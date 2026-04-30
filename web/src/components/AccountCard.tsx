@@ -209,7 +209,12 @@ export default function AccountCard({
           ) : null}
           {credential ? (
             <span
-              className="rounded-full bg-status-red/10 px-2 py-0.5 text-status-red"
+              className={cn(
+                "rounded-full px-2 py-0.5",
+                credential.tone === "danger"
+                  ? "bg-status-red/10 text-status-red"
+                  : "bg-moon-100/70 text-moon-500",
+              )}
               title={credential.detail}
             >
               {credential.label}

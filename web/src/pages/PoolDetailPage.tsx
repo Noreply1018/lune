@@ -308,13 +308,18 @@ export default function PoolDetailPage() {
       const result = await api.post<{
         models?: string[];
         quota_refreshed?: boolean;
+        quota_pending?: boolean;
         quota_error?: string;
         subscription_refreshed?: boolean;
+        subscription_pending?: boolean;
         subscription_error?: string;
       }>(`/accounts/${member.account_id}/discover-models`);
       const refreshErrors = [result.quota_error, result.subscription_error].filter(Boolean);
       if (refreshErrors.length > 0) {
         toast(`账号已刷新，部分信息刷新失败：${refreshErrors.join("；")}`, "error");
+      } else if (result.quota_pending || result.subscription_pending) {
+        const pending = [result.quota_pending ? "额度" : "", result.subscription_pending ? "订阅" : ""].filter(Boolean);
+        toast(`账号已刷新，${pending.join("、")}待 CPA runtime 加载后自动补齐`);
       } else {
         const extras = [result.quota_refreshed ? "额度" : "", result.subscription_refreshed ? "订阅" : ""].filter(Boolean);
         toast(extras.length > 0 ? `模型、${extras.join("、")}已刷新` : "账号已刷新");

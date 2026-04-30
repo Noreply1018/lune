@@ -391,7 +391,7 @@ func TestRefreshAccountWaitsForCpaAuthIndex(t *testing.T) {
 	}
 }
 
-func TestRefreshAccountPendingAuthIndexDoesNotMarkNeedsLogin(t *testing.T) {
+func TestRefreshAccountPendingAuthIndexIsNotARefreshError(t *testing.T) {
 	t.Parallel()
 
 	st := newTestStore(t)
@@ -407,11 +407,18 @@ func TestRefreshAccountPendingAuthIndexDoesNotMarkNeedsLogin(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v0/management/auth-files" {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
 			_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{}})
 			return
+		case "/api/provider/codex/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{"id": "gpt-5-codex"}},
+			})
+			return
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 	defer server.Close()
 
@@ -444,9 +451,22 @@ func TestRefreshAccountPendingAuthIndexDoesNotMarkNeedsLogin(t *testing.T) {
 	}
 	checker := NewChecker(st, cache, authDir, "", nil)
 	checker.client = server.Client()
-	_, err = checker.RefreshAccount(context.Background(), *acc, RefreshOptions{Quota: true})
-	if err == nil {
-		t.Fatalf("expected pending auth index error")
+	result, err := checker.RefreshAccount(context.Background(), *acc, RefreshOptions{
+		Models:       true,
+		Quota:        true,
+		Subscription: true,
+	})
+	if err != nil {
+		t.Fatalf("pending auth index should not fail refresh: result=%+v err=%v", result, err)
+	}
+	if !result.ModelsRefreshed {
+		t.Fatalf("models should refresh while quota is pending: %+v", result)
+	}
+	if !result.QuotaPending || !result.SubscriptionPending {
+		t.Fatalf("expected quota and subscription pending, got %+v", result)
+	}
+	if result.QuotaError != "" || result.SubscriptionError != "" {
+		t.Fatalf("pending auth index should not populate errors: %+v", result)
 	}
 	acc, err = st.GetAccount(accountID)
 	if err != nil {
