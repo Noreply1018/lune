@@ -33,7 +33,6 @@ type RefreshOptions struct {
 	Models        bool
 	Quota         bool
 	Subscription  bool
-	Force         bool
 	WaitAuthIndex bool
 }
 
@@ -175,52 +174,16 @@ func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 		apiKey = acc.APIKey
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		c.store.UpdateAccountHealth(acc.ID, "error", err.Error())
-		return
-	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
 	start := time.Now()
-	resp, err := c.client.Do(req)
-	latency := time.Since(start)
-
-	if err != nil {
+	if _, err := c.discoverModelsFromURL(ctx, acc.ID, url, apiKey); err != nil {
 		c.store.UpdateAccountHealth(acc.ID, "error", err.Error())
 		return
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
-		msg := formatHTTPStatusError(resp.StatusCode, body)
-		c.store.UpdateAccountHealth(acc.ID, "error", msg)
-		return
-	}
-
-	// Read response body for model discovery
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
-	if err != nil {
-		c.store.UpdateAccountHealth(acc.ID, "error", "failed to read models response")
-		return
-	}
-
-	// Update health status
+	latency := time.Since(start)
 	if latency > degradedLatencyThreshold {
 		c.store.UpdateAccountHealth(acc.ID, "degraded", fmt.Sprintf("slow response: %s", latency))
 	} else {
 		c.store.UpdateAccountHealth(acc.ID, "healthy", "")
-	}
-
-	// Parse and refresh discovered models
-	models := parseModelList(body)
-	if len(models) > 0 {
-		if err := c.store.RefreshAccountModels(acc.ID, models); err != nil {
-			slog.Error("failed to refresh account models", "account_id", acc.ID, "err", err)
-		}
 	}
 }
 
@@ -263,50 +226,6 @@ func (c *Checker) discoverModelsFromURL(ctx context.Context, accountID int64, ur
 		c.cache.Invalidate()
 	}
 	return models, nil
-}
-
-// DiscoverModels triggers on-demand model discovery for a specific account.
-func (c *Checker) DiscoverModels(ctx context.Context, acc store.Account) ([]string, error) {
-	if acc.SourceKind == "cpa" && acc.CpaServiceID != nil {
-		result, err := c.RefreshAccount(ctx, acc, RefreshOptions{Models: true})
-		if result != nil {
-			return result.Models, err
-		}
-		return nil, err
-	}
-	url := fmt.Sprintf("%s/models", strings.TrimRight(acc.BaseURL, "/"))
-	return c.discoverModelsFromURL(ctx, acc.ID, url, acc.APIKey)
-}
-
-func (c *Checker) RefreshCodexQuota(ctx context.Context, acc store.Account) (bool, error) {
-	if acc.SourceKind != "cpa" || strings.ToLower(acc.CpaProvider) != "codex" {
-		return false, nil
-	}
-	if !acc.Enabled || acc.CpaDisabled {
-		return false, nil
-	}
-	if acc.CpaOpenaiID == "" {
-		return false, fmt.Errorf("missing ChatGPT account id")
-	}
-	result, err := c.RefreshAccount(ctx, acc, RefreshOptions{Quota: true, WaitAuthIndex: true})
-	if result == nil {
-		return false, err
-	}
-	return result.QuotaRefreshed, err
-}
-
-func (c *Checker) RefreshCodexSubscription(ctx context.Context, acc store.Account) (bool, error) {
-	if acc.SourceKind != "cpa" || strings.ToLower(acc.CpaProvider) != "codex" {
-		return false, nil
-	}
-	if !acc.Enabled || acc.CpaDisabled {
-		return false, nil
-	}
-	result, err := c.RefreshAccount(ctx, acc, RefreshOptions{Subscription: true, WaitAuthIndex: true})
-	if result == nil {
-		return false, err
-	}
-	return result.SubscriptionRefreshed, err
 }
 
 func parseModelList(body []byte) []string {
@@ -508,7 +427,8 @@ func isAuthIndexMissingError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "auth file not found")
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "auth index not ready") || strings.Contains(text, "auth file not found")
 }
 
 func (c *Checker) RefreshAccount(ctx context.Context, acc store.Account, opts RefreshOptions) (*RefreshResult, error) {
@@ -517,7 +437,8 @@ func (c *Checker) RefreshAccount(ctx context.Context, acc store.Account, opts Re
 		opts.Models = true
 	}
 	if acc.SourceKind != "cpa" {
-		models, err := c.DiscoverModels(ctx, acc)
+		url := fmt.Sprintf("%s/models", strings.TrimRight(acc.BaseURL, "/"))
+		models, err := c.discoverModelsFromURL(ctx, acc.ID, url, acc.APIKey)
 		if err != nil {
 			result.ModelsError = err.Error()
 			return result, err
@@ -628,7 +549,7 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if _, err := c.RefreshCodexQuota(ctx, a); err != nil {
+			if _, err := c.RefreshAccount(ctx, a, RefreshOptions{Quota: true, WaitAuthIndex: true}); err != nil {
 				slog.Warn("fetch codex quota", "account_id", a.ID, "err", err)
 			}
 		}(acc)
@@ -658,7 +579,7 @@ func (c *Checker) fetchCodexSubscriptions(ctx context.Context) {
 	}
 
 	for _, acc := range targets {
-		if _, err := c.RefreshCodexSubscription(ctx, acc); err != nil {
+		if _, err := c.RefreshAccount(ctx, acc, RefreshOptions{Subscription: true, WaitAuthIndex: true}); err != nil {
 			slog.Warn("fetch codex subscription", "account_id", acc.ID, "err", err)
 		}
 	}
@@ -717,18 +638,6 @@ func authFileCandidateKeys(f cpa.AuthFile) []string {
 	return keys
 }
 
-func (c *Checker) findAuthIndex(ctx context.Context, client *cpa.ManagementClient, accountKey string) (string, error) {
-	keyToMeta, err := c.listAuthMetadata(ctx, client)
-	if err != nil {
-		return "", err
-	}
-	authMeta, ok := keyToMeta[accountKey]
-	if !ok || authMeta.authIndex == "" {
-		return "", fmt.Errorf("CPA auth file not found")
-	}
-	return authMeta.authIndex, nil
-}
-
 func (c *Checker) findAuthMetadata(ctx context.Context, client *cpa.ManagementClient, accountKey string) (authFileMetadata, error) {
 	keyToMeta, err := c.listAuthMetadata(ctx, client)
 	if err != nil {
@@ -736,7 +645,7 @@ func (c *Checker) findAuthMetadata(ctx context.Context, client *cpa.ManagementCl
 	}
 	authMeta, ok := keyToMeta[accountKey]
 	if !ok || authMeta.authIndex == "" {
-		return authFileMetadata{}, fmt.Errorf("CPA auth file not found")
+		return authFileMetadata{}, fmt.Errorf("CPA auth index not ready")
 	}
 	return authMeta, nil
 }

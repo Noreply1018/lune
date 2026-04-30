@@ -514,7 +514,7 @@ func TestDiscoverModelsSuccessDoesNotClearCpaCredentialError(t *testing.T) {
 		t.Fatalf("get account: %v", err)
 	}
 	checker := NewChecker(st, cache, authDir, "", nil)
-	if _, err := checker.DiscoverModels(context.Background(), *acc); err != nil {
+	if _, err := checker.RefreshAccount(context.Background(), *acc, RefreshOptions{Models: true}); err != nil {
 		t.Fatalf("discover models: %v", err)
 	}
 
@@ -579,7 +579,7 @@ func TestDiscoverModelsFailureDoesNotMarkCpaCredentialError(t *testing.T) {
 		t.Fatalf("get account: %v", err)
 	}
 	checker := NewChecker(st, cache, authDir, "", nil)
-	if _, err := checker.DiscoverModels(context.Background(), *acc); err == nil {
+	if _, err := checker.RefreshAccount(context.Background(), *acc, RefreshOptions{Models: true}); err == nil {
 		t.Fatalf("expected discover models failure")
 	}
 

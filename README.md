@@ -110,7 +110,7 @@ http://127.0.0.1:7788/admin
 如果你使用固定版本，建议拉取类似：
 
 ```text
-noreply1018/lune:0.1.3
+noreply1018/lune:0.1.4
 ```
 
 ## 服务器 / Compose 运行

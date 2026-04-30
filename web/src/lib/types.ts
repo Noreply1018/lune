@@ -24,7 +24,7 @@ export interface Account {
   cpa_expired_at: string | null;
   cpa_last_refresh_at: string | null;
   cpa_disabled: boolean;
-  cpa_credential_status?: "unknown" | "ok" | "initializing" | "runtime_pending" | "runtime_error" | "needs_login";
+  cpa_credential_status?: "unknown" | "ok" | "runtime_pending" | "runtime_error" | "needs_login";
   cpa_credential_reason?: string;
   cpa_credential_last_error?: string;
   cpa_credential_checked_at?: string | null;

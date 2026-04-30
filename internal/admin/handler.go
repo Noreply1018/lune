@@ -338,7 +338,6 @@ func (h *Handler) discoverModels(w http.ResponseWriter, r *http.Request) {
 		Models:        true,
 		Quota:         true,
 		Subscription:  true,
-		Force:         true,
 		WaitAuthIndex: true,
 	})
 	if err != nil && result != nil && result.ModelsError != "" && result.QuotaError == "" && result.SubscriptionError == "" {
@@ -2036,7 +2035,7 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 		}
 	}
 
-	// Force the first CPA refresh while the login flow is still active. CPA may
+	// Run the first CPA refresh while the login flow is still active. CPA may
 	// need a short moment to index the auth file written above, so the refresh
 	// path waits before falling back to a runtime_pending credential state.
 	if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
@@ -2044,7 +2043,6 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 			Models:        true,
 			Quota:         true,
 			Subscription:  true,
-			Force:         true,
 			WaitAuthIndex: true,
 		}); refreshErr != nil {
 			slog.Warn("finalizeLogin: initial CPA refresh incomplete", "account_id", acc.ID, "err", refreshErr)
@@ -2052,7 +2050,6 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 				Models:        true,
 				Quota:         true,
 				Subscription:  true,
-				Force:         true,
 				WaitAuthIndex: true,
 			})
 		}

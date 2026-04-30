@@ -4,6 +4,42 @@
 
 Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本，但在默认体验、部署方式、配置形态还没有完全稳定前，minor 版本可能会调整产品边界。
 
+## [0.1.4] - 2026-04-30
+
+状态：已发布。
+
+### 重点变化
+
+- 重构 CPA 账号初始化与刷新链路，统一模型、Codex 额度、ChatGPT 订阅刷新入口。
+- 修复 Docker 单容器首次添加 Codex CPA 账号后，可能立刻显示 `CPA auth file not found` 并导致自检失败的问题。
+- 清理旧的 CPA auth-file / auth-index 语义，避免把 CPA runtime 尚未热加载凭据误判为用户需要重新登录。
+
+### CPA 账号刷新
+
+- 新增统一的 CPA runtime 解析流程：先确认 `/app/data/cpa-auth/<accountKey>.json` 本地凭据文件，再等待 CPA management `auth_index`，最后执行模型、额度、订阅刷新。
+- 首次 Device Code 登录成功后会立即执行首轮强制刷新；如果 CPA runtime 还没有索引到新凭据，会短暂重试后标记为 `runtime_pending / auth_index_pending`，并由后台继续补偿。
+- 手动刷新、定时健康检查、定时 Codex 额度刷新、定时订阅刷新现在共用同一套后端逻辑，不再各自重复查询 CPA auth-files。
+- CPA management auth-files 匹配兼容 `id`、`name` 和 `provider-email-plan` 推导 key，降低不同 CPA runtime 返回格式差异造成的误判。
+- Codex 订阅优先从本地 auth 文件 JWT 解析；CPA metadata 暂缺时只记录订阅 metadata pending，不再提示重新登录。
+- 模型刷新失败不会清空既有 CPA 凭据错误状态；只有拿到 CPA `auth_index` 或明确完成凭据相关刷新后才把凭据标记为 `ok`。
+
+### 管理界面
+
+- CPA 凭据状态新增 `runtime_pending` 和 `runtime_error` 展示。
+- `auth_index_pending` 会显示为 CPA runtime 尚未加载该凭证，不再显示为登录态失效。
+- web 包版本更新为 `0.1.4`。
+
+### 清理
+
+- 删除旧的 `DiscoverModels`、`RefreshCodexQuota`、`RefreshCodexSubscription` 包装语义，后端收敛到 `RefreshAccount`。
+- 删除不再使用的 `findAuthIndex` 和 `auth_index_missing` 语义。
+- 合并健康检查中的模型发现代码，避免手动刷新和定时检查各自维护一套 `/models` 解析逻辑。
+
+### 验证
+
+- `go test ./...`
+- 在 `web/` 下执行 `npm run build`
+
 ## [0.1.3] - 2026-04-29
 
 状态：已发布。

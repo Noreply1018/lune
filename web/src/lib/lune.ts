@@ -204,10 +204,10 @@ export function getCpaCredentialMeta(account: Account): {
 } | null {
   if (account.source_kind !== "cpa") return null;
   const status = account.cpa_credential_status || "unknown";
-  if (!["needs_login", "runtime_pending", "runtime_error", "initializing"].includes(status)) return null;
+  if (!["needs_login", "runtime_pending", "runtime_error"].includes(status)) return null;
   const reason = account.cpa_credential_reason || "";
   const detail = account.cpa_credential_last_error || cpaCredentialReasonLabel(reason);
-  const pending = status === "runtime_pending" || status === "initializing";
+  const pending = status === "runtime_pending";
   return {
     label: pending ? "CPA 凭据加载中" : status === "runtime_error" ? "CPA Runtime 异常" : "需要重新登录",
     detail,
@@ -242,8 +242,6 @@ export function cpaCredentialReasonLabel(reason: string): string {
       return "CPA 凭证文件损坏";
     case "auth_index_pending":
       return "CPA runtime 尚未加载该凭证";
-    case "auth_index_missing":
-      return "CPA 无法定位该凭证";
     case "runtime_unreachable":
       return "CPA runtime 不可用";
     case "service_missing":
