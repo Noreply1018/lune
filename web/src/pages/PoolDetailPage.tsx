@@ -319,7 +319,7 @@ export default function PoolDetailPage() {
         toast(`账号已刷新，部分信息刷新失败：${refreshErrors.join("；")}`, "error");
       } else if (result.quota_pending || result.subscription_pending) {
         const pending = [result.quota_pending ? "额度" : "", result.subscription_pending ? "订阅" : ""].filter(Boolean);
-        toast(`账号已刷新，${pending.join("、")}待 CPA runtime 加载后自动补齐`);
+        toast(`账号已刷新，${pending.join("、")}正在同步后补齐`);
       } else {
         const extras = [result.quota_refreshed ? "额度" : "", result.subscription_refreshed ? "订阅" : ""].filter(Boolean);
         toast(extras.length > 0 ? `模型、${extras.join("、")}已刷新` : "账号已刷新");

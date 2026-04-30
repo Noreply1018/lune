@@ -343,7 +343,8 @@ export default function AddAccountDrawer() {
       if (accountId) {
         try {
           await api.post(`/accounts/${accountId}/discover-models`);
-        } catch {
+        } catch (err) {
+          console.warn("Initial account refresh failed", err);
           // The account has already been created. Keep the drawer flow moving;
           // the Pool reload below will render the persisted backend state.
         }

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -77,15 +78,19 @@ func (e *resolveError) Error() string {
 }
 
 type Checker struct {
-	store         *store.Store
-	cache         *store.RoutingCache
-	client        *http.Client
-	cpaAuthDir    string
-	managementKey string
-	notifier      *notify.Service
+	store               *store.Store
+	cache               *store.RoutingCache
+	client              *http.Client
+	cpaAuthDir          string
+	managementKey       string
+	cpaReloadSignalPath string
+	notifier            *notify.Service
 
 	cpaHealthAttempts   int
 	cpaHealthRetryDelay time.Duration
+	authIndexAttempts   int
+	authIndexRetryDelay time.Duration
+	reloadMu            sync.Mutex
 }
 
 func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir, managementKey string, notifier *notify.Service) *Checker {
@@ -99,7 +104,13 @@ func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir, manageme
 
 		cpaHealthAttempts:   defaultCpaHealthAttempts,
 		cpaHealthRetryDelay: defaultCpaHealthRetryDelay,
+		authIndexAttempts:   defaultAuthIndexAttempts,
+		authIndexRetryDelay: defaultAuthIndexRetryDelay,
 	}
+}
+
+func (c *Checker) SetCpaReloadSignalPath(path string) {
+	c.cpaReloadSignalPath = strings.TrimSpace(path)
 }
 
 func (c *Checker) Run(ctx context.Context) {
@@ -395,27 +406,16 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 		return nil, rerr
 	}
 
-	attempts := 1
-	if opts.WaitAuthIndex {
-		attempts = defaultAuthIndexAttempts
-	}
-	var lastErr error
-	for i := 0; i < attempts; i++ {
-		meta, err := c.findAuthMetadata(ctx, client, acc.CpaAccountKey)
-		if err == nil && meta.authIndex != "" {
-			rt.authMeta = meta
-			c.markCpaCredentialOK(acc.ID)
-			return rt, nil
-		}
-		lastErr = err
-		if i < attempts-1 && !sleepContext(ctx, defaultAuthIndexRetryDelay) {
-			return nil, ctx.Err()
-		}
+	meta, err := c.resolveAuthMetadata(ctx, client, *svc, acc.CpaAccountKey, opts.WaitAuthIndex)
+	if err == nil && meta.authIndex != "" {
+		rt.authMeta = meta
+		c.markCpaCredentialOK(acc.ID)
+		return rt, nil
 	}
 
-	message := "CPA runtime has not loaded this credential yet"
-	if lastErr != nil && !isAuthIndexMissingError(lastErr) {
-		message = lastErr.Error()
+	message := "CPA credential is still syncing"
+	if err != nil && !isAuthIndexMissingError(err) {
+		message = err.Error()
 		rerr := &resolveError{status: "runtime_error", reason: "runtime_unreachable", message: message}
 		c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
 		return nil, rerr
@@ -423,6 +423,71 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 	rerr := &resolveError{status: "runtime_pending", reason: "auth_index_pending", message: message}
 	c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
 	return nil, rerr
+}
+
+func (c *Checker) resolveAuthMetadata(ctx context.Context, client *cpa.ManagementClient, svc store.CpaService, accountKey string, wait bool) (authFileMetadata, error) {
+	attempts := 1
+	if wait {
+		attempts = c.authIndexAttempts
+		if attempts < 1 {
+			attempts = 1
+		}
+	}
+	meta, err := c.waitForAuthMetadata(ctx, client, accountKey, attempts)
+	if err == nil || !wait || !isAuthIndexMissingError(err) || c.cpaReloadSignalPath == "" {
+		return meta, err
+	}
+
+	if reloadErr := c.requestCpaRuntimeReload(ctx, &svc); reloadErr != nil {
+		return authFileMetadata{}, reloadErr
+	}
+	return c.waitForAuthMetadata(ctx, client, accountKey, attempts)
+}
+
+func (c *Checker) waitForAuthMetadata(ctx context.Context, client *cpa.ManagementClient, accountKey string, attempts int) (authFileMetadata, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		meta, err := c.findAuthMetadata(ctx, client, accountKey)
+		if err == nil && meta.authIndex != "" {
+			return meta, nil
+		}
+		lastErr = err
+		if i < attempts-1 && !sleepContext(ctx, c.authIndexRetryDelay) {
+			return authFileMetadata{}, ctx.Err()
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("CPA auth index not ready")
+	}
+	return authFileMetadata{}, lastErr
+}
+
+func (c *Checker) requestCpaRuntimeReload(ctx context.Context, svc *store.CpaService) error {
+	c.reloadMu.Lock()
+	defer c.reloadMu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(c.cpaReloadSignalPath), 0755); err != nil {
+		return fmt.Errorf("prepare CPA reload signal: %w", err)
+	}
+	payload := []byte(time.Now().UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(c.cpaReloadSignalPath, payload, 0600); err != nil {
+		return fmt.Errorf("write CPA reload signal: %w", err)
+	}
+	slog.Warn("requested embedded CPA restart for auth index reconciliation", "signal", c.cpaReloadSignalPath)
+
+	attempts := c.cpaHealthAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	for i := 0; i < attempts; i++ {
+		if !sleepContext(ctx, c.cpaHealthRetryDelay) {
+			return ctx.Err()
+		}
+		if err := c.probeCpaService(ctx, svc); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("CPA runtime reload did not become healthy")
 }
 
 func isAuthIndexMissingError(err error) bool {
@@ -760,7 +825,7 @@ func (c *Checker) refreshCodexQuotaResolved(ctx context.Context, rt *cpaRuntime)
 		return false, fmt.Errorf("missing ChatGPT account id")
 	}
 	if rt.authMeta.authIndex == "" {
-		return false, fmt.Errorf("CPA runtime has not loaded this credential yet")
+		return false, fmt.Errorf("CPA credential is still syncing")
 	}
 	if err := c.fetchOneCodexQuota(ctx, rt.client, rt.account, rt.authMeta.authIndex); err != nil {
 		return false, err

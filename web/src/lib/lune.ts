@@ -209,7 +209,7 @@ export function getCpaCredentialMeta(account: Account): {
   const reasonLabel = cpaCredentialReasonLabel(reason);
   const pending = status === "runtime_pending";
   return {
-    label: pending ? "CPA 凭据加载中" : status === "runtime_error" ? "CPA Runtime 异常" : "需要重新登录",
+    label: pending ? "凭据同步中" : status === "runtime_error" ? "CPA Runtime 异常" : "需要重新登录",
     detail: pending ? reasonLabel : account.cpa_credential_last_error || reasonLabel,
     tone: pending ? "default" : "danger",
   };
@@ -241,7 +241,7 @@ export function cpaCredentialReasonLabel(reason: string): string {
     case "file_corrupt":
       return "CPA 凭证文件损坏";
     case "auth_index_pending":
-      return "CPA runtime 正在加载凭据";
+      return "正在同步账号凭据";
     case "runtime_unreachable":
       return "CPA runtime 不可用";
     case "service_missing":

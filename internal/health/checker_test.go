@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -480,7 +482,121 @@ func TestRefreshAccountPendingAuthIndexIsNotARefreshError(t *testing.T) {
 	}
 }
 
-func TestDiscoverModelsSuccessDoesNotClearCpaCredentialError(t *testing.T) {
+func TestRefreshAccountReloadsEmbeddedCpaWhenAuthIndexNeverAppears(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	var mu sync.Mutex
+	authFilesAttempts := 0
+	healthAttempts := 0
+	reloaded := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/healthz":
+			healthAttempts++
+			reloaded = true
+			w.WriteHeader(http.StatusOK)
+		case "/v0/management/auth-files":
+			authFilesAttempts++
+			files := []map[string]any{}
+			if reloaded {
+				files = append(files, map[string]any{
+					"id":         "codex-user@example.com-plus.json",
+					"auth_index": "idx_1",
+					"provider":   "codex",
+					"email":      "user@example.com",
+					"id_token": map[string]any{
+						"plan_type": "plus",
+					},
+				})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"files": files})
+		case "/api/provider/codex/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{"id": "gpt-5-codex"}},
+			})
+		case "/v0/management/api-call":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status_code": 200,
+				"body":        `{"period":"day","used":1}`,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       server.URL,
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:         "Codex",
+		SourceKind:    "cpa",
+		CpaServiceID:  &serviceID,
+		CpaProvider:   "codex",
+		CpaAccountKey: "codex-user@example.com-plus",
+		CpaOpenaiID:   "acct_123",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, authDir, "", nil)
+	checker.client = server.Client()
+	checker.authIndexAttempts = 1
+	checker.authIndexRetryDelay = time.Millisecond
+	checker.cpaHealthAttempts = 3
+	checker.cpaHealthRetryDelay = time.Millisecond
+	signalPath := filepath.Join(t.TempDir(), "cpa-reload.signal")
+	checker.SetCpaReloadSignalPath(signalPath)
+
+	result, err := checker.RefreshAccount(context.Background(), *acc, RefreshOptions{
+		Models:        true,
+		Quota:         true,
+		WaitAuthIndex: true,
+	})
+	if err != nil {
+		t.Fatalf("refresh after reload: result=%+v err=%v", result, err)
+	}
+	if !result.QuotaRefreshed || result.QuotaPending {
+		t.Fatalf("expected quota refreshed after reload, got %+v", result)
+	}
+	if _, err := os.Stat(signalPath); err != nil {
+		t.Fatalf("expected reload signal to be written: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if authFilesAttempts < 2 || healthAttempts == 0 {
+		t.Fatalf("expected auth retry and health probe, authFiles=%d health=%d", authFilesAttempts, healthAttempts)
+	}
+}
+
+func TestRefreshAccountModelsSuccessDoesNotClearCpaCredentialError(t *testing.T) {
 	t.Parallel()
 
 	st := newTestStore(t)
@@ -547,7 +663,7 @@ func TestDiscoverModelsSuccessDoesNotClearCpaCredentialError(t *testing.T) {
 	}
 }
 
-func TestDiscoverModelsFailureDoesNotMarkCpaCredentialError(t *testing.T) {
+func TestRefreshAccountModelsFailureDoesNotMarkCpaCredentialError(t *testing.T) {
 	t.Parallel()
 
 	st := newTestStore(t)

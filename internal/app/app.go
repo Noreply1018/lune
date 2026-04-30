@@ -36,6 +36,8 @@ type Config struct {
 	CpaBaseURL       string        `yaml:"cpa_base_url"`
 	CpaAPIKey        string        `yaml:"cpa_api_key"`
 	CpaManagementKey string        `yaml:"cpa_management_key"`
+	CpaReloadSignal  string        `yaml:"cpa_reload_signal"`
+	EmbeddedCpa      bool          `yaml:"embedded_cpa"`
 	GatewayTmpDir    string        `yaml:"gateway_tmp_dir"`
 	Logging          LoggingConfig `yaml:"logging"`
 }
@@ -56,8 +58,9 @@ func (cfg Config) Validate() error {
 
 func LoadConfig() Config {
 	cfg := Config{
-		Port:    7788,
-		DataDir: "./data",
+		Port:        7788,
+		DataDir:     "./data",
+		EmbeddedCpa: false,
 	}
 
 	// env vars override defaults
@@ -80,6 +83,12 @@ func LoadConfig() Config {
 	}
 	if v := os.Getenv("LUNE_CPA_MANAGEMENT_KEY"); v != "" {
 		cfg.CpaManagementKey = v
+	}
+	if v := os.Getenv("LUNE_CPA_RELOAD_SIGNAL"); v != "" {
+		cfg.CpaReloadSignal = v
+	}
+	if v := os.Getenv("LUNE_EMBEDDED_CPA"); v != "" {
+		cfg.EmbeddedCpa = v != "0"
 	}
 	if v := os.Getenv("LUNE_GATEWAY_TMP_DIR"); v != "" {
 		cfg.GatewayTmpDir = v
@@ -143,6 +152,9 @@ func New(cfg Config) (*App, error) {
 	if err := os.MkdirAll(cfg.GatewayTmpDir, 0755); err != nil {
 		return nil, fmt.Errorf("create gateway tmp dir: %w", err)
 	}
+	if cfg.EmbeddedCpa && cfg.CpaReloadSignal == "" {
+		cfg.CpaReloadSignal = filepath.Join(cfg.GatewayTmpDir, "cpa-reload.signal")
+	}
 	if err := gateway.CleanupReplayDir(cfg.GatewayTmpDir); err != nil {
 		return nil, fmt.Errorf("cleanup gateway tmp dir: %w", err)
 	}
@@ -180,6 +192,7 @@ func (a *App) Run() error {
 
 	// create health checker (needed by admin handler for model discovery)
 	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, notifier)
+	hc.SetCpaReloadSignalPath(a.cfg.CpaReloadSignal)
 
 	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, a.cfg.GatewayTmpDir, hc, notifier)
 

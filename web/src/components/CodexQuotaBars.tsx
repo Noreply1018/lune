@@ -49,7 +49,7 @@ export function CodexQuotaBarsCompact({
 
 export function CodexQuotaBarsPendingCompact() {
   return (
-    <div className="space-y-1" title="额度待 CPA runtime 加载后自动补齐">
+    <div className="space-y-1" title="额度正在同步后补齐">
       <PendingCompactRow label="5h" />
       <PendingCompactRow label="7d" />
     </div>

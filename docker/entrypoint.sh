@@ -11,6 +11,9 @@ stop_children() {
   if [ -n "${LUNE_PID:-}" ]; then
     kill "$LUNE_PID" 2>/dev/null || true
   fi
+  if [ -n "${CPA_RELOAD_WATCH_PID:-}" ]; then
+    kill "$CPA_RELOAD_WATCH_PID" 2>/dev/null || true
+  fi
   if [ -n "${CPA_PID:-}" ]; then
     kill "$CPA_PID" 2>/dev/null || true
   fi
@@ -45,9 +48,36 @@ run_embedded_cpa() {
 
   (
     cd /CLIProxyAPI
-    ./CLIProxyAPI 2>&1 | sed -u 's/^/[cpa] /'
+    exec ./CLIProxyAPI
   ) &
   CPA_PID="$!"
+}
+
+restart_embedded_cpa() {
+  if [ -n "${CPA_PID:-}" ]; then
+    kill "$CPA_PID" 2>/dev/null || true
+    wait "$CPA_PID" 2>/dev/null || true
+    CPA_PID=""
+  fi
+  run_embedded_cpa
+}
+
+watch_cpa_reload_signal() {
+  : "${LUNE_CPA_RELOAD_SIGNAL:=${LUNE_DATA_DIR}/tmp/cpa-reload.signal}"
+  export LUNE_CPA_RELOAD_SIGNAL
+  rm -f "$LUNE_CPA_RELOAD_SIGNAL"
+  last_seen=""
+  while :; do
+    if [ -f "$LUNE_CPA_RELOAD_SIGNAL" ]; then
+      seen="$(cat "$LUNE_CPA_RELOAD_SIGNAL" 2>/dev/null || true)"
+      if [ -n "$seen" ] && [ "$seen" != "$last_seen" ]; then
+        last_seen="$seen"
+        printf '%s\n' "[entrypoint] restarting embedded CPA after Lune reload signal"
+        restart_embedded_cpa
+      fi
+    fi
+    sleep 1
+  done
 }
 
 cmd="${1:-up}"
@@ -64,6 +94,8 @@ case "$cmd" in
 
     if [ "$LUNE_EMBEDDED_CPA" != "0" ]; then
       run_embedded_cpa
+      watch_cpa_reload_signal &
+      CPA_RELOAD_WATCH_PID="$!"
     fi
 
     trap stop_children INT TERM

@@ -4,6 +4,43 @@
 
 Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本，但在默认体验、部署方式、配置形态还没有完全稳定前，minor 版本可能会调整产品边界。
 
+## [0.1.5] - 2026-04-30
+
+状态：已发布。
+
+### 重点变化
+
+- 修复 Docker 单容器运行中新增 Codex CPA 账号后，CPA management 长时间不返回该账号 `auth_index`，导致额度/订阅刷新一直停留在待同步状态的问题。
+- 内置 CPA 增加受控重启兜底：Lune 检测到本地 auth 文件存在但 CPA runtime 未索引时，会请求 entrypoint 重启内置 CPA，并在 runtime 恢复后继续刷新。
+- 清理前端旧文案，不再把新增账号的短暂同步状态描述为用户侧错误。
+
+### CPA 账号刷新
+
+- `RefreshAccount` 在等待 `auth_index` 超时后，会通过 `/app/data/tmp/cpa-reload.signal` 请求内置 CPA 重启，并再次等待 `/v0/management/auth-files` 出现该账号。
+- 该兜底只在内置 CPA 模式默认启用；外部 CPA 部署不会被 Lune 误判为可本地重启。
+- entrypoint 现在直接管理 CPA 子进程 PID，避免重启兜底时留下旧 CPA 进程。
+- 新增单元测试覆盖 auth index 长期缺失后触发 reload signal、CPA 恢复健康、随后额度刷新成功的路径。
+
+### 管理界面
+
+- Codex 额度缺失时使用稳定的双行 pending quota UI，避免账号卡片高度异常。
+- 账号详情页同步使用 pending quota 组件，不再显示可能撑开布局的裸文本。
+- 手动刷新 pending toast 改为“正在同步后补齐”，减少内部 runtime 语义外泄。
+- web 包版本更新为 `0.1.5`。
+
+### 文档
+
+- README 固定版本示例更新为 `noreply1018/lune:0.1.5`。
+
+### 验证
+
+- `go test ./...`
+- 在 `web/` 下执行 `npm run build`
+- `git diff --check`
+- `sh -n docker/entrypoint.sh`
+- `docker build -t lune:cpa-reload-fix .`
+- 使用复制出的 `/app/data` 启动独立测试容器，确认运行中新增 auth 文件可被 CPA 识别，并确认 reload signal 会重启 CPA 后重新扫描 auth files。
+
 ## [0.1.4] - 2026-04-30
 
 状态：已发布。

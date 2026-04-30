@@ -17,7 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import StatusBadge from "@/components/StatusBadge";
-import { CodexQuotaBarsFull } from "@/components/CodexQuotaBars";
+import { CodexQuotaBarsFull, CodexQuotaBarsPendingCompact } from "@/components/CodexQuotaBars";
 import ProbeModelChipPicker from "@/components/ProbeModelChipPicker";
 import { api } from "@/lib/api";
 import { parseCodexQuota, type CodexQuota } from "@/lib/codexQuota";
@@ -353,15 +353,18 @@ function OverviewPanel({
           fetchedAt={account.codex_quota_fetched_at}
           planType={account.cpa_plan_type}
         />
+      ) : account.cpa_provider === "codex" ? (
+        <section className="space-y-2.5 rounded-[1.2rem] border border-moon-200/55 bg-white/60 px-4 py-4">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Quota</p>
+          <CodexQuotaBarsPendingCompact />
+          <p className="text-xs text-moon-400">
+            额度快照正在同步，完成后会自动填充。
+          </p>
+        </section>
       ) : (
         <section className="space-y-2.5 rounded-[1.2rem] border border-moon-200/55 bg-white/60 px-4 py-4">
           <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Quota</p>
           <p className="text-sm text-moon-700">{quota}</p>
-          {account.cpa_provider === "codex" ? (
-            <p className="text-xs text-moon-400">
-              CPA 尚未返回配额快照，下次健康检查后会自动填充。
-            </p>
-          ) : null}
         </section>
       )}
 
