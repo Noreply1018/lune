@@ -177,15 +177,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if IsRetryableStatus(result.StatusCode) && attempt < maxRetries-1 {
-			// streaming response already written, can't retry
+		if IsRetryableStatus(result.StatusCode) {
+			errMsg := upstreamErrorMessage(result, fmt.Sprintf("HTTP %d", result.StatusCode))
+			h.updateHealth(resolved.AccountID, "error", errMsg)
+			lastStatusCode = result.StatusCode
+
 			if isStream {
-				h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, "upstream error", result.Usage, resolved.Account.SourceKind, attemptsUsed)
+				h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed)
+				return
+			}
+			if attempt >= maxRetries-1 {
+				result.WriteResponse(w)
+				h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed)
 				return
 			}
 			exclude = append(exclude, resolved.AccountID)
-			lastStatusCode = result.StatusCode
-			h.updateHealth(resolved.AccountID, "error", fmt.Sprintf("HTTP %d", result.StatusCode))
 
 			// Handle 429 with Retry-After
 			if result.StatusCode == 429 {
@@ -201,6 +207,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// success or non-retryable response — flush to client
 		result.WriteResponse(w)
 		success := result.StatusCode >= 200 && result.StatusCode < 400
+		errMsg := ""
+		if result.Stream != nil && result.Stream.Failed {
+			success = false
+			errMsg = result.Stream.ErrorMessage
+			if errMsg == "" && result.Stream.Err != nil {
+				errMsg = result.Stream.Err.Error()
+			}
+			if errMsg == "" {
+				errMsg = "stream failed"
+			}
+		} else if !success {
+			errMsg = upstreamErrorMessage(result, "")
+		}
 		if success {
 			h.updateHealth(resolved.AccountID, "healthy", "")
 			if resolved.Account.SourceKind == "cpa" {
@@ -216,9 +235,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			msg := fmt.Sprintf("HTTP %d", result.StatusCode)
 			h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
 			h.updateHealth(resolved.AccountID, "error", msg)
+		} else if result.Stream != nil && result.Stream.Failed {
+			h.updateHealth(resolved.AccountID, "error", errMsg)
 		}
 
-		h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, "", result.Usage, resolved.Account.SourceKind, attemptsUsed)
+		h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed)
 		return
 	}
 
@@ -355,6 +376,19 @@ func gatewayCredentialReason(body []byte) string {
 		return "refresh_failed"
 	}
 	return "auth_failed"
+}
+
+func upstreamErrorMessage(result *ProxyResult, fallback string) string {
+	if result == nil {
+		return fallback
+	}
+	if result.Stream != nil && result.Stream.ErrorMessage != "" {
+		return result.Stream.ErrorMessage
+	}
+	if msg := extractUpstreamErrorMessage(result.Body); msg != "" {
+		return msg
+	}
+	return fallback
 }
 
 func (h *Handler) getMaxRetries() int {

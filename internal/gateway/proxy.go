@@ -3,6 +3,8 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,10 +33,20 @@ type UpstreamTarget struct {
 type ProxyResult struct {
 	StatusCode int
 	Usage      Usage
+	Stream     *StreamResult
 	Err        error
 	Body       []byte      // non-stream: buffered body (not yet written to client)
 	Headers    http.Header // non-stream: buffered response headers
 	Written    bool        // true if response was already written (streaming)
+}
+
+type StreamResult struct {
+	Usage            Usage
+	Completed        bool
+	CompletionMarker string
+	Failed           bool
+	ErrorMessage     string
+	Err              error
 }
 
 func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, pathSuffix string, body *ReplayBody, isStream bool, requestID string, timeout time.Duration) *ProxyResult {
@@ -103,7 +115,8 @@ func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, path
 				w.Header().Add(k, v)
 			}
 		}
-		result.Usage = forwardStream(w, resp)
+		result.Stream = forwardStream(w, resp, pathSuffix)
+		result.Usage = result.Stream.Usage
 		result.Written = true
 	} else {
 		// non-streaming: buffer body for potential retry
@@ -134,39 +147,156 @@ func (r *ProxyResult) WriteResponse(w http.ResponseWriter) {
 	r.Written = true
 }
 
-func forwardStream(w http.ResponseWriter, resp *http.Response) Usage {
+func forwardStream(w http.ResponseWriter, resp *http.Response, pathSuffix string) *StreamResult {
+	result := &StreamResult{}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`{"error":{"message":"streaming not supported"}}`))
-		return Usage{}
+		result.Failed = true
+		result.ErrorMessage = "streaming not supported"
+		result.Err = errors.New(result.ErrorMessage)
+		return result
 	}
 
 	w.WriteHeader(resp.StatusCode)
 	flusher.Flush()
 
-	var usage Usage
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	expectedMarker := expectedStreamCompletionMarker(pathSuffix)
+	acceptDoneMarker := isChatCompletionsStream(pathSuffix)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		w.Write(line)
-		w.Write([]byte("\n"))
+		if _, err := w.Write(line); err != nil {
+			result.Failed = true
+			result.ErrorMessage = truncateStreamError("downstream write error: "+err.Error(), 512)
+			result.Err = err
+			return result
+		}
+		if _, err := w.Write([]byte("\n")); err != nil {
+			result.Failed = true
+			result.ErrorMessage = truncateStreamError("downstream write error: "+err.Error(), 512)
+			result.Err = err
+			return result
+		}
 		flusher.Flush()
 
 		// parse usage from SSE data lines
 		if bytes.HasPrefix(line, []byte("data: ")) {
 			data := line[6:]
-			if !bytes.Equal(data, []byte("[DONE]")) {
-				if u := ParseUsageFromSSEChunk(data); u.InputTokens > 0 || u.OutputTokens > 0 {
-					usage = u
-				}
+			data = bytes.TrimSpace(data)
+			if acceptDoneMarker && bytes.Equal(data, []byte("[DONE]")) {
+				result.Completed = true
+				result.CompletionMarker = "[DONE]"
+				continue
 			}
+			updateStreamResultFromSSEData(result, data)
+			if result.Failed {
+				continue
+			}
+			if u := ParseUsageFromSSEChunk(data); u.InputTokens > 0 || u.OutputTokens > 0 {
+				result.Usage = u
+			}
+		} else if msg := extractUpstreamErrorMessage(line); msg != "" && result.ErrorMessage == "" {
+			result.ErrorMessage = msg
 		}
 	}
 
-	return usage
+	if err := scanner.Err(); err != nil {
+		result.Failed = true
+		result.Err = err
+		result.ErrorMessage = truncateStreamError("stream read error: "+err.Error(), 512)
+		return result
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && !result.Completed && !result.Failed {
+		result.Failed = true
+		result.ErrorMessage = "stream closed before " + expectedMarker
+		result.Err = errors.New(result.ErrorMessage)
+	}
+	return result
+}
+
+func expectedStreamCompletionMarker(pathSuffix string) string {
+	pathSuffix = strings.Trim(pathSuffix, "/")
+	if isChatCompletionsStream(pathSuffix) {
+		return "[DONE]"
+	}
+	if isResponsesStream(pathSuffix) {
+		return "response.completed"
+	}
+	return "completion marker"
+}
+
+func isChatCompletionsStream(pathSuffix string) bool {
+	return strings.HasSuffix(strings.Trim(pathSuffix, "/"), "chat/completions")
+}
+
+func isResponsesStream(pathSuffix string) bool {
+	return strings.HasSuffix(strings.Trim(pathSuffix, "/"), "responses")
+}
+
+func updateStreamResultFromSSEData(result *StreamResult, data []byte) {
+	var event map[string]any
+	if err := json.Unmarshal(data, &event); err != nil {
+		return
+	}
+	eventType, _ := event["type"].(string)
+	switch eventType {
+	case "response.completed":
+		result.Completed = true
+		result.CompletionMarker = eventType
+	case "response.failed", "response.incomplete":
+		result.Failed = true
+		if msg := extractUpstreamErrorMessageFromMap(event); msg != "" {
+			result.ErrorMessage = msg
+		} else {
+			result.ErrorMessage = eventType
+		}
+		result.Err = errors.New(result.ErrorMessage)
+	}
+}
+
+func extractUpstreamErrorMessage(body []byte) string {
+	var payload any
+	if err := json.Unmarshal(bytes.TrimSpace(body), &payload); err != nil {
+		return ""
+	}
+	if m, ok := payload.(map[string]any); ok {
+		return extractUpstreamErrorMessageFromMap(m)
+	}
+	return ""
+}
+
+func extractUpstreamErrorMessageFromMap(m map[string]any) string {
+	for _, key := range []string{"message", "detail", "error_message"} {
+		if msg, ok := m[key].(string); ok && strings.TrimSpace(msg) != "" {
+			return truncateStreamError(msg, 512)
+		}
+	}
+	for _, key := range []string{"error", "response"} {
+		if nested, ok := m[key].(map[string]any); ok {
+			if msg := extractUpstreamErrorMessageFromMap(nested); msg != "" {
+				return msg
+			}
+		}
+	}
+	if errVal, ok := m["error"].(string); ok && strings.TrimSpace(errVal) != "" {
+		return truncateStreamError(errVal, 512)
+	}
+	return ""
+}
+
+func truncateStreamError(msg string, max int) string {
+	msg = strings.TrimSpace(msg)
+	if len(msg) <= max {
+		return msg
+	}
+	if max <= 3 {
+		return msg[:max]
+	}
+	return msg[:max-3] + "..."
 }
 
 type retryableError struct {
