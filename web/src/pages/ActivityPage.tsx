@@ -1010,6 +1010,13 @@ function MoonDial({ buckets }: { buckets: TrendBucket[] }) {
 
 type SankeyNode = { id: string; label: string; value: number };
 type SankeyLink = { source: string; target: string; value: number };
+type SankeyPosition = {
+  x: number;
+  y: number;
+  h: number;
+  label: string;
+  value: number;
+};
 
 function SankeyDiagram({
   title,
@@ -1022,17 +1029,42 @@ function SankeyDiagram({
   logs: RequestLog[];
   poolMap: Map<number, string>;
 }) {
-  const { pools, models, links } = useMemo(() => {
+  const { pools, accounts, models, links, excludedUnrouted } = useMemo(() => {
     const poolCounts = new Map<string, number>();
+    const accountCounts = new Map<string, number>();
     const modelCounts = new Map<string, number>();
-    const linkCounts = new Map<string, number>();
+    const poolAccountLinks = new Map<string, SankeyLink>();
+    const accountModelLinks = new Map<string, SankeyLink>();
+    let excludedUnrouted = 0;
+    const addLink = (
+      targetMap: Map<string, SankeyLink>,
+      source: string,
+      target: string,
+    ) => {
+      const key = JSON.stringify([source, target]);
+      const existing = targetMap.get(key);
+      if (existing) {
+        existing.value += 1;
+      } else {
+        targetMap.set(key, { source, target, value: 1 });
+      }
+    };
+
     logs.forEach((log) => {
+      if (log.account_id <= 0) {
+        excludedUnrouted += 1;
+        return;
+      }
+
       const poolKey = `pool:${log.pool_id}`;
+      const accountKey = `account:${log.account_id}`;
       const modelKey = `model:${log.model_actual || log.model_requested || "unknown"}`;
       poolCounts.set(poolKey, (poolCounts.get(poolKey) ?? 0) + 1);
+      accountCounts.set(accountKey, (accountCounts.get(accountKey) ?? 0) + 1);
       modelCounts.set(modelKey, (modelCounts.get(modelKey) ?? 0) + 1);
-      const linkKey = `${poolKey}>>${modelKey}`;
-      linkCounts.set(linkKey, (linkCounts.get(linkKey) ?? 0) + 1);
+
+      addLink(poolAccountLinks, poolKey, accountKey);
+      addLink(accountModelLinks, accountKey, modelKey);
     });
 
     const pools: SankeyNode[] = Array.from(poolCounts.entries())
@@ -1046,44 +1078,62 @@ function SankeyDiagram({
       })
       .sort((a, b) => b.value - a.value);
 
+    const accounts: SankeyNode[] = Array.from(accountCounts.entries())
+      .map(([id, value]) => {
+        const accountId = Number(id.slice(8));
+        const sourceLog = logs.find((log) => log.account_id === accountId);
+        const accountLabel = sourceLog?.account_label
+          ? `#${accountId} ${sourceLog.account_label}`
+          : `#${accountId}`;
+        return {
+          id,
+          label: accountLabel,
+          value,
+        };
+      })
+      .sort((a, b) => b.value - a.value);
+
     const models: SankeyNode[] = Array.from(modelCounts.entries())
       .map(([id, value]) => ({ id, label: id.slice(6), value }))
       .sort((a, b) => b.value - a.value);
 
-    const links: SankeyLink[] = Array.from(linkCounts.entries()).map(
-      ([key, value]) => {
-        const [source, target] = key.split(">>");
-        return { source, target, value };
-      },
-    );
-    return { pools, models, links };
+    return {
+      pools,
+      accounts,
+      models,
+      links: [...poolAccountLinks.values(), ...accountModelLinks.values()],
+      excludedUnrouted,
+    };
   }, [logs, poolMap]);
 
   const totalAll = pools.reduce((sum, node) => sum + node.value, 0);
 
   const layout = useMemo(() => {
-    const width = 600;
+    const width = 980;
     const height = Math.max(
       220,
-      Math.max(pools.length, models.length) * 34 + 40,
+      Math.max(pools.length, accounts.length, models.length) * 34 + 40,
     );
-    const paddingY = 10;
+    const paddingY = 34;
     const nodeWidth = 10;
     const nodeGap = 10;
+    const minNodeHeight = 6;
+    const accountLabelLaneWidth = 165;
     const innerHeight = height - paddingY * 2;
 
     const totalPool = pools.reduce((sum, n) => sum + n.value, 0) || 1;
+    const totalAccount = accounts.reduce((sum, n) => sum + n.value, 0) || 1;
     const totalModel = models.reduce((sum, n) => sum + n.value, 0) || 1;
 
     const computeColumn = (nodes: SankeyNode[], x: number, total: number) => {
       const available = innerHeight - (nodes.length - 1) * nodeGap;
-      const positions: Record<
-        string,
-        { x: number; y: number; h: number; label: string; value: number }
-      > = {};
+      const minTotal = nodes.length * minNodeHeight;
+      const proportionalSpace = Math.max(0, available - minTotal);
+      const positions: Record<string, SankeyPosition> = {};
       let y = paddingY;
       nodes.forEach((node) => {
-        const h = Math.max((node.value / total) * available, 6);
+        const h =
+          minNodeHeight + (node.value / total) * proportionalSpace;
         positions[node.id] = {
           x,
           y,
@@ -1096,11 +1146,16 @@ function SankeyDiagram({
       return positions;
     };
 
-    const poolPositions = computeColumn(pools, 40, totalPool);
-    const modelPositions = computeColumn(
-      models,
-      width - 40 - nodeWidth,
-      totalModel,
+    const poolPositions = computeColumn(pools, 90, totalPool);
+    const accountPositions = computeColumn(accounts, 410, totalAccount);
+    const modelPositions = computeColumn(models, 790, totalModel);
+    const allPositions = {
+      ...poolPositions,
+      ...accountPositions,
+      ...modelPositions,
+    };
+    const nodeValues = new Map(
+      [...pools, ...accounts, ...models].map((node) => [node.id, node.value]),
     );
 
     // Link endpoints: we walk each source/target, peeling off height
@@ -1108,18 +1163,24 @@ function SankeyDiagram({
     const sourceCursor: Record<string, number> = {};
     const targetCursor: Record<string, number> = {};
     const paths = links
+      .slice()
       .sort((a, b) => b.value - a.value)
       .map((link) => {
-        const s = poolPositions[link.source];
-        const t = modelPositions[link.target];
+        const s = allPositions[link.source];
+        const t = allPositions[link.target];
         if (!s || !t) return null;
-        const sourceH = (link.value / (pools.find((p) => p.id === link.source)?.value || 1)) * s.h;
-        const targetH = (link.value / (models.find((m) => m.id === link.target)?.value || 1)) * t.h;
+        const sourceH = (link.value / (nodeValues.get(link.source) || 1)) * s.h;
+        const targetH = (link.value / (nodeValues.get(link.target) || 1)) * t.h;
         const sOffset = sourceCursor[link.source] ?? 0;
         const tOffset = targetCursor[link.target] ?? 0;
         sourceCursor[link.source] = sOffset + sourceH;
         targetCursor[link.target] = tOffset + targetH;
-        const x0 = s.x + nodeWidth;
+        // Reserve a middle-column label lane so Account names don't sit on
+        // top of the Account -> Model ribbons.
+        const x0 =
+          s.x +
+          nodeWidth +
+          (link.source.startsWith("account:") ? accountLabelLaneWidth : 0);
         const x1 = t.x;
         const y0Top = s.y + sOffset;
         const y0Bot = y0Top + sourceH;
@@ -1133,14 +1194,29 @@ function SankeyDiagram({
       })
       .filter(Boolean) as Array<{ d: string; link: SankeyLink }>;
 
-    return { width, height, nodeWidth, poolPositions, modelPositions, paths };
-  }, [pools, models, links]);
+    return {
+      width,
+      height,
+      nodeWidth,
+      poolPositions,
+      accountPositions,
+      modelPositions,
+      paths,
+    };
+  }, [pools, accounts, models, links]);
 
   if (totalAll === 0) {
     return (
       <section id="flow" className="surface-section scroll-mt-6 px-5 py-5">
         <SectionHeading title={title} description={description} />
-        <p className="mt-6 text-sm text-moon-400">{DASH} 过去 24 小时没有可视化的流向。</p>
+        <p className="mt-6 text-sm text-moon-400">
+          {DASH} 过去 24 小时没有可视化的最终路由路径。
+        </p>
+        {excludedUnrouted > 0 ? (
+          <p className="mt-3 text-xs text-moon-400">
+            已排除 {compact(excludedUnrouted)} 条未选中账号的路由拒绝请求。
+          </p>
+        ) : null}
       </section>
     );
   }
@@ -1151,10 +1227,37 @@ function SankeyDiagram({
       <div className="mt-5 overflow-x-auto">
         <svg
           viewBox={`0 0 ${layout.width} ${layout.height}`}
-          width="100%"
+          width={layout.width}
           height={layout.height}
           className="overflow-visible"
         >
+          <text
+            x={layout.poolPositions[Object.keys(layout.poolPositions)[0]]?.x ?? 90}
+            y={13}
+            textAnchor="middle"
+            className="fill-moon-400"
+            style={{ fontSize: "10px", fontWeight: 700 }}
+          >
+            Pool
+          </text>
+          <text
+            x={layout.accountPositions[Object.keys(layout.accountPositions)[0]]?.x ?? 410}
+            y={13}
+            textAnchor="middle"
+            className="fill-moon-400"
+            style={{ fontSize: "10px", fontWeight: 700 }}
+          >
+            Account
+          </text>
+          <text
+            x={layout.modelPositions[Object.keys(layout.modelPositions)[0]]?.x ?? 790}
+            y={13}
+            textAnchor="middle"
+            className="fill-moon-400"
+            style={{ fontSize: "10px", fontWeight: 700 }}
+          >
+            Model
+          </text>
           {layout.paths.map((item, idx) => (
             <path
               key={idx}
@@ -1164,9 +1267,9 @@ function SankeyDiagram({
               strokeWidth={0.4}
             >
               <title>
-                {`${poolLabel(item.link.source, layout.poolPositions)} → ${modelLabel(
+                {`${nodeLabel(item.link.source, layout)} → ${nodeLabel(
                   item.link.target,
-                  layout.modelPositions,
+                  layout,
                 )} · ${item.link.value} 次`}
               </title>
             </path>
@@ -1188,17 +1291,53 @@ function SankeyDiagram({
                 className="fill-moon-700"
                 style={{ fontSize: "11px" }}
               >
-                {node.label}
+                {truncateLabel(node.label, 13)}
+                <title>{node.label}</title>
               </text>
+              {node.h >= 14 ? (
+                <text
+                  x={node.x - 6}
+                  y={node.y + node.h / 2 + 15}
+                  textAnchor="end"
+                  className="fill-moon-400"
+                  style={{ fontSize: "10px" }}
+                >
+                  {compact(node.value)}
+                </text>
+              ) : null}
+            </g>
+          ))}
+          {Object.entries(layout.accountPositions).map(([id, node]) => (
+            <g key={id}>
+              <rect
+                x={node.x}
+                y={node.y}
+                width={layout.nodeWidth}
+                height={node.h}
+                rx={3}
+                fill="rgba(229,166,92,0.82)"
+              />
               <text
-                x={node.x - 6}
-                y={node.y + node.h / 2 + 15}
-                textAnchor="end"
-                className="fill-moon-400"
-                style={{ fontSize: "10px" }}
+                x={node.x + layout.nodeWidth + 7}
+                y={node.y + node.h / 2 + 3}
+                textAnchor="start"
+                className="fill-moon-700"
+                style={{ fontSize: "11px" }}
               >
-                {compact(node.value)}
+                {truncateLabel(node.label, 22)}
+                <title>{node.label}</title>
               </text>
+              {node.h >= 14 ? (
+                <text
+                  x={node.x + layout.nodeWidth + 7}
+                  y={node.y + node.h / 2 + 15}
+                  textAnchor="start"
+                  className="fill-moon-400"
+                  style={{ fontSize: "10px" }}
+                >
+                  {compact(node.value)}
+                </text>
+              ) : null}
             </g>
           ))}
           {Object.entries(layout.modelPositions).map(([id, node]) => (
@@ -1218,39 +1357,55 @@ function SankeyDiagram({
                 className="fill-moon-700"
                 style={{ fontSize: "11px" }}
               >
-                {node.label}
+                {truncateLabel(node.label, 26)}
+                <title>{node.label}</title>
               </text>
-              <text
-                x={node.x + layout.nodeWidth + 6}
-                y={node.y + node.h / 2 + 15}
-                textAnchor="start"
-                className="fill-moon-400"
-                style={{ fontSize: "10px" }}
-              >
-                {compact(node.value)}
-              </text>
+              {node.h >= 14 ? (
+                <text
+                  x={node.x + layout.nodeWidth + 6}
+                  y={node.y + node.h / 2 + 15}
+                  textAnchor="start"
+                  className="fill-moon-400"
+                  style={{ fontSize: "10px" }}
+                >
+                  {compact(node.value)}
+                </text>
+              ) : null}
             </g>
           ))}
         </svg>
       </div>
       <p className="mt-4 text-xs text-moon-400">
-        左侧 Pool → 右侧 Model，带状宽度 ≈ 请求数，悬停查看每条路径详情。
+        左侧 Pool → 中间 Account → 右侧 Model，带状宽度 ≈ 请求数。图展示 request log 的最终路由账号，不展开重试路径。
       </p>
+      {excludedUnrouted > 0 ? (
+        <p className="mt-2 text-xs text-moon-400">
+          已排除 {compact(excludedUnrouted)} 条未选中账号的路由拒绝请求。
+        </p>
+      ) : null}
     </section>
   );
 }
 
-function poolLabel(
+function nodeLabel(
   id: string,
-  map: Record<string, { label: string; value: number }>,
+  layout: {
+    poolPositions: Record<string, SankeyPosition>;
+    accountPositions: Record<string, SankeyPosition>;
+    modelPositions: Record<string, SankeyPosition>;
+  },
 ) {
-  return map[id]?.label ?? id;
+  return (
+    layout.poolPositions[id]?.label ??
+    layout.accountPositions[id]?.label ??
+    layout.modelPositions[id]?.label ??
+    id
+  );
 }
-function modelLabel(
-  id: string,
-  map: Record<string, { label: string; value: number }>,
-) {
-  return map[id]?.label ?? id;
+
+function truncateLabel(label: string, maxLength: number) {
+  if (label.length <= maxLength) return label;
+  return `${label.slice(0, maxLength - 1)}…`;
 }
 
 function TopErrors({
@@ -1723,8 +1878,8 @@ export default function ActivityPage() {
       </section>
 
       <SankeyDiagram
-        title="Pool → Model 流向"
-        description="过去 24 小时，请求是怎么分散到各 Pool、最后打到了哪些模型。"
+        title="Pool → Account → Model 流向"
+        description="过去 24 小时 request log 最终记录的路由路径：从 Pool 到实际账号，再到最终模型。"
         logs={logs24h}
         poolMap={poolMap}
       />
