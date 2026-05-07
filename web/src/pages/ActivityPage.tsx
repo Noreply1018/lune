@@ -1118,7 +1118,6 @@ function SankeyDiagram({
     const nodeWidth = 10;
     const nodeGap = 10;
     const minNodeHeight = 6;
-    const accountLabelLaneWidth = 165;
     const innerHeight = height - paddingY * 2;
 
     const totalPool = pools.reduce((sum, n) => sum + n.value, 0) || 1;
@@ -1175,12 +1174,7 @@ function SankeyDiagram({
         const tOffset = targetCursor[link.target] ?? 0;
         sourceCursor[link.source] = sOffset + sourceH;
         targetCursor[link.target] = tOffset + targetH;
-        // Reserve a middle-column label lane so Account names don't sit on
-        // top of the Account -> Model ribbons.
-        const x0 =
-          s.x +
-          nodeWidth +
-          (link.source.startsWith("account:") ? accountLabelLaneWidth : 0);
+        const x0 = s.x + nodeWidth;
         const x1 = t.x;
         const y0Top = s.y + sOffset;
         const y0Bot = y0Top + sourceH;
@@ -1322,7 +1316,13 @@ function SankeyDiagram({
                 y={node.y + node.h / 2 + 3}
                 textAnchor="start"
                 className="fill-moon-700"
-                style={{ fontSize: "11px" }}
+                style={{
+                  fontSize: "11px",
+                  paintOrder: "stroke",
+                  stroke: "rgba(250,249,246,0.9)",
+                  strokeWidth: 3,
+                  strokeLinejoin: "round",
+                }}
               >
                 {truncateLabel(node.label, 22)}
                 <title>{node.label}</title>
@@ -1333,7 +1333,13 @@ function SankeyDiagram({
                   y={node.y + node.h / 2 + 15}
                   textAnchor="start"
                   className="fill-moon-400"
-                  style={{ fontSize: "10px" }}
+                  style={{
+                    fontSize: "10px",
+                    paintOrder: "stroke",
+                    stroke: "rgba(250,249,246,0.9)",
+                    strokeWidth: 3,
+                    strokeLinejoin: "round",
+                  }}
                 >
                   {compact(node.value)}
                 </text>
