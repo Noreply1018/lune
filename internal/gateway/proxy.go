@@ -3,6 +3,7 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -207,6 +208,10 @@ func forwardStream(w http.ResponseWriter, resp *http.Response, pathSuffix string
 	if err := scanner.Err(); err != nil {
 		result.Failed = true
 		result.Err = err
+		if isTimeoutError(err) {
+			result.ErrorMessage = "stream timed out before " + expectedMarker
+			return result
+		}
 		result.ErrorMessage = truncateStreamError("stream read error: "+err.Error(), 512)
 		return result
 	}
@@ -326,4 +331,18 @@ func classifyError(err error) error {
 		return &retryableError{err: err}
 	}
 	return err
+}
+
+func isTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	text := err.Error()
+	return strings.Contains(text, "Client.Timeout") ||
+		strings.Contains(text, "context deadline exceeded") ||
+		strings.Contains(text, "i/o timeout")
 }

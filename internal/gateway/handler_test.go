@@ -219,6 +219,59 @@ func TestResponsesStreamDoneWithoutCompletedLogsFailure(t *testing.T) {
 	}
 }
 
+func TestResponsesLongStreamTimeoutLogsFailure(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	if err := st.SetSetting("request_timeout", "1"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	cache.Invalidate()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"hello"}` + "\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer upstream.Close()
+	accountID := addOpenAICompatGatewayAccount(t, st, cache, *token.PoolID, "responses-timeout-account", upstream.URL+"/v1", "gpt-test")
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-test","stream":true,"input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected downstream 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if log.Success {
+		t.Fatalf("expected timeout stream log failure, got %+v", log)
+	}
+	if log.StatusCode != http.StatusOK {
+		t.Fatalf("expected upstream status 200, got %+v", log)
+	}
+	if log.ErrorMessage != "stream timed out before response.completed" {
+		t.Fatalf("expected normalized stream timeout message, got %+v", log)
+	}
+	if !log.Stream {
+		t.Fatalf("expected stream log, got %+v", log)
+	}
+	if log.PoolID != *token.PoolID || log.AccountID != accountID || log.SourceKind != "openai_compat" {
+		t.Fatalf("expected route metadata to be preserved, got %+v", log)
+	}
+	if log.LatencyMs <= 0 {
+		t.Fatalf("expected latency to be recorded, got %+v", log)
+	}
+	if log.AttemptCount != 1 {
+		t.Fatalf("expected one upstream attempt, got %+v", log)
+	}
+}
+
 func TestResponsesStreamFailedLogsMessage(t *testing.T) {
 	st, cache, handler, token := newHandlerTestStore(t)
 	upstreamMsg := "Selected model is at capacity. Please try a different model"
