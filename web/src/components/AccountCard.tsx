@@ -79,6 +79,7 @@ export default function AccountCard({
       : account?.cpa_expired_at ?? null,
   );
   const credential = account ? getCpaCredentialMeta(account) : null;
+  const credentialLabel = credential?.label === "需要重新登录" ? "请重登" : credential?.label;
   const subscriptionError = account ? getCpaSubscriptionErrorMeta(account) : null;
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
   // Every non-Codex account — direct as well as non-Codex CPA (e.g. Claude) —
@@ -217,7 +218,7 @@ export default function AccountCard({
               )}
               title={credential.detail}
             >
-              {credential.label}
+              {credentialLabel}
             </span>
           ) : null}
           {subscriptionError ? (
