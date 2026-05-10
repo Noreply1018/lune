@@ -2014,6 +2014,13 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 	}
 
 	existingBefore, _ := h.store.FindAccountByCpaKey(svc.ID, accountKey)
+	if h.healthChecker != nil {
+		reloadCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := h.healthChecker.RequestCpaRuntimeReload(reloadCtx, svc); err != nil {
+			slog.Warn("finalizeLogin: embedded CPA reload after credential write failed", "account_key", accountKey, "err", err)
+		}
+		cancel()
+	}
 	account, err := h.upsertImportedCpaAccount(svc, accountKey, authFile, "", true, "")
 	if err != nil {
 		h.sessions.UpdateStatus(session.ID, "failed", "import_error", fmt.Sprintf("Failed to create account: %v", err))
@@ -2022,7 +2029,7 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 
 	// auto-add to the pool specified in session
 	if session.PoolID > 0 {
-		if _, err := h.store.AddPoolMember(session.PoolID, account.ID); err != nil {
+		if _, _, err := h.store.AddPoolMemberIdempotent(session.PoolID, account.ID); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint") {
 				slog.Info("finalizeLogin: pool member already exists", "pool_id", session.PoolID, "account_id", account.ID)
 			} else {
@@ -2040,20 +2047,22 @@ func (h *Handler) finalizeLogin(session *cpa.LoginSession, svc *store.CpaService
 	// Run the first CPA refresh while the login flow is still active. CPA may
 	// need a short moment to index the auth file written above, so the refresh
 	// path waits before falling back to a runtime_pending credential state.
-	if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
-		if _, refreshErr := h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
-			Models:        true,
-			Quota:         true,
-			Subscription:  true,
-			WaitAuthIndex: true,
-		}); refreshErr != nil {
-			slog.Warn("finalizeLogin: initial CPA refresh incomplete", "account_id", acc.ID, "err", refreshErr)
-			go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
+	if h.healthChecker != nil {
+		if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
+			if _, refreshErr := h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
 				Models:        true,
 				Quota:         true,
 				Subscription:  true,
 				WaitAuthIndex: true,
-			})
+			}); refreshErr != nil {
+				slog.Warn("finalizeLogin: initial CPA refresh incomplete", "account_id", acc.ID, "err", refreshErr)
+				go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
+					Models:        true,
+					Quota:         true,
+					Subscription:  true,
+					WaitAuthIndex: true,
+				})
+			}
 		}
 	}
 
@@ -2133,6 +2142,8 @@ func (h *Handler) resumeActiveLoginSessions() {
 }
 
 func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey string, f *cpa.CpaAuthFile, label string, enabled bool, notes string) (*store.Account, error) {
+	labelProvided := strings.TrimSpace(label) != ""
+	notesProvided := strings.TrimSpace(notes) != ""
 	planType := ""
 	openaiID := f.AccountID
 	if info, err := cpa.ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil {
@@ -2177,30 +2188,43 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 		Notes:                    notes,
 	}
 
+	if existing, err := h.store.FindAccountByCpaKey(svc.ID, accountKey); err != nil {
+		return nil, err
+	} else if existing != nil {
+		account.ID = existing.ID
+		if !labelProvided {
+			account.Label = existing.Label
+		}
+		if !notesProvided {
+			account.Notes = existing.Notes
+		}
+		if err := h.store.UpdateCpaAccountFromImport(existing.ID, account); err != nil {
+			return nil, err
+		}
+		h.fillAccountResponse(account)
+		return account, nil
+	}
+
 	id, err := h.store.CreateAccount(account)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			existing, findErr := h.store.FindAccountByCpaKey(svc.ID, accountKey)
 			if findErr == nil && existing != nil {
-				_ = h.store.UpdateAccountCpaMetadata(existing.ID, expiredAt, lastRefreshAt, f.Disabled)
-				_ = h.store.UpdateAccountCpaCredentialStatus(existing.ID, credentialStatus, credentialReason, credentialLastError, credentialCheckedAt)
-				if subscriptionExpiresAt != "" {
-					_ = h.store.UpdateAccountCpaSubscription(existing.ID, subscriptionExpiresAt, subscriptionFetchedAt, "")
+				account.ID = existing.ID
+				if !labelProvided {
+					account.Label = existing.Label
 				}
-				h.fillAccountResponse(existing)
-				existing.CpaExpiredAt = expiredAt
-				existing.CpaLastRefreshAt = lastRefreshAt
-				existing.CpaDisabled = f.Disabled
-				existing.CpaCredentialStatus = credentialStatus
-				existing.CpaCredentialReason = credentialReason
-				existing.CpaCredentialLastError = credentialLastError
-				existing.CpaCredentialCheckedAt = credentialCheckedAt
-				if subscriptionExpiresAt != "" {
-					existing.CpaSubscriptionExpiresAt = subscriptionExpiresAt
-					existing.CpaSubscriptionFetchedAt = subscriptionFetchedAt
-					existing.CpaSubscriptionLastError = ""
+				if !notesProvided {
+					account.Notes = existing.Notes
 				}
-				return existing, nil
+				if updateErr := h.store.UpdateCpaAccountFromImport(existing.ID, account); updateErr != nil {
+					return nil, updateErr
+				}
+				h.fillAccountResponse(account)
+				return account, nil
+			}
+			if findErr != nil {
+				return nil, findErr
 			}
 		}
 		return nil, err
@@ -2349,7 +2373,7 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// add to pool
-	if _, err := h.store.AddPoolMember(req.PoolID, account.ID); err != nil {
+	if _, _, err := h.store.AddPoolMemberIdempotent(req.PoolID, account.ID); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			slog.Info("importCpaAccount: pool member already exists", "pool_id", req.PoolID, "account_id", account.ID)
 		} else {
@@ -2364,13 +2388,15 @@ func (h *Handler) importCpaAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// trigger async model discovery
-	if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
-		go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
-			Models:        true,
-			Quota:         true,
-			Subscription:  true,
-			WaitAuthIndex: true,
-		})
+	if h.healthChecker != nil {
+		if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
+			go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
+				Models:        true,
+				Quota:         true,
+				Subscription:  true,
+				WaitAuthIndex: true,
+			})
+		}
 	}
 
 	h.cache.Invalidate()
@@ -2413,62 +2439,23 @@ func (h *Handler) batchImportCpaAccounts(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
-		planType := ""
-		openaiID := f.AccountID
-		if info, err := cpa.ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil {
-			planType = info.PlanType
-			if info.AccountID != "" {
-				openaiID = info.AccountID
-			}
-		}
-
-		var expiredAt, lastRefreshAt string
-		if f.Expired != "" {
-			expiredAt = f.Expired
-		}
-		if f.LastRefresh != "" {
-			lastRefreshAt = f.LastRefresh
-		}
-		credentialStatus, credentialReason, credentialLastError, credentialCheckedAt := cpaCredentialStateFromAuthFile(f)
-		subscriptionExpiresAt, subscriptionFetchedAt := cpaSubscriptionStateFromAuthFile(f)
-
-		account := &store.Account{
-			Label:                    fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType),
-			SourceKind:               "cpa",
-			CpaServiceID:             &svc.ID,
-			CpaProvider:              f.Type,
-			CpaAccountKey:            key,
-			CpaEmail:                 f.Email,
-			CpaPlanType:              planType,
-			CpaOpenaiID:              openaiID,
-			CpaExpiredAt:             expiredAt,
-			CpaLastRefreshAt:         lastRefreshAt,
-			CpaDisabled:              f.Disabled,
-			CpaCredentialStatus:      credentialStatus,
-			CpaCredentialReason:      credentialReason,
-			CpaCredentialLastError:   credentialLastError,
-			CpaCredentialCheckedAt:   credentialCheckedAt,
-			CpaSubscriptionExpiresAt: subscriptionExpiresAt,
-			CpaSubscriptionFetchedAt: subscriptionFetchedAt,
-			Enabled:                  true,
-		}
-
-		accountID, err := h.store.CreateAccount(account)
+		existingBefore, _ := h.store.FindAccountByCpaKey(svc.ID, key)
+		account, err := h.upsertImportedCpaAccount(svc, key, f, "", true, "")
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE constraint") {
-				skipped++
-			} else {
-				errs = append(errs, fmt.Sprintf("%s: %v", key, err))
-			}
+			errs = append(errs, fmt.Sprintf("%s: %v", key, err))
 			continue
 		}
 
-		// add to pool
-		if _, err := h.store.AddPoolMember(req.PoolID, accountID); err != nil {
-			if delErr := h.store.DeleteAccount(accountID); delErr != nil {
-				slog.Error("batchImportCpaAccounts: rollback orphan account failed", "account_id", accountID, "err", delErr)
+		if _, created, err := h.store.AddPoolMemberIdempotent(req.PoolID, account.ID); err != nil {
+			if existingBefore == nil {
+				if delErr := h.store.DeleteAccount(account.ID); delErr != nil {
+					slog.Error("batchImportCpaAccounts: rollback orphan account failed", "account_id", account.ID, "err", delErr)
+				}
 			}
 			errs = append(errs, fmt.Sprintf("%s: failed to add imported account to pool: %v", key, err))
+			continue
+		} else if existingBefore != nil && !created {
+			skipped++
 			continue
 		}
 

@@ -24,7 +24,14 @@ export interface Account {
   cpa_expired_at: string | null;
   cpa_last_refresh_at: string | null;
   cpa_disabled: boolean;
-  cpa_credential_status?: "unknown" | "ok" | "runtime_pending" | "runtime_error" | "needs_login";
+  cpa_credential_status?:
+    | "unknown"
+    | "ok"
+    | "auth_suspect"
+    | "refresh_failed"
+    | "runtime_pending"
+    | "runtime_error"
+    | "needs_login";
   cpa_credential_reason?: string;
   cpa_credential_last_error?: string;
   cpa_credential_checked_at?: string | null;
@@ -33,6 +40,14 @@ export interface Account {
   cpa_subscription_last_error?: string;
   codex_quota_json?: string;
   codex_quota_fetched_at?: string;
+  cpa_quota_status?: "unknown" | "ok" | "blocked" | "pending" | "error";
+  cpa_quota_last_error?: string;
+  cpa_quota_checked_at?: string;
+  serving_status?: "unknown" | "healthy" | "cooldown" | "error";
+  failure_count?: number;
+  last_failure_at?: string;
+  last_success_at?: string;
+  cooldown_until?: string;
   probe_models: string[];
   last_probe_status?: "" | "healthy" | "degraded" | "error";
   last_probe_at?: string | null;

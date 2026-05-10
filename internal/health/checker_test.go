@@ -393,6 +393,291 @@ func TestRefreshAccountWaitsForCpaAuthIndex(t *testing.T) {
 	}
 }
 
+func TestCodexQuotaUnauthorizedDoesNotMarkCredentialNeedsLogin(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"files": []map[string]any{
+					{
+						"id":         "codex-user@example.com-plus.json",
+						"auth_index": "idx_1",
+						"provider":   "codex",
+						"email":      "user@example.com",
+						"id_token": map[string]any{
+							"chatgpt_account_id": "acct_123",
+							"plan_type":          "plus",
+						},
+					},
+				},
+			})
+		case "/api/provider/codex/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{"id": "gpt-5-codex"}},
+			})
+		case "/v0/management/api-call":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status_code": 401,
+				"body":        `{"error":"unauthorized"}`,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       server.URL,
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:               "Codex",
+		SourceKind:          "cpa",
+		CpaServiceID:        &serviceID,
+		CpaProvider:         "codex",
+		CpaAccountKey:       "codex-user@example.com-plus",
+		CpaOpenaiID:         "acct_123",
+		CpaCredentialStatus: "ok",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, authDir, "", nil)
+	checker.client = server.Client()
+	result, err := checker.RefreshAccount(context.Background(), *acc, RefreshOptions{
+		Models:        true,
+		Quota:         true,
+		WaitAuthIndex: true,
+	})
+	if err == nil || result == nil || result.QuotaError != "HTTP 401" {
+		t.Fatalf("expected quota HTTP 401 error, result=%+v err=%v", result, err)
+	}
+	acc, err = st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account after refresh: %v", err)
+	}
+	if acc.CpaCredentialStatus == "needs_login" {
+		t.Fatalf("quota 401 must not mark credential needs_login")
+	}
+	if acc.CpaQuotaStatus != "error" || acc.CpaQuotaLastError != "HTTP 401" {
+		t.Fatalf("expected quota error state, got status=%q err=%q", acc.CpaQuotaStatus, acc.CpaQuotaLastError)
+	}
+}
+
+func TestCodexQuotaUnauthorizedPreservesBlockedSnapshotStatus(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{{
+				"id":         "codex-user@example.com-plus.json",
+				"auth_index": "idx_1",
+				"provider":   "codex",
+				"email":      "user@example.com",
+				"id_token": map[string]any{
+					"chatgpt_account_id": "acct_123",
+				},
+			}}})
+		case "/v0/management/api-call":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status_code": 401,
+				"body":        `{"error":"unauthorized"}`,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       server.URL,
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:               "Codex",
+		SourceKind:          "cpa",
+		CpaServiceID:        &serviceID,
+		CpaProvider:         "codex",
+		CpaAccountKey:       "codex-user@example.com-plus",
+		CpaOpenaiID:         "acct_123",
+		CpaCredentialStatus: "ok",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := st.UpdateAccountCodexQuota(accountID, `{"rate_limit":{"allowed":false,"limit_reached":true}}`, "2026-05-10 12:00:00"); err != nil {
+		t.Fatalf("seed quota snapshot: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, authDir, "", nil)
+	checker.client = server.Client()
+	if _, err := checker.RefreshAccount(context.Background(), *acc, RefreshOptions{Quota: true, WaitAuthIndex: true}); err == nil {
+		t.Fatalf("expected quota refresh error")
+	}
+	acc, err = st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account after refresh: %v", err)
+	}
+	if acc.CpaQuotaStatus != "blocked" || acc.CpaQuotaLastError != "HTTP 401" {
+		t.Fatalf("expected blocked quota state, got status=%q err=%q", acc.CpaQuotaStatus, acc.CpaQuotaLastError)
+	}
+}
+
+func TestSyncCpaMetadataDoesNotOverwriteNewerLoginWithOlderAuthFile(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID:   "acct_123",
+		Email:       "user@example.com",
+		Type:        "codex",
+		Expired:     "2026-05-10T09:00:00Z",
+		LastRefresh: "2026-05-10T08:00:00Z",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:            "Codex",
+		SourceKind:       "cpa",
+		CpaServiceID:     &serviceID,
+		CpaProvider:      "codex",
+		CpaAccountKey:    "codex-user@example.com-plus",
+		CpaExpiredAt:     "2026-05-10T13:00:00Z",
+		CpaLastRefreshAt: "2026-05-10T12:00:00Z",
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	checker := NewChecker(st, cache, authDir, "", nil)
+	checker.syncCpaMetadata()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.CpaLastRefreshAt != "2026-05-10T12:00:00Z" || acc.CpaExpiredAt != "2026-05-10T13:00:00Z" {
+		t.Fatalf("older auth file metadata overwrote DB state: last_refresh=%q expired=%q", acc.CpaLastRefreshAt, acc.CpaExpiredAt)
+	}
+}
+
+func TestResolveCpaRuntimeDoesNotOverwriteNewerLoginWithOlderAuthFile(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID:   "acct_123",
+		Email:       "user@example.com",
+		Type:        "codex",
+		Expired:     "2026-05-10T09:00:00Z",
+		LastRefresh: "2026-05-10T08:00:00Z",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:            "Codex",
+		SourceKind:       "cpa",
+		CpaServiceID:     &serviceID,
+		CpaProvider:      "codex",
+		CpaAccountKey:    "codex-user@example.com-plus",
+		CpaExpiredAt:     "2026-05-10T13:00:00Z",
+		CpaLastRefreshAt: "2026-05-10T12:00:00Z",
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+
+	checker := NewChecker(st, cache, authDir, "", nil)
+	if _, err := checker.resolveCpaRuntime(context.Background(), *acc, resolveOptions{}); err != nil {
+		t.Fatalf("resolve runtime: %v", err)
+	}
+	acc, err = st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account after resolve: %v", err)
+	}
+	if acc.CpaLastRefreshAt != "2026-05-10T12:00:00Z" || acc.CpaExpiredAt != "2026-05-10T13:00:00Z" {
+		t.Fatalf("older auth file metadata overwrote DB state: last_refresh=%q expired=%q", acc.CpaLastRefreshAt, acc.CpaExpiredAt)
+	}
+}
+
 func TestRefreshAccountPendingAuthIndexIsNotARefreshError(t *testing.T) {
 	t.Parallel()
 
@@ -593,6 +878,107 @@ func TestRefreshAccountReloadsEmbeddedCpaWhenAuthIndexNeverAppears(t *testing.T)
 	defer mu.Unlock()
 	if authFilesAttempts < 2 || healthAttempts == 0 {
 		t.Fatalf("expected auth retry and health probe, authFiles=%d health=%d", authFilesAttempts, healthAttempts)
+	}
+}
+
+func TestRefreshAccountReloadsEmbeddedCpaWhenAuthMetadataMismatches(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_new",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	var mu sync.Mutex
+	reloaded := false
+	authFilesAttempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/healthz":
+			reloaded = true
+			w.WriteHeader(http.StatusOK)
+		case "/v0/management/auth-files":
+			authFilesAttempts++
+			accountID := "acct_old"
+			if reloaded {
+				accountID = "acct_new"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{{
+				"id":         "codex-user@example.com-plus.json",
+				"auth_index": "idx_1",
+				"provider":   "codex",
+				"email":      "user@example.com",
+				"id_token": map[string]any{
+					"chatgpt_account_id": accountID,
+				},
+			}}})
+		case "/v0/management/api-call":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status_code": 200,
+				"body":        `{"period":"day","used":1}`,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       server.URL,
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:         "Codex",
+		SourceKind:    "cpa",
+		CpaServiceID:  &serviceID,
+		CpaProvider:   "codex",
+		CpaAccountKey: "codex-user@example.com-plus",
+		CpaOpenaiID:   "acct_new",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+
+	checker := NewChecker(st, cache, authDir, "", nil)
+	checker.client = server.Client()
+	checker.authIndexAttempts = 1
+	checker.authIndexRetryDelay = time.Millisecond
+	checker.cpaHealthAttempts = 2
+	checker.cpaHealthRetryDelay = time.Millisecond
+	signalPath := filepath.Join(t.TempDir(), "cpa-reload.signal")
+	checker.SetCpaReloadSignalPath(signalPath)
+
+	result, err := checker.RefreshAccount(context.Background(), *acc, RefreshOptions{Quota: true, WaitAuthIndex: true})
+	if err != nil || !result.QuotaRefreshed {
+		t.Fatalf("expected refresh after metadata mismatch reload, result=%+v err=%v", result, err)
+	}
+	if _, err := os.Stat(signalPath); err != nil {
+		t.Fatalf("expected reload signal to be written: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !reloaded || authFilesAttempts < 2 {
+		t.Fatalf("expected reload and auth metadata retry, reloaded=%v attempts=%d", reloaded, authFilesAttempts)
 	}
 }
 

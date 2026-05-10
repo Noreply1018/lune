@@ -519,6 +519,80 @@ VALUES (1, 'req_1', 'primary', 'gpt-5', NULL);
 	}
 }
 
+func TestMigrateV16RejectsDuplicateCpaAccountKeys(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "dup-cpa.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '15');
+CREATE TABLE accounts (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'openai_compat',
+    cpa_service_id INTEGER,
+    cpa_account_key TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO accounts (id, label, source_kind, cpa_service_id, cpa_account_key)
+VALUES
+    (1, 'dup-a', 'cpa', 1, 'codex-user@example.com-plus'),
+    (2, 'dup-b', 'cpa', 1, 'codex-user@example.com-plus');
+`); err != nil {
+		t.Fatalf("seed duplicate schema: %v", err)
+	}
+	db.Close()
+
+	st, err := New(dbPath)
+	if st != nil {
+		_ = st.Close()
+	}
+	if err == nil {
+		t.Fatalf("expected migration to reject duplicate CPA account keys")
+	}
+}
+
+func TestMigrateV16BackfillsBlockedQuotaStatus(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "quota-backfill.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '15');
+CREATE TABLE accounts (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'openai_compat',
+    cpa_service_id INTEGER,
+    cpa_provider TEXT NOT NULL DEFAULT '',
+    cpa_account_key TEXT NOT NULL DEFAULT '',
+    codex_quota_json TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO accounts (id, label, source_kind, cpa_service_id, cpa_provider, cpa_account_key, codex_quota_json)
+VALUES (1, 'blocked', 'cpa', 1, 'codex', 'codex-user@example.com-plus', '{"rate_limit":{"allowed":false,"limit_reached":true}}');
+`); err != nil {
+		t.Fatalf("seed quota schema: %v", err)
+	}
+	db.Close()
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("open store with migration: %v", err)
+	}
+	defer st.Close()
+
+	var status string
+	if err := st.DB().QueryRow(`SELECT cpa_quota_status FROM accounts WHERE id=1`).Scan(&status); err != nil {
+		t.Fatalf("read quota status: %v", err)
+	}
+	if status != "blocked" {
+		t.Fatalf("expected blocked quota status, got %q", status)
+	}
+}
+
 func TestMigrateV15RepairsMissingRequestLogPoolID(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "legacy-v15-missing-pool-id.db")
 	db, err := sql.Open("sqlite", dbPath)

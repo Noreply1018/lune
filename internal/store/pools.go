@@ -5,6 +5,19 @@ import (
 	"fmt"
 )
 
+const accountRoutableWhereSQL = `a.enabled = 1
+	AND a.status IN ('healthy', 'degraded')
+	AND (a.serving_status <> 'cooldown' OR (a.cooldown_until <> '' AND datetime(a.cooldown_until) <= datetime('now')))
+	AND (
+		a.source_kind <> 'cpa'
+		OR (
+			a.cpa_credential_status NOT IN ('needs_login', 'refresh_failed', 'runtime_pending', 'runtime_error', 'auth_suspect')
+			AND a.cpa_quota_status <> 'blocked'
+		)
+	)`
+
+const routableAccountWhereSQL = `pm.enabled = 1 AND ` + accountRoutableWhereSQL
+
 func (s *Store) ListPools() ([]Pool, error) {
 	rows, err := s.db.Query(`
 		SELECT p.id, p.label, p.priority, p.enabled, p.created_at, p.updated_at,
@@ -15,7 +28,7 @@ func (s *Store) ListPools() ([]Pool, error) {
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
+			 WHERE pm.pool_id = p.id AND ` + routableAccountWhereSQL + `) AS routable_account_count
 		FROM pools p
 		ORDER BY p.priority ASC, p.id ASC`)
 	if err != nil {
@@ -57,7 +70,7 @@ func (s *Store) GetPool(id int64) (*Pool, error) {
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
+			 WHERE pm.pool_id = p.id AND `+routableAccountWhereSQL+`) AS routable_account_count
 		FROM pools p
 		WHERE p.id = ?`, id)
 
@@ -88,7 +101,7 @@ func (s *Store) GetPoolByLabel(label string) (*Pool, error) {
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS routable_account_count
+			 WHERE pm.pool_id = p.id AND `+routableAccountWhereSQL+`) AS routable_account_count
 		FROM pools p
 		WHERE p.label = ?`, label)
 
@@ -295,6 +308,38 @@ func (s *Store) AddPoolMember(poolID, accountID int64) (int64, error) {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+func (s *Store) AddPoolMemberIdempotent(poolID, accountID int64) (int64, bool, error) {
+	var maxPos sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MAX(position) FROM pool_members WHERE pool_id = ?`, poolID).Scan(&maxPos); err != nil {
+		return 0, false, err
+	}
+	nextPos := 0
+	if maxPos.Valid {
+		nextPos = int(maxPos.Int64) + 1
+	}
+
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO pool_members (pool_id, account_id, position, enabled) VALUES (?, ?, ?, 1)`,
+		poolID, accountID, nextPos,
+	)
+	if err != nil {
+		return 0, false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, err
+	}
+
+	var id int64
+	if err := s.db.QueryRow(
+		`SELECT id FROM pool_members WHERE pool_id = ? AND account_id = ?`,
+		poolID, accountID,
+	).Scan(&id); err != nil {
+		return 0, false, err
+	}
+	return id, affected > 0, nil
 }
 
 // RemovePoolMember removes a member by its ID.

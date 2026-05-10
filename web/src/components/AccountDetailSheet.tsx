@@ -27,6 +27,7 @@ import {
   getAccessLabel,
   getAccountHealth,
   getCpaCredentialMeta,
+  getCpaQuotaErrorMeta,
   getCpaSubscriptionErrorMeta,
   getExpiryMeta,
   parseQuotaDisplay,
@@ -309,6 +310,7 @@ function OverviewPanel({
           : stats.successRate >= 0.8
             ? "warning"
             : "danger";
+  const quotaError = getCpaQuotaErrorMeta(account);
 
   return (
     <div className="space-y-6">
@@ -348,17 +350,40 @@ function OverviewPanel({
       </section>
 
       {codexQuota ? (
-        <CodexQuotaBarsFull
-          quota={codexQuota}
-          fetchedAt={account.codex_quota_fetched_at}
-          planType={account.cpa_plan_type}
-        />
+        <div className="space-y-2">
+          <CodexQuotaBarsFull
+            quota={codexQuota}
+            fetchedAt={account.codex_quota_fetched_at}
+            planType={account.cpa_plan_type}
+          />
+          {quotaError ? (
+            <p
+              className={cn(
+                "px-1 text-xs",
+                quotaError.tone === "danger" ? "text-status-red" : "text-status-yellow",
+              )}
+            >
+              {quotaError.label}：{quotaError.detail}
+            </p>
+          ) : null}
+        </div>
       ) : account.cpa_provider === "codex" ? (
         <section className="space-y-2.5 rounded-[1.2rem] border border-moon-200/55 bg-white/60 px-4 py-4">
           <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Quota</p>
           <CodexQuotaBarsPendingCompact />
-          <p className="text-xs text-moon-400">
-            额度快照正在同步，完成后会自动填充。
+          <p
+            className={cn(
+              "text-xs",
+              quotaError?.tone === "danger"
+                ? "text-status-red"
+                : quotaError?.tone === "warning"
+                  ? "text-status-yellow"
+                  : "text-moon-400",
+            )}
+          >
+            {quotaError
+              ? `${quotaError.label}：${quotaError.detail}`
+              : "额度快照正在同步，完成后会自动填充。"}
           </p>
         </section>
       ) : (

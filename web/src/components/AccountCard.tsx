@@ -20,6 +20,7 @@ import {
   getAccessLabel,
   getAccountHealth,
   getCpaCredentialMeta,
+  getCpaQuotaErrorMeta,
   getCpaSubscriptionErrorMeta,
   getExpiryMeta,
   parseQuotaDisplay,
@@ -81,6 +82,7 @@ export default function AccountCard({
   const credential = account ? getCpaCredentialMeta(account) : null;
   const credentialLabel = credential?.label === "需要重新登录" ? "请重登" : credential?.label;
   const subscriptionError = account ? getCpaSubscriptionErrorMeta(account) : null;
+  const quotaError = account ? getCpaQuotaErrorMeta(account) : null;
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
   // Every non-Codex account — direct as well as non-Codex CPA (e.g. Claude) —
   // gets the dual-row signal strip so both card variants share the same height.
@@ -227,6 +229,19 @@ export default function AccountCard({
               title={subscriptionError.detail}
             >
               {subscriptionError.label}
+            </span>
+          ) : null}
+          {quotaError ? (
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5",
+                quotaError.tone === "danger"
+                  ? "bg-status-red/10 text-status-red"
+                  : "bg-status-yellow/12 text-status-yellow",
+              )}
+              title={quotaError.detail}
+            >
+              {quotaError.label}
             </span>
           ) : null}
         </div>

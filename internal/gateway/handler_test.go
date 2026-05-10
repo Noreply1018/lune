@@ -85,7 +85,7 @@ func TestGatewayNoHealthyAccountLogsHTTPStatus(t *testing.T) {
 	assertLatestLogStatus(t, st, 503)
 }
 
-func TestGatewaySuccessClearsCpaCredentialError(t *testing.T) {
+func TestGatewaySkipsCpaAccountThatNeedsLogin(t *testing.T) {
 	st, cache, handler, token := newHandlerTestStore(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/responses") {
@@ -133,13 +133,68 @@ func TestGatewaySuccessClearsCpaCredentialError(t *testing.T) {
 	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","messages":[{"role":"user","content":"hi"}]}`)
 	rr := httptest.NewRecorder()
 	req.ServeHTTP(rr, req.Request)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaCredentialStatus != "needs_login" {
+		t.Fatalf("expected credential status to remain needs_login, got %q", acc.CpaCredentialStatus)
+	}
+}
+
+func TestGatewayCpaAuthFailureDoesNotOverwriteDiscoveryStatus(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"refresh token invalid"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:               "Codex",
+		SourceKind:          "cpa",
+		CpaServiceID:        &serviceID,
+		CpaProvider:         "codex",
+		CpaCredentialStatus: "ok",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if err := st.RefreshAccountModels(accountID, []string{"gpt-5-codex"}); err != nil {
+		t.Fatalf("RefreshAccountModels: %v", err)
+	}
+	if err := st.UpdateAccountHealth(accountID, "healthy", ""); err != nil {
+		t.Fatalf("UpdateAccountHealth: %v", err)
+	}
+	if _, err := st.AddPoolMember(*token.PoolID, accountID); err != nil {
+		t.Fatalf("AddPoolMember: %v", err)
+	}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
 	}
 
 	waitForGatewayTest(t, func() bool {
 		acc, err := st.GetAccount(accountID)
-		return err == nil && acc != nil && acc.CpaCredentialStatus == "ok"
+		return err == nil && acc != nil && acc.CpaCredentialStatus == "needs_login" && acc.Status == "healthy"
 	})
 }
 
@@ -296,7 +351,7 @@ func TestResponsesStreamFailedLogsMessage(t *testing.T) {
 	}
 	waitForGatewayTest(t, func() bool {
 		acc, err := st.GetAccount(accountID)
-		return err == nil && acc != nil && acc.Status == "error" && acc.LastError == upstreamMsg
+		return err == nil && acc != nil && acc.Status == "healthy" && acc.ServingStatus == "cooldown" && acc.LastError == upstreamMsg
 	})
 }
 
@@ -329,7 +384,7 @@ func TestStreamRetryableStatusSingleAttemptUpdatesHealth(t *testing.T) {
 	}
 	waitForGatewayTest(t, func() bool {
 		acc, err := st.GetAccount(accountID)
-		return err == nil && acc != nil && acc.Status == "error" && acc.LastError == upstreamMsg
+		return err == nil && acc != nil && acc.Status == "healthy" && acc.ServingStatus == "cooldown" && acc.LastError == upstreamMsg
 	})
 }
 
@@ -376,12 +431,12 @@ func TestCpaStreamRetryableStatusUpdatesHealthAndPreservesMessage(t *testing.T) 
 	firstLogID := log.ID
 	waitForGatewayTest(t, func() bool {
 		acc, err := st.GetAccount(badAccountID)
-		if err != nil || acc == nil || acc.Status != "error" || acc.LastError != failedMsg {
+		if err != nil || acc == nil || acc.Status != "healthy" || acc.ServingStatus != "cooldown" || acc.LastError != failedMsg {
 			return false
 		}
 		snap := cache.Get()
 		cached := snap.Accounts[badAccountID]
-		return cached != nil && cached.Status == "error"
+		return cached != nil && cached.ServingStatus == "cooldown"
 	})
 
 	req = authenticatedRequest(handler, token, `{"model":"gpt-5-codex","stream":true,"input":"hi again"}`)

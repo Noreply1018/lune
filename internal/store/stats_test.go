@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestGetOverviewCountsDegradedPoolsAsHealthy(t *testing.T) {
 	st := newTestStore(t)
@@ -20,6 +23,9 @@ func TestGetOverviewCountsDegradedPoolsAsHealthy(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create account: %v", err)
+	}
+	if err := st.UpdateAccountHealth(accountID, "degraded", ""); err != nil {
+		t.Fatalf("mark degraded: %v", err)
 	}
 
 	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
@@ -70,6 +76,9 @@ func TestGetOverviewCountsPoolHealthyWhenAnyRoutableAccountExists(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create error account: %v", err)
 	}
+	if err := st.UpdateAccountHealth(errorID, "error", "upstream unavailable"); err != nil {
+		t.Fatalf("mark error: %v", err)
+	}
 
 	if _, err := st.AddPoolMember(poolID, routableID); err != nil {
 		t.Fatalf("add healthy member: %v", err)
@@ -85,6 +94,98 @@ func TestGetOverviewCountsPoolHealthyWhenAnyRoutableAccountExists(t *testing.T) 
 
 	if overview.PoolsHealthy != 1 {
 		t.Fatalf("expected pool with at least one routable account to count as healthy, got %d", overview.PoolsHealthy)
+	}
+}
+
+func TestGetOverviewUsesRoutableAccountState(t *testing.T) {
+	st := newTestStore(t)
+
+	quotaPoolID, err := st.CreatePool("Quota blocked", 0, true)
+	if err != nil {
+		t.Fatalf("create quota pool: %v", err)
+	}
+	quotaID, err := st.CreateAccount(&Account{
+		Label:          "quota-blocked",
+		SourceKind:     "cpa",
+		CpaProvider:    "codex",
+		CpaAccountKey:  "codex-quota@example.com-plus",
+		CpaQuotaStatus: "blocked",
+		Enabled:        true,
+	})
+	if err != nil {
+		t.Fatalf("create quota account: %v", err)
+	}
+	if _, err := st.AddPoolMember(quotaPoolID, quotaID); err != nil {
+		t.Fatalf("add quota member: %v", err)
+	}
+
+	cooldownPoolID, err := st.CreatePool("Cooldown", 1, true)
+	if err != nil {
+		t.Fatalf("create cooldown pool: %v", err)
+	}
+	cooldownID, err := st.CreateAccount(&Account{
+		Label:      "cooldown-account",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://example.com/v1",
+		APIKey:     "sk-cooldown",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create cooldown account: %v", err)
+	}
+	if err := st.MarkAccountServingFailure(cooldownID, "connection refused", time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("mark cooldown: %v", err)
+	}
+	if _, err := st.AddPoolMember(cooldownPoolID, cooldownID); err != nil {
+		t.Fatalf("add cooldown member: %v", err)
+	}
+
+	emptyCooldownPoolID, err := st.CreatePool("Empty cooldown", 2, true)
+	if err != nil {
+		t.Fatalf("create empty cooldown pool: %v", err)
+	}
+	emptyCooldownID, err := st.CreateAccount(&Account{
+		Label:         "empty-cooldown-account",
+		SourceKind:    "openai_compat",
+		BaseURL:       "https://example.com/v1",
+		APIKey:        "sk-empty-cooldown",
+		ServingStatus: "cooldown",
+		CooldownUntil: "",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create empty cooldown account: %v", err)
+	}
+	if _, err := st.AddPoolMember(emptyCooldownPoolID, emptyCooldownID); err != nil {
+		t.Fatalf("add empty cooldown member: %v", err)
+	}
+
+	overview, err := st.GetOverview()
+	if err != nil {
+		t.Fatalf("get overview: %v", err)
+	}
+
+	if overview.PoolsTotal != 3 {
+		t.Fatalf("expected 3 pools total, got %d", overview.PoolsTotal)
+	}
+	if overview.PoolsHealthy != 0 {
+		t.Fatalf("expected no healthy pools when all accounts are non-routable, got %d", overview.PoolsHealthy)
+	}
+	if overview.AccountsTotal != 3 {
+		t.Fatalf("expected 3 enabled accounts, got %d", overview.AccountsTotal)
+	}
+	if overview.AccountsHealthy != 0 {
+		t.Fatalf("expected no healthy accounts when all accounts are non-routable, got %d", overview.AccountsHealthy)
+	}
+
+	var unhealthyPools int
+	for _, alert := range overview.Alerts {
+		if alert.Type == "pool_unhealthy" {
+			unhealthyPools++
+		}
+	}
+	if unhealthyPools != 3 {
+		t.Fatalf("expected 3 pool_unhealthy alerts, got %d: %+v", unhealthyPools, overview.Alerts)
 	}
 }
 

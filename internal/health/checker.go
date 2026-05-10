@@ -424,8 +424,12 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 		c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
 		return nil, rerr
 	}
-	if err := c.store.UpdateAccountCpaMetadata(acc.ID, authFile.Expired, authFile.LastRefresh, authFile.Disabled); err != nil {
-		slog.Warn("resolve cpa runtime: update metadata", "account_id", acc.ID, "err", err)
+	if !authFileMetadataIsOlder(acc.CpaLastRefreshAt, authFile.LastRefresh) {
+		if err := c.store.UpdateAccountCpaMetadata(acc.ID, authFile.Expired, authFile.LastRefresh, authFile.Disabled); err != nil {
+			slog.Warn("resolve cpa runtime: update metadata", "account_id", acc.ID, "err", err)
+		}
+	} else {
+		slog.Warn("resolve cpa runtime: skip older auth file metadata", "account_id", acc.ID, "account_key", acc.CpaAccountKey, "db_last_refresh", acc.CpaLastRefreshAt, "file_last_refresh", authFile.LastRefresh)
 	}
 	if authFile.Disabled {
 		rerr := &resolveError{status: "needs_login", reason: "disabled", message: "CPA credential disabled"}
@@ -461,7 +465,7 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 		return nil, rerr
 	}
 
-	meta, err := c.resolveAuthMetadata(ctx, client, *svc, acc.CpaAccountKey, opts.WaitAuthIndex)
+	meta, err := c.resolveAuthMetadata(ctx, client, *svc, acc.CpaAccountKey, *authFile, opts.WaitAuthIndex)
 	if err == nil && meta.authIndex != "" {
 		rt.authMeta = meta
 		c.markCpaCredentialOK(acc.ID)
@@ -480,7 +484,7 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 	return nil, rerr
 }
 
-func (c *Checker) resolveAuthMetadata(ctx context.Context, client *cpa.ManagementClient, svc store.CpaService, accountKey string, wait bool) (authFileMetadata, error) {
+func (c *Checker) resolveAuthMetadata(ctx context.Context, client *cpa.ManagementClient, svc store.CpaService, accountKey string, authFile cpa.CpaAuthFile, wait bool) (authFileMetadata, error) {
 	attempts := 1
 	if wait {
 		attempts = c.authIndexAttempts
@@ -489,14 +493,27 @@ func (c *Checker) resolveAuthMetadata(ctx context.Context, client *cpa.Managemen
 		}
 	}
 	meta, err := c.waitForAuthMetadata(ctx, client, accountKey, attempts)
-	if err == nil || !wait || !isAuthIndexMissingError(err) || c.cpaReloadSignalPath == "" {
+	if err == nil && authMetadataMatchesAuthFile(meta, authFile) {
+		return meta, nil
+	}
+	if err == nil {
+		err = fmt.Errorf("CPA auth index metadata mismatch")
+	}
+	if !wait || (!isAuthIndexMissingError(err) && !isAuthMetadataMismatchError(err)) || c.cpaReloadSignalPath == "" {
 		return meta, err
 	}
 
 	if reloadErr := c.requestCpaRuntimeReload(ctx, &svc); reloadErr != nil {
 		return authFileMetadata{}, reloadErr
 	}
-	return c.waitForAuthMetadata(ctx, client, accountKey, attempts)
+	meta, err = c.waitForAuthMetadata(ctx, client, accountKey, attempts)
+	if err != nil {
+		return meta, err
+	}
+	if !authMetadataMatchesAuthFile(meta, authFile) {
+		return meta, fmt.Errorf("CPA auth index metadata mismatch")
+	}
+	return meta, nil
 }
 
 func (c *Checker) waitForAuthMetadata(ctx context.Context, client *cpa.ManagementClient, accountKey string, attempts int) (authFileMetadata, error) {
@@ -551,6 +568,20 @@ func isAuthIndexMissingError(err error) bool {
 	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "auth index not ready") || strings.Contains(text, "auth file not found")
+}
+
+func isAuthMetadataMismatchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "metadata mismatch")
+}
+
+func (c *Checker) RequestCpaRuntimeReload(ctx context.Context, svc *store.CpaService) error {
+	if strings.TrimSpace(c.cpaReloadSignalPath) == "" {
+		return nil
+	}
+	return c.requestCpaRuntimeReload(ctx, svc)
 }
 
 func (c *Checker) RefreshAccount(ctx context.Context, acc store.Account, opts RefreshOptions) (*RefreshResult, error) {
@@ -780,6 +811,10 @@ func (c *Checker) fetchCodexSubscriptions(ctx context.Context) {
 type authFileMetadata struct {
 	authIndex             string
 	subscriptionExpiresAt string
+	provider              string
+	email                 string
+	openaiID              string
+	planType              string
 }
 
 func (c *Checker) listAuthMetadata(ctx context.Context, client *cpa.ManagementClient) (map[string]authFileMetadata, error) {
@@ -795,6 +830,10 @@ func (c *Checker) listAuthMetadata(ctx context.Context, client *cpa.ManagementCl
 		meta := authFileMetadata{
 			authIndex:             f.AuthIndex,
 			subscriptionExpiresAt: cpa.NormalizeSubscriptionActiveUntil(f.IDToken.ChatGPTSubscriptionActiveUntil),
+			provider:              firstNonEmpty(f.Provider, f.Type),
+			email:                 f.Email,
+			openaiID:              f.IDToken.ChatGPTAccountID,
+			planType:              f.IDToken.PlanType,
 		}
 		for _, key := range authFileCandidateKeys(f) {
 			keyToMeta[key] = meta
@@ -842,6 +881,33 @@ func (c *Checker) findAuthMetadata(ctx context.Context, client *cpa.ManagementCl
 	return authMeta, nil
 }
 
+func authMetadataMatchesAuthFile(meta authFileMetadata, authFile cpa.CpaAuthFile) bool {
+	if meta.provider != "" && authFile.Type != "" && !strings.EqualFold(meta.provider, authFile.Type) {
+		return false
+	}
+	if meta.email != "" && authFile.Email != "" && !strings.EqualFold(meta.email, authFile.Email) {
+		return false
+	}
+	if meta.openaiID != "" && authFile.AccountID != "" && meta.openaiID != authFile.AccountID {
+		return false
+	}
+	if meta.planType != "" {
+		if info, err := cpa.ParseAccountInfoFromTokens(authFile.IDToken, authFile.AccessToken); err == nil && info.PlanType != "" && info.PlanType != meta.planType {
+			return false
+		}
+	}
+	return true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.ManagementClient, acc store.Account, authIndex string) error {
 	header := map[string]string{
 		"Authorization":      "Bearer $TOKEN$",
@@ -851,28 +917,71 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 	if err != nil {
 		return err
 	}
+	checkedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 	if resp.StatusCode != http.StatusOK {
-		if isCpaAuthFailure(resp.StatusCode, resp.Body) {
-			c.markCpaCredentialNeedsLogin(acc.ID, credentialReasonFromAuthText(resp.Body), fmt.Sprintf("HTTP %d", resp.StatusCode))
+		msg := fmt.Sprintf("HTTP %d", resp.StatusCode)
+		status := "error"
+		if previousQuotaSnapshotBlocked(acc.CodexQuotaJSON) {
+			status = "blocked"
 		}
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		_ = c.store.UpdateAccountCodexQuotaStatus(acc.ID, status, msg, checkedAt)
+		c.cache.Invalidate()
+		return fmt.Errorf("%s", msg)
 	}
 	body := strings.TrimSpace(resp.Body)
 	if body == "" {
+		_ = c.store.UpdateAccountCodexQuotaStatus(acc.ID, "error", "empty quota response", checkedAt)
 		return fmt.Errorf("empty quota response")
 	}
 	var sanity map[string]any
 	if err := json.Unmarshal([]byte(body), &sanity); err != nil {
+		_ = c.store.UpdateAccountCodexQuotaStatus(acc.ID, "error", "invalid quota JSON", checkedAt)
 		return fmt.Errorf("invalid quota JSON: %w", err)
 	}
 
-	fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	fetchedAt := checkedAt
 	if err := c.store.UpdateAccountCodexQuota(acc.ID, body, fetchedAt); err != nil {
 		return fmt.Errorf("persist quota: %w", err)
+	}
+	if quotaSnapshotBlocked(sanity) {
+		if err := c.store.UpdateAccountCodexQuotaStatus(acc.ID, "blocked", "quota blocked by upstream", checkedAt); err != nil {
+			return fmt.Errorf("persist quota status: %w", err)
+		}
 	}
 	c.markCpaCredentialOK(acc.ID)
 	c.cache.Invalidate()
 	return nil
+}
+
+func quotaSnapshotBlocked(raw map[string]any) bool {
+	for _, key := range []string{"allowed", "is_allowed"} {
+		if v, ok := raw[key].(bool); ok && !v {
+			return true
+		}
+	}
+	for _, key := range []string{"limit_reached", "limited", "blocked"} {
+		if v, ok := raw[key].(bool); ok && v {
+			return true
+		}
+	}
+	for _, key := range []string{"rate_limit", "limits"} {
+		if nested, ok := raw[key].(map[string]any); ok && quotaSnapshotBlocked(nested) {
+			return true
+		}
+	}
+	return false
+}
+
+func previousQuotaSnapshotBlocked(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		return false
+	}
+	return quotaSnapshotBlocked(snapshot)
 }
 
 func (c *Checker) refreshCodexQuotaResolved(ctx context.Context, rt *cpaRuntime) (bool, error) {
@@ -934,7 +1043,12 @@ func (c *Checker) syncCpaMetadata() {
 			}
 			continue
 		}
-		c.store.UpdateAccountCpaMetadata(acc.ID, f.Expired, f.LastRefresh, f.Disabled)
+		if !authFileMetadataIsOlder(acc.CpaLastRefreshAt, f.LastRefresh) {
+			c.store.UpdateAccountCpaMetadata(acc.ID, f.Expired, f.LastRefresh, f.Disabled)
+		} else {
+			slog.Warn("sync cpa metadata: skip older auth file metadata", "account_id", acc.ID, "account_key", acc.CpaAccountKey, "db_last_refresh", acc.CpaLastRefreshAt, "file_last_refresh", f.LastRefresh)
+			continue
+		}
 		if strings.ToLower(f.Type) == "codex" {
 			if expiresAt := cpa.SubscriptionActiveUntilFromTokens(f.IDToken, f.AccessToken); expiresAt != "" {
 				fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
@@ -946,6 +1060,29 @@ func (c *Checker) syncCpaMetadata() {
 			c.markCpaCredentialNeedsLogin(acc.ID, "disabled", "CPA credential disabled")
 		}
 	}
+}
+
+func authFileMetadataIsOlder(existingLastRefresh, fileLastRefresh string) bool {
+	existing, okExisting := parseFlexibleTime(existingLastRefresh)
+	file, okFile := parseFlexibleTime(fileLastRefresh)
+	if !okExisting || !okFile {
+		return false
+	}
+	return file.Before(existing)
+}
+
+func parseFlexibleTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
+		t, err := time.Parse(layout, value)
+		if err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func (c *Checker) markCpaCredentialOK(accountID int64) {

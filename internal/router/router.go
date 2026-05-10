@@ -2,6 +2,8 @@ package router
 
 import (
 	"errors"
+	"strings"
+	"time"
 
 	"lune/internal/store"
 )
@@ -73,7 +75,7 @@ func (rt *Router) resolveToAccount(snap *store.CacheSnapshot, model string, pool
 	if !ok {
 		return nil, ErrNoRoute
 	}
-	if !acc.Enabled {
+	if !accountRoutable(acc) {
 		return nil, ErrNoHealthyAccount
 	}
 	// When the account has a discovered model list, reject models that are not
@@ -121,10 +123,7 @@ func (rt *Router) resolveInPool(snap *store.CacheSnapshot, model string, poolID 
 			continue
 		}
 		acc, ok := snap.Accounts[m.AccountID]
-		if !ok || !acc.Enabled {
-			continue
-		}
-		if acc.Status != "healthy" && acc.Status != "degraded" {
+		if !ok || !accountRoutable(acc) {
 			continue
 		}
 		if !accountHasModel(snap, m.AccountID, model) {
@@ -144,10 +143,7 @@ func (rt *Router) resolveInPool(snap *store.CacheSnapshot, model string, poolID 
 			continue
 		}
 		acc, ok := snap.Accounts[m.AccountID]
-		if !ok || !acc.Enabled {
-			continue
-		}
-		if acc.Status != "healthy" && acc.Status != "degraded" {
+		if !ok || !accountRoutable(acc) {
 			continue
 		}
 		return &ResolvedRoute{
@@ -159,6 +155,44 @@ func (rt *Router) resolveInPool(snap *store.CacheSnapshot, model string, poolID 
 	}
 
 	return nil, ErrNoHealthyAccount
+}
+
+func accountRoutable(acc *store.Account) bool {
+	if acc == nil || !acc.Enabled {
+		return false
+	}
+	if acc.Status != "healthy" && acc.Status != "degraded" {
+		return false
+	}
+	if strings.EqualFold(acc.ServingStatus, "cooldown") {
+		if cooldownUntil, ok := parseRouteTime(acc.CooldownUntil); !ok || cooldownUntil.After(time.Now().UTC()) {
+			return false
+		}
+	}
+	if acc.SourceKind == "cpa" {
+		switch strings.ToLower(acc.CpaCredentialStatus) {
+		case "needs_login", "refresh_failed", "runtime_pending", "runtime_error", "auth_suspect":
+			return false
+		}
+		if strings.EqualFold(acc.CpaQuotaStatus, "blocked") {
+			return false
+		}
+	}
+	return true
+}
+
+func parseRouteTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
+		t, err := time.Parse(layout, value)
+		if err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func accountHasModel(snap *store.CacheSnapshot, accountID int64, model string) bool {

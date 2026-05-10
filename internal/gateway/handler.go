@@ -19,6 +19,8 @@ import (
 	"lune/internal/webutil"
 )
 
+const servingCooldownDuration = 5 * time.Minute
+
 type Handler struct {
 	router *router.Router
 	cache  *store.RoutingCache
@@ -167,7 +169,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// network/connection error
 			exclude = append(exclude, resolved.AccountID)
 			lastErr = result.Err
-			h.updateHealth(resolved.AccountID, "error", result.Err.Error())
+			h.recordServingFailure(resolved.AccountID, result.Err.Error())
 
 			if !IsRetryable(result.Err) {
 				webutil.WriteGatewayError(w, 502, "upstream_failed", result.Err.Error())
@@ -179,7 +181,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if IsRetryableStatus(result.StatusCode) {
 			errMsg := upstreamErrorMessage(result, fmt.Sprintf("HTTP %d", result.StatusCode))
-			h.updateHealth(resolved.AccountID, "error", errMsg)
+			h.recordServingFailure(resolved.AccountID, errMsg)
 			lastStatusCode = result.StatusCode
 
 			if isStream {
@@ -222,7 +224,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			errMsg = upstreamErrorMessage(result, "")
 		}
 		if success {
-			h.updateHealth(resolved.AccountID, "healthy", "")
+			h.recordServingSuccess(resolved.AccountID)
 			if resolved.Account.SourceKind == "cpa" {
 				h.updateCpaCredential(resolved.AccountID, "ok", "", "")
 			}
@@ -235,9 +237,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if resolved.Account.SourceKind == "cpa" && isGatewayAuthFailure(result.StatusCode, result.Body) {
 			msg := fmt.Sprintf("HTTP %d", result.StatusCode)
 			h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
-			h.updateHealth(resolved.AccountID, "error", msg)
 		} else if result.Stream != nil && result.Stream.Failed {
-			h.updateHealth(resolved.AccountID, "error", errMsg)
+			h.recordServingFailure(resolved.AccountID, errMsg)
 		}
 
 		h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed)
@@ -351,6 +352,20 @@ func (h *Handler) updateHealth(accountID int64, status, lastError string) {
 		_ = h.store.UpdateAccountHealth(accountID, status, lastError)
 		h.cache.Invalidate()
 	}()
+}
+
+func (h *Handler) recordServingSuccess(accountID int64) {
+	_ = h.store.MarkAccountServingSuccess(accountID)
+	h.cache.Invalidate()
+}
+
+func (h *Handler) recordServingFailure(accountID int64, lastError string) {
+	if lastError == "" {
+		lastError = "upstream request failed"
+	}
+	until := time.Now().UTC().Add(servingCooldownDuration)
+	_ = h.store.MarkAccountServingFailure(accountID, lastError, until)
+	h.cache.Invalidate()
 }
 
 func (h *Handler) updateCpaCredential(accountID int64, status, reason, lastError string) {

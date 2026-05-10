@@ -31,6 +31,16 @@ type Account struct {
 	// codex quota snapshot (updated by health loop)
 	CodexQuotaJSON      string `json:"codex_quota_json,omitempty"`
 	CodexQuotaFetchedAt string `json:"codex_quota_fetched_at,omitempty"`
+	CpaQuotaStatus      string `json:"cpa_quota_status,omitempty"`
+	CpaQuotaLastError   string `json:"cpa_quota_last_error,omitempty"`
+	CpaQuotaCheckedAt   string `json:"cpa_quota_checked_at,omitempty"`
+
+	// serving circuit breaker state (updated by gateway traffic)
+	ServingStatus string `json:"serving_status,omitempty"`
+	FailureCount  int    `json:"failure_count,omitempty"`
+	LastFailureAt string `json:"last_failure_at,omitempty"`
+	LastSuccessAt string `json:"last_success_at,omitempty"`
+	CooldownUntil string `json:"cooldown_until,omitempty"`
 
 	// probe configuration + last self-check result (direct accounts)
 	ProbeModels     []string `json:"probe_models"`

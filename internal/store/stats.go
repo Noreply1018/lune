@@ -20,43 +20,30 @@ func (s *Store) GetOverview() (*Overview, error) {
 			(SELECT COUNT(*)
 			 FROM pool_members pm
 			 JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS strictly_healthy_count
+			 WHERE pm.pool_id = p.id AND ` + routableAccountWhereSQL + `) AS routable_account_count
 		FROM pools p`)
 	if err == nil {
 		defer poolRows.Close()
 		for poolRows.Next() {
 			var enabled int
 			var accountCount int
-			var strictlyHealthyCount int
-			if err := poolRows.Scan(&enabled, &accountCount, &strictlyHealthyCount); err != nil {
+			var routableAccountCount int
+			if err := poolRows.Scan(&enabled, &accountCount, &routableAccountCount); err != nil {
 				continue
 			}
 			if enabled == 0 {
 				continue
 			}
 			o.PoolsTotal++
-			if accountCount > 0 && strictlyHealthyCount == accountCount {
+			if accountCount > 0 && routableAccountCount > 0 {
 				o.PoolsHealthy++
 			}
 		}
 	}
 
 	// accounts total / healthy (enabled accounts only, to match pool totals)
-	rows, err := s.db.Query(`SELECT status, COUNT(*) FROM accounts WHERE enabled = 1 GROUP BY status`)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var status string
-			var count int
-			if err := rows.Scan(&status, &count); err != nil {
-				continue
-			}
-			o.AccountsTotal += count
-			if status == "healthy" || status == "degraded" {
-				o.AccountsHealthy += count
-			}
-		}
-	}
+	s.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE enabled = 1`).Scan(&o.AccountsTotal)
+	s.db.QueryRow(`SELECT COUNT(*) FROM accounts a WHERE ` + accountRoutableWhereSQL).Scan(&o.AccountsHealthy)
 
 	// models total (distinct model_id from account_models)
 	s.db.QueryRow(`SELECT COUNT(DISTINCT model_id) FROM account_models`).Scan(&o.ModelsTotal)
@@ -198,7 +185,7 @@ func (s *Store) GetOverview() (*Overview, error) {
 			(SELECT COUNT(*)
 			 FROM pool_members pm
 			 JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status IN ('healthy', 'degraded')) AS available_count
+			 WHERE pm.pool_id = p.id AND ` + routableAccountWhereSQL + `) AS available_count
 		FROM pools p
 		WHERE p.enabled = 1`,
 	)

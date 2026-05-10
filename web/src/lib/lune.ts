@@ -71,10 +71,10 @@ export function derivePoolSnapshot(pool: Pool, detail?: PoolDetailResponse): Poo
   const activeMembers = ensureArray(detail.members).filter(
     (member) => member.enabled && member.account?.enabled,
   );
-  const healthyMembers = activeMembers.filter((member) => member.account?.status === "healthy");
-  const availableMembers = activeMembers.filter(
-    (member) => member.account?.status === "healthy" || member.account?.status === "degraded",
+  const availableMembers = activeMembers.filter((member) =>
+    member.account ? isAccountRoutable(member.account) : false,
   );
+  const healthyMembers = availableMembers.filter((member) => member.account?.status === "healthy");
   const memberStatusCounts = ensureArray(detail.members).reduce<NonNullable<PoolSnapshot["memberStatusCounts"]>>(
     (counts, member) => {
       counts.total += 1;
@@ -138,6 +138,26 @@ export function derivePoolSnapshot(pool: Pool, detail?: PoolDetailResponse): Poo
     models: pool.enabled ? Array.from(modelSet).sort() : [],
     health,
   };
+}
+
+export function isAccountRoutable(account: Account): boolean {
+  if (!account.enabled) return false;
+  if (account.status !== "healthy" && account.status !== "degraded") return false;
+  if (account.serving_status === "cooldown") {
+    const until = account.cooldown_until ? new Date(account.cooldown_until).getTime() : Number.NaN;
+    if (Number.isNaN(until) || until > Date.now()) return false;
+  }
+  if (account.source_kind === "cpa") {
+    if (
+      ["needs_login", "refresh_failed", "runtime_pending", "runtime_error", "auth_suspect"].includes(
+        account.cpa_credential_status || "",
+      )
+    ) {
+      return false;
+    }
+    if (account.cpa_quota_status === "blocked") return false;
+  }
+  return true;
 }
 
 export function getAccountHealth(
@@ -204,15 +224,53 @@ export function getCpaCredentialMeta(account: Account): {
 } | null {
   if (account.source_kind !== "cpa") return null;
   const status = account.cpa_credential_status || "unknown";
-  if (!["needs_login", "runtime_pending", "runtime_error"].includes(status)) return null;
+  if (
+    !["needs_login", "refresh_failed", "auth_suspect", "runtime_pending", "runtime_error"].includes(
+      status,
+    )
+  )
+    return null;
   const reason = account.cpa_credential_reason || "";
   const reasonLabel = cpaCredentialReasonLabel(reason);
   const pending = status === "runtime_pending";
   return {
-    label: pending ? "凭据同步中" : status === "runtime_error" ? "CPA Runtime 异常" : "需要重新登录",
+    label: pending
+      ? "凭据同步中"
+      : status === "runtime_error"
+        ? "CPA Runtime 异常"
+        : status === "auth_suspect"
+          ? "鉴权待确认"
+          : status === "refresh_failed"
+            ? "凭据刷新失败"
+            : "需要重新登录",
     detail: pending ? reasonLabel : account.cpa_credential_last_error || reasonLabel,
     tone: pending ? "default" : "danger",
   };
+}
+
+export function getCpaQuotaErrorMeta(account: Account): {
+  label: string;
+  detail: string;
+  tone: "warning" | "danger";
+} | null {
+  if (account.source_kind !== "cpa") return null;
+  if (account.cpa_provider.toLowerCase() !== "codex") return null;
+  const status = account.cpa_quota_status || "";
+  if (status === "blocked") {
+    return {
+      label: "额度不可用",
+      detail: account.cpa_quota_last_error || "额度已耗尽或上游拒绝使用",
+      tone: "danger",
+    };
+  }
+  if (status === "error") {
+    return {
+      label: "额度查询失败",
+      detail: account.cpa_quota_last_error || "最近一次额度查询失败",
+      tone: "warning",
+    };
+  }
+  return null;
 }
 
 export function getCpaSubscriptionErrorMeta(account: Account): {
@@ -252,6 +310,8 @@ export function cpaCredentialReasonLabel(reason: string): string {
       return "CPA 凭证目录未配置";
     case "refresh_failed":
       return "CPA 自动刷新失败";
+    case "auth_suspect":
+      return "鉴权状态待确认";
     case "auth_failed":
       return "CPA 授权失败";
     default:

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,7 +20,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 15
+const v3SchemaVersion = 16
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -75,6 +76,14 @@ CREATE TABLE IF NOT EXISTS accounts (
     cpa_subscription_last_error TEXT NOT NULL DEFAULT '',
     codex_quota_json    TEXT NOT NULL DEFAULT '',
     codex_quota_fetched_at TEXT NOT NULL DEFAULT '',
+    cpa_quota_status TEXT NOT NULL DEFAULT 'unknown',
+    cpa_quota_last_error TEXT NOT NULL DEFAULT '',
+    cpa_quota_checked_at TEXT NOT NULL DEFAULT '',
+    serving_status TEXT NOT NULL DEFAULT 'healthy',
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_failure_at TEXT NOT NULL DEFAULT '',
+    last_success_at TEXT NOT NULL DEFAULT '',
+    cooldown_until TEXT NOT NULL DEFAULT '',
     probe_models        TEXT NOT NULL DEFAULT '[]',
     last_probe_status   TEXT NOT NULL DEFAULT '',
     last_probe_at       TEXT,
@@ -142,6 +151,9 @@ CREATE TABLE IF NOT EXISTS request_logs (
 
 CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_request_logs_pool_id ON request_logs(pool_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_cpa_service_key_unique
+    ON accounts(cpa_service_id, cpa_account_key)
+    WHERE source_kind = 'cpa' AND cpa_service_id IS NOT NULL AND cpa_account_key <> '';
 
 CREATE TABLE IF NOT EXISTS notification_settings (
     id                  INTEGER PRIMARY KEY CHECK (id = 1),
@@ -249,6 +261,9 @@ func (s *Store) migrateV3(dbPath string) error {
 		if err := s.migrateRequestLogPoolColumn(); err != nil {
 			return fmt.Errorf("repair request log pool column: %w", err)
 		}
+		if err := s.ensureCpaAccountUniqueIndex(); err != nil {
+			return fmt.Errorf("repair CPA account unique index: %w", err)
+		}
 		return nil // already at latest
 	}
 
@@ -295,6 +310,11 @@ func (s *Store) migrateV3(dbPath string) error {
 		if ver < 15 {
 			if err := s.migrateCpaCredentialColumns(); err != nil {
 				return fmt.Errorf("migrate CPA credential columns: %w", err)
+			}
+		}
+		if ver < 16 {
+			if err := s.migrateCpaRoutingColumns(); err != nil {
+				return fmt.Errorf("migrate CPA routing columns: %w", err)
 			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
@@ -668,6 +688,179 @@ func (s *Store) migrateCpaCredentialColumns() error {
 	delete(s.schemaCache, "accounts")
 	s.schemaMu.Unlock()
 	return nil
+}
+
+func (s *Store) migrateCpaRoutingColumns() error {
+	exists, err := s.tableExists("accounts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	adds := []struct{ col, ddl string }{
+		{"cpa_quota_status", `ALTER TABLE accounts ADD COLUMN cpa_quota_status TEXT NOT NULL DEFAULT 'unknown'`},
+		{"cpa_quota_last_error", `ALTER TABLE accounts ADD COLUMN cpa_quota_last_error TEXT NOT NULL DEFAULT ''`},
+		{"cpa_quota_checked_at", `ALTER TABLE accounts ADD COLUMN cpa_quota_checked_at TEXT NOT NULL DEFAULT ''`},
+		{"serving_status", `ALTER TABLE accounts ADD COLUMN serving_status TEXT NOT NULL DEFAULT 'healthy'`},
+		{"failure_count", `ALTER TABLE accounts ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0`},
+		{"last_failure_at", `ALTER TABLE accounts ADD COLUMN last_failure_at TEXT NOT NULL DEFAULT ''`},
+		{"last_success_at", `ALTER TABLE accounts ADD COLUMN last_success_at TEXT NOT NULL DEFAULT ''`},
+		{"cooldown_until", `ALTER TABLE accounts ADD COLUMN cooldown_until TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, a := range adds {
+		has, err := s.hasColumn("accounts", a.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.col, err)
+		}
+	}
+	if err := s.ensureCpaAccountUniqueIndex(); err != nil {
+		return err
+	}
+	if err := s.backfillCpaQuotaStatusFromSnapshot(); err != nil {
+		return err
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "accounts")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) ensureCpaAccountUniqueIndex() error {
+	exists, err := s.tableExists("accounts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	for _, col := range []string{"source_kind", "cpa_service_id", "cpa_account_key"} {
+		has, err := s.hasColumn("accounts", col)
+		if err != nil {
+			return err
+		}
+		if !has {
+			return nil
+		}
+	}
+	dups, err := s.duplicateCpaAccountKeys()
+	if err != nil {
+		return err
+	}
+	if len(dups) > 0 {
+		return fmt.Errorf("duplicate CPA account keys prevent unique index: %s", strings.Join(dups, "; "))
+	}
+	_, err = s.db.Exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_cpa_service_key_unique
+ON accounts(cpa_service_id, cpa_account_key)
+WHERE source_kind = 'cpa' AND cpa_service_id IS NOT NULL AND cpa_account_key <> ''`)
+	return err
+}
+
+func (s *Store) duplicateCpaAccountKeys() ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT cpa_service_id, cpa_account_key, COUNT(*)
+		FROM accounts
+		WHERE source_kind = 'cpa' AND cpa_service_id IS NOT NULL AND cpa_account_key <> ''
+		GROUP BY cpa_service_id, cpa_account_key
+		HAVING COUNT(*) > 1
+		ORDER BY cpa_service_id, cpa_account_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var serviceID int64
+		var key string
+		var count int
+		if err := rows.Scan(&serviceID, &key, &count); err != nil {
+			return nil, err
+		}
+		out = append(out, fmt.Sprintf("service_id=%d cpa_account_key=%q count=%d", serviceID, key, count))
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) backfillCpaQuotaStatusFromSnapshot() error {
+	for _, col := range []string{"source_kind", "cpa_provider", "codex_quota_json", "cpa_quota_status"} {
+		has, err := s.hasColumn("accounts", col)
+		if err != nil {
+			return err
+		}
+		if !has {
+			return nil
+		}
+	}
+	rows, err := s.db.Query(`
+		SELECT id, codex_quota_json
+		FROM accounts
+		WHERE source_kind = 'cpa'
+		  AND cpa_provider = 'codex'
+		  AND codex_quota_json <> ''
+		  AND (cpa_quota_status = '' OR cpa_quota_status = 'unknown')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var blockedIDs []int64
+	for rows.Next() {
+		var id int64
+		var raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			return err
+		}
+		if quotaJSONBlocked(raw) {
+			blockedIDs = append(blockedIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range blockedIDs {
+		if _, err := s.db.Exec(
+			`UPDATE accounts SET cpa_quota_status='blocked', cpa_quota_last_error='quota blocked by existing snapshot', cpa_quota_checked_at=datetime('now') WHERE id=?`,
+			id,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func quotaJSONBlocked(raw string) bool {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return false
+	}
+	return quotaMapBlocked(data)
+}
+
+func quotaMapBlocked(data map[string]any) bool {
+	for _, key := range []string{"allowed", "is_allowed"} {
+		if v, ok := data[key].(bool); ok && !v {
+			return true
+		}
+	}
+	for _, key := range []string{"limit_reached", "limited", "blocked"} {
+		if v, ok := data[key].(bool); ok && v {
+			return true
+		}
+	}
+	for _, key := range []string{"rate_limit", "limits"} {
+		if nested, ok := data[key].(map[string]any); ok && quotaMapBlocked(nested) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) migratePoolScopedAccessTokens() error {

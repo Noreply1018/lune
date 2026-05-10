@@ -3,6 +3,7 @@ package store
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestListPoolMembersScansFullAccountColumns(t *testing.T) {
@@ -64,5 +65,95 @@ func TestListPoolMembersScansFullAccountColumns(t *testing.T) {
 		account.CpaCredentialReason != "auth_failed" ||
 		account.CpaSubscriptionExpiresAt != "2026-05-29T00:00:00Z" {
 		t.Fatalf("account scan lost CPA fields: %+v", account)
+	}
+}
+
+func TestAddPoolMemberIdempotentReturnsExistingMember(t *testing.T) {
+	st, err := New(filepath.Join(t.TempDir(), "pool-idempotent.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:      "Account",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://example.com/v1",
+		APIKey:     "sk-test",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	firstID, created, err := st.AddPoolMemberIdempotent(poolID, accountID)
+	if err != nil || !created {
+		t.Fatalf("first attach: id=%d created=%v err=%v", firstID, created, err)
+	}
+	secondID, created, err := st.AddPoolMemberIdempotent(poolID, accountID)
+	if err != nil || created {
+		t.Fatalf("second attach: id=%d created=%v err=%v", secondID, created, err)
+	}
+	if secondID != firstID {
+		t.Fatalf("expected existing member id %d, got %d", firstID, secondID)
+	}
+}
+
+func TestPoolRoutableCountHonorsQuotaAndServingState(t *testing.T) {
+	st, err := New(filepath.Join(t.TempDir(), "pool-routable.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&CpaService{Label: "CPA", BaseURL: "https://cpa.example.com", Enabled: true})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	blockedID, err := st.CreateAccount(&Account{
+		Label:               "Blocked",
+		SourceKind:          "cpa",
+		CpaServiceID:        &serviceID,
+		CpaProvider:         "codex",
+		CpaAccountKey:       "codex-blocked@example.com-plus",
+		CpaCredentialStatus: "ok",
+		CpaQuotaStatus:      "blocked",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("create blocked account: %v", err)
+	}
+	healthyID, err := st.CreateAccount(&Account{
+		Label:      "Healthy",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://example.com/v1",
+		APIKey:     "sk-test",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create healthy account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, blockedID); err != nil {
+		t.Fatalf("add blocked member: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, healthyID); err != nil {
+		t.Fatalf("add healthy member: %v", err)
+	}
+	if err := st.MarkAccountServingFailure(healthyID, "EOF", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("mark serving failure: %v", err)
+	}
+	pool, err := st.GetPool(poolID)
+	if err != nil || pool == nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if pool.RoutableAccountCount != 0 {
+		t.Fatalf("expected no routable accounts, got %d", pool.RoutableAccountCount)
 	}
 }

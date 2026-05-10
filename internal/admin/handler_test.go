@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -95,6 +96,259 @@ func TestBatchImportCpaAccountsRollsBackWhenPoolMembershipFails(t *testing.T) {
 		t.Fatalf("expected orphan account rollback, got %d accounts", len(accounts))
 	}
 
+}
+
+func TestBatchImportCpaAccountsIsIdempotentForDuplicateKey(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	svcID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://example.com",
+		APIKey:  "test-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID:   "acct_123",
+		Email:       "batch@example.com",
+		Type:        "codex",
+		Disabled:    false,
+		LastRefresh: "2026-05-10T12:00:00Z",
+	}, "codex-batch@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+	body := bytes.NewBufferString(fmt.Sprintf(`{"service_id":%d,"account_keys":["codex-batch@example.com-plus","codex-batch@example.com-plus"],"pool_id":%d}`, svcID, poolID))
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import/batch", body)
+	rr := httptest.NewRecorder()
+
+	handler.batchImportCpaAccounts(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Imported int      `json:"imported"`
+			Skipped  int      `json:"skipped"`
+			Errors   []string `json:"errors"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.Imported != 1 || resp.Data.Skipped != 1 || len(resp.Data.Errors) != 0 {
+		t.Fatalf("unexpected import result: %+v", resp.Data)
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected one account after duplicate import, got %d", len(accounts))
+	}
+	members, err := st.ListPoolMembers(poolID)
+	if err != nil {
+		t.Fatalf("list pool members: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("expected one pool member after duplicate import, got %d", len(members))
+	}
+}
+
+func TestUpsertImportedCpaAccountUpdatesExistingKey(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
+
+	svcID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	svc, err := st.GetCpaServiceByID(svcID)
+	if err != nil || svc == nil {
+		t.Fatalf("get cpa service: %v", err)
+	}
+
+	first, err := handler.upsertImportedCpaAccount(svc, "codex-user@example.com-plus", &cpa.CpaAuthFile{
+		AccountID:   "acct_old",
+		Email:       "user@example.com",
+		Type:        "codex",
+		LastRefresh: "2026-05-10T08:00:00Z",
+	}, "Original", true, "keep note")
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	second, err := handler.upsertImportedCpaAccount(svc, "codex-user@example.com-plus", &cpa.CpaAuthFile{
+		AccountID:   "acct_new",
+		Email:       "user@example.com",
+		Type:        "codex",
+		LastRefresh: "2026-05-10T12:00:00Z",
+	}, "", true, "")
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected existing account to be updated, first=%d second=%d", first.ID, second.ID)
+	}
+	acc, err := st.GetAccount(first.ID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.CpaOpenaiID != "acct_new" || acc.CpaLastRefreshAt != "2026-05-10T12:00:00Z" {
+		t.Fatalf("existing account not updated: %+v", acc)
+	}
+	if acc.Label != "Original" || acc.Notes != "keep note" {
+		t.Fatalf("empty relogin fields should preserve label/notes, got label=%q notes=%q", acc.Label, acc.Notes)
+	}
+}
+
+func TestUpsertImportedCpaAccountClearsStaleHealthError(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
+
+	svcID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	svc, err := st.GetCpaServiceByID(svcID)
+	if err != nil || svc == nil {
+		t.Fatalf("get cpa service: %v", err)
+	}
+
+	first, err := handler.upsertImportedCpaAccount(svc, "codex-user@example.com-plus", &cpa.CpaAuthFile{
+		AccountID:   "acct_old",
+		Email:       "user@example.com",
+		Type:        "codex",
+		LastRefresh: "2026-05-10T08:00:00Z",
+	}, "Original", true, "")
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if err := st.UpdateAccountHealth(first.ID, "error", "Credential file not found"); err != nil {
+		t.Fatalf("mark stale health error: %v", err)
+	}
+
+	second, err := handler.upsertImportedCpaAccount(svc, "codex-user@example.com-plus", &cpa.CpaAuthFile{
+		AccountID:   "acct_new",
+		Email:       "user@example.com",
+		Type:        "codex",
+		LastRefresh: "2026-05-10T12:00:00Z",
+	}, "", true, "")
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected existing account to be updated, first=%d second=%d", first.ID, second.ID)
+	}
+	acc, err := st.GetAccount(first.ID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.Status != "healthy" || acc.LastError != "" {
+		t.Fatalf("expected stale health error to be cleared, got status=%q last_error=%q", acc.Status, acc.LastError)
+	}
+	if acc.CpaCredentialStatus != "ok" || acc.CpaCredentialLastError != "" {
+		t.Fatalf("expected credential state to be ok, got status=%q last_error=%q", acc.CpaCredentialStatus, acc.CpaCredentialLastError)
+	}
+}
+
+func TestFinalizeLoginSameCpaKeyUpdatesExistingAccount(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+
+	svcID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	svc, err := st.GetCpaServiceByID(svcID)
+	if err != nil || svc == nil {
+		t.Fatalf("get cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	session := &cpa.LoginSession{
+		ID:        "sess_test",
+		ServiceID: svcID,
+		PoolID:    poolID,
+		Provider:  "codex",
+	}
+
+	handler.finalizeLogin(session, svc, &cpa.TokenResponse{
+		AccessToken:  "access-1",
+		RefreshToken: "refresh-1",
+		IDToken: adminTestJWT(map[string]any{
+			"email": "user@example.com",
+			"https://api.openai.com/auth": map[string]any{
+				"chatgpt_plan_type":  "plus",
+				"chatgpt_account_id": "acct_old",
+			},
+		}),
+		ExpiresIn: 3600,
+	})
+	handler.finalizeLogin(session, svc, &cpa.TokenResponse{
+		AccessToken:  "access-2",
+		RefreshToken: "refresh-2",
+		IDToken: adminTestJWT(map[string]any{
+			"email": "user@example.com",
+			"https://api.openai.com/auth": map[string]any{
+				"chatgpt_plan_type":  "plus",
+				"chatgpt_account_id": "acct_new",
+			},
+		}),
+		ExpiresIn: 3600,
+	})
+
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected one account after relogin, got %d", len(accounts))
+	}
+	if accounts[0].CpaOpenaiID != "acct_new" {
+		t.Fatalf("expected account to be updated with new token metadata, got %q", accounts[0].CpaOpenaiID)
+	}
+	members, err := st.ListPoolMembers(poolID)
+	if err != nil {
+		t.Fatalf("list pool members: %v", err)
+	}
+	if len(members) != 1 || members[0].AccountID != accounts[0].ID {
+		t.Fatalf("expected one idempotent pool member, got %+v", members)
+	}
+}
+
+func adminTestJWT(claims map[string]any) string {
+	headerJSON, _ := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
+	payloadJSON, _ := json.Marshal(claims)
+	return base64.RawURLEncoding.EncodeToString(headerJSON) + "." +
+		base64.RawURLEncoding.EncodeToString(payloadJSON) + ".sig"
 }
 
 func TestListPoolTokensIncludesPoolLabel(t *testing.T) {

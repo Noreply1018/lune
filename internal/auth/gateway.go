@@ -21,7 +21,7 @@ func GatewayAuth(next http.Handler, cache *store.RoutingCache) http.Handler {
 		}
 
 		accessToken := cache.FindAccessToken(tokenValue)
-		if accessToken == nil {
+		if accessToken == nil || !accessToken.Enabled {
 			webutil.WriteGatewayError(w, 401, "invalid_token", "invalid access token")
 			return
 		}
