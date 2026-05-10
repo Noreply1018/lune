@@ -728,6 +728,264 @@ func TestRefreshAccountModelsFailureDoesNotMarkCpaCredentialError(t *testing.T) 
 	}
 }
 
+func TestCheckOneDoesNotClearRecentGatewayAccountError(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"id": "gpt-test"}},
+		})
+	}))
+	defer server.Close()
+
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:      "recent-serving-error",
+		SourceKind: "openai_compat",
+		BaseURL:    server.URL + "/v1",
+		APIKey:     "sk-upstream",
+		Provider:   "openai",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := st.UpdateAccountHealth(accountID, "error", "mock upstream EOF before completion"); err != nil {
+		t.Fatalf("set account error: %v", err)
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.client = server.Client()
+	checker.checkOne(context.Background(), *acc)
+
+	updated, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get updated account: %v", err)
+	}
+	if updated.Status != "error" || updated.LastError != "mock upstream EOF before completion" {
+		t.Fatalf("model discovery should not clear recent gateway error, got status=%q last_error=%q", updated.Status, updated.LastError)
+	}
+	models, err := st.ListAccountModels(accountID)
+	if err != nil {
+		t.Fatalf("list account models: %v", err)
+	}
+	if len(models) != 1 || models[0] != "gpt-test" {
+		t.Fatalf("expected model discovery to still refresh models, got %+v", models)
+	}
+}
+
+func TestCheckOneDoesNotClearRecentGenericGatewayAccountError(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"id": "gpt-test"}},
+		})
+	}))
+	defer server.Close()
+
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:      "generic-serving-error",
+		SourceKind: "openai_compat",
+		BaseURL:    server.URL + "/v1",
+		APIKey:     "sk-upstream",
+		Provider:   "openai",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	gatewayErr := "The server had an error processing your request"
+	if err := st.UpdateAccountHealth(accountID, "error", gatewayErr); err != nil {
+		t.Fatalf("set account error: %v", err)
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.client = server.Client()
+	checker.checkOne(context.Background(), *acc)
+
+	updated, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get updated account: %v", err)
+	}
+	if updated.Status != "error" || updated.LastError != gatewayErr {
+		t.Fatalf("model discovery should not clear generic gateway error, got status=%q last_error=%q", updated.Status, updated.LastError)
+	}
+}
+
+func TestCheckOneDoesNotOverwriteConcurrentGatewayAccountError(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	var accountID int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if accountID > 0 {
+			if err := st.UpdateAccountHealth(accountID, "error", "Rate limit reached"); err != nil {
+				t.Errorf("set concurrent account error: %v", err)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"id": "gpt-test"}},
+		})
+	}))
+	defer server.Close()
+
+	var err error
+	accountID, err = st.CreateAccount(&store.Account{
+		Label:      "concurrent-serving-error",
+		SourceKind: "openai_compat",
+		BaseURL:    server.URL + "/v1",
+		APIKey:     "sk-upstream",
+		Provider:   "openai",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.client = server.Client()
+	checker.checkOne(context.Background(), *acc)
+
+	updated, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get updated account: %v", err)
+	}
+	if updated.Status != "error" || updated.LastError != "Rate limit reached" {
+		t.Fatalf("model discovery should not overwrite concurrent gateway error, got status=%q last_error=%q", updated.Status, updated.LastError)
+	}
+}
+
+func TestCheckOneClearsRecentModelDiscoveryError(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"id": "gpt-test"}},
+		})
+	}))
+	defer server.Close()
+
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:      "recent-discovery-error",
+		SourceKind: "openai_compat",
+		BaseURL:    server.URL + "/v1",
+		APIKey:     "sk-upstream",
+		Provider:   "openai",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	discoveryErr := `Get "http://127.0.0.1:28080/fail/v1/models": dial tcp 127.0.0.1:28080: connect: connection refused`
+	if err := st.UpdateAccountHealth(accountID, "error", discoveryErr); err != nil {
+		t.Fatalf("set account error: %v", err)
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.client = server.Client()
+	checker.checkOne(context.Background(), *acc)
+
+	updated, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get updated account: %v", err)
+	}
+	if updated.Status != "healthy" || updated.LastError != "" {
+		t.Fatalf("model discovery success should clear discovery error, got status=%q last_error=%q", updated.Status, updated.LastError)
+	}
+}
+
+func TestCheckOneClearsCpaServiceUnreachableHealthError(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"id": "gpt-test"}},
+		})
+	}))
+	defer server.Close()
+
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:      "cpa-service-health-error",
+		SourceKind: "openai_compat",
+		BaseURL:    server.URL + "/v1",
+		APIKey:     "sk-upstream",
+		Provider:   "openai",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := st.UpdateAccountHealth(accountID, "error", "CPA service unreachable"); err != nil {
+		t.Fatalf("set account error: %v", err)
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.client = server.Client()
+	checker.checkOne(context.Background(), *acc)
+
+	updated, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get updated account: %v", err)
+	}
+	if updated.Status != "healthy" || updated.LastError != "" {
+		t.Fatalf("model discovery success should clear CPA service health error, got status=%q last_error=%q", updated.Status, updated.LastError)
+	}
+}
+
 func newTestNotifier(st *store.Store) *notify.Service {
 	return notify.NewServiceWithRegistry(
 		st,

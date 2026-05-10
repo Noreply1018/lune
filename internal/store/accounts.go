@@ -98,6 +98,31 @@ func (s *Store) UpdateAccountHealth(id int64, status, lastError string) error {
 	return err
 }
 
+func (s *Store) UpdateAccountHealthIfUnchanged(id int64, status, lastError string, previous Account) (bool, error) {
+	lastCheckedAt := ""
+	if previous.LastCheckedAt != nil {
+		lastCheckedAt = *previous.LastCheckedAt
+	}
+	res, err := s.db.Exec(
+		`UPDATE accounts
+		 SET status=?, last_error=?, last_checked_at=datetime('now'), updated_at=datetime('now')
+		 WHERE id=?
+		   AND status=?
+		   AND last_error=?
+		   AND COALESCE(last_checked_at, '')=?`,
+		status, lastError, id,
+		previous.Status, previous.LastError, lastCheckedAt,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
 func (s *Store) CountAccounts() (total int, byStatus map[string]int, err error) {
 	rows, err := s.db.Query(`SELECT status, COUNT(*) FROM accounts GROUP BY status`)
 	if err != nil {

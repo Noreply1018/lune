@@ -1118,6 +1118,9 @@ function SankeyDiagram({
     const nodeWidth = 10;
     const nodeGap = 10;
     const minNodeHeight = 6;
+    const poolX = 90;
+    const accountX = 410;
+    const modelX = 790;
     const innerHeight = height - paddingY * 2;
 
     const totalPool = pools.reduce((sum, n) => sum + n.value, 0) || 1;
@@ -1145,9 +1148,9 @@ function SankeyDiagram({
       return positions;
     };
 
-    const poolPositions = computeColumn(pools, 90, totalPool);
-    const accountPositions = computeColumn(accounts, 410, totalAccount);
-    const modelPositions = computeColumn(models, 790, totalModel);
+    const poolPositions = computeColumn(pools, poolX, totalPool);
+    const accountPositions = computeColumn(accounts, accountX, totalAccount);
+    const modelPositions = computeColumn(models, modelX, totalModel);
     const allPositions = {
       ...poolPositions,
       ...accountPositions,
@@ -1192,6 +1195,9 @@ function SankeyDiagram({
       width,
       height,
       nodeWidth,
+      poolX,
+      accountX,
+      modelX,
       poolPositions,
       accountPositions,
       modelPositions,
@@ -1219,14 +1225,15 @@ function SankeyDiagram({
     <section id="flow" className="surface-section scroll-mt-6 px-5 py-5">
       <SectionHeading title={title} description={description} />
       <div className="mt-5 overflow-x-auto">
-        <svg
-          viewBox={`0 0 ${layout.width} ${layout.height}`}
-          width={layout.width}
-          height={layout.height}
-          className="overflow-visible"
-        >
+        <div className="mx-auto w-max">
+          <svg
+            viewBox={`0 0 ${layout.width} ${layout.height}`}
+            width={layout.width}
+            height={layout.height}
+            className="shrink-0 overflow-visible"
+          >
           <text
-            x={layout.poolPositions[Object.keys(layout.poolPositions)[0]]?.x ?? 90}
+            x={layout.poolX + layout.nodeWidth / 2}
             y={13}
             textAnchor="middle"
             className="fill-moon-400"
@@ -1235,7 +1242,7 @@ function SankeyDiagram({
             Pool
           </text>
           <text
-            x={layout.accountPositions[Object.keys(layout.accountPositions)[0]]?.x ?? 410}
+            x={layout.accountX + layout.nodeWidth / 2}
             y={13}
             textAnchor="middle"
             className="fill-moon-400"
@@ -1244,7 +1251,7 @@ function SankeyDiagram({
             Account
           </text>
           <text
-            x={layout.modelPositions[Object.keys(layout.modelPositions)[0]]?.x ?? 790}
+            x={layout.modelX + layout.nodeWidth / 2}
             y={13}
             textAnchor="middle"
             className="fill-moon-400"
@@ -1379,7 +1386,8 @@ function SankeyDiagram({
               ) : null}
             </g>
           ))}
-        </svg>
+          </svg>
+        </div>
       </div>
       <p className="mt-4 text-xs text-moon-400">
         左侧 Pool → 中间 Account → 右侧 Model，带状宽度 ≈ 请求数。图展示 request log 的最终路由账号，不展开重试路径。

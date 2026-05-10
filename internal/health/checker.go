@@ -22,6 +22,7 @@ import (
 
 const (
 	degradedLatencyThreshold       = 5 * time.Second
+	accountErrorDiscoveryGrace     = 5 * time.Minute
 	maxConcurrency                 = 10
 	codexSubscriptionFetchInterval = 6 * time.Hour
 	defaultCpaHealthAttempts       = 10
@@ -193,11 +194,65 @@ func (c *Checker) checkOne(ctx context.Context, acc store.Account) {
 		return
 	}
 	latency := time.Since(start)
-	if latency > degradedLatencyThreshold {
-		c.store.UpdateAccountHealth(acc.ID, "degraded", fmt.Sprintf("slow response: %s", latency))
-	} else {
-		c.store.UpdateAccountHealth(acc.ID, "healthy", "")
+	current := acc
+	if latest, err := c.store.GetAccount(acc.ID); err == nil && latest != nil {
+		current = *latest
 	}
+	if shouldPreserveAccountErrorDuringDiscovery(current, time.Now()) {
+		return
+	}
+	status := "healthy"
+	lastError := ""
+	if latency > degradedLatencyThreshold {
+		status = "degraded"
+		lastError = fmt.Sprintf("slow response: %s", latency)
+	}
+	if _, err := c.store.UpdateAccountHealthIfUnchanged(acc.ID, status, lastError, current); err != nil {
+		slog.Warn("update discovery health", "account_id", acc.ID, "err", err)
+	}
+}
+
+func shouldPreserveAccountErrorDuringDiscovery(acc store.Account, now time.Time) bool {
+	if acc.Status != "error" || isModelDiscoveryHealthError(acc.LastError) || acc.LastCheckedAt == nil || strings.TrimSpace(*acc.LastCheckedAt) == "" {
+		return false
+	}
+	checkedAt, ok := parseAccountCheckedAt(*acc.LastCheckedAt)
+	if !ok {
+		return false
+	}
+	if checkedAt.After(now) {
+		return true
+	}
+	return now.Sub(checkedAt) < accountErrorDiscoveryGrace
+}
+
+func isModelDiscoveryHealthError(message string) bool {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return false
+	}
+	lower := strings.ToLower(message)
+	if strings.HasPrefix(message, "Get ") && strings.Contains(lower, "/models") {
+		return true
+	}
+	if message == "CPA service unreachable" {
+		return true
+	}
+	return false
+}
+
+func parseAccountCheckedAt(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+	} {
+		if ts, err := time.Parse(layout, value); err == nil {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func (c *Checker) discoverModelsViaService(ctx context.Context, acc store.Account, svc store.CpaService) ([]string, error) {

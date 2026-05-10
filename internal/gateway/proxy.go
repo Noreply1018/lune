@@ -25,6 +25,8 @@ var hopByHopHeaders = map[string]bool{
 	"Upgrade":             true,
 }
 
+const maxBufferedStreamErrorBody = 1 << 20
+
 type UpstreamTarget struct {
 	BaseURL   string
 	APIKey    string
@@ -110,7 +112,27 @@ func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, path
 	respHeaders.Set("X-Lune-Account", fmt.Sprintf("%d", target.AccountID))
 
 	if isStream {
+		if IsRetryableStatus(resp.StatusCode) {
+			respBody, err := readBoundedBody(resp.Body, maxBufferedStreamErrorBody)
+			if err != nil {
+				respBody = []byte(`{"error":{"message":"failed to read upstream response"}}`)
+			}
+			result.Body = respBody
+			result.Headers = respHeaders
+			result.Headers.Del("Content-Length")
+			result.Usage = ParseUsageFromBody(respBody)
+			if msg := extractUpstreamErrorMessage(respBody); msg != "" {
+				result.Stream = &StreamResult{
+					Failed:       true,
+					ErrorMessage: msg,
+					Err:          errors.New(msg),
+				}
+			}
+			return result
+		}
+
 		// streaming: write directly — cannot retry after this
+		respHeaders.Del("Content-Length")
 		for k, vv := range respHeaders {
 			for _, v := range vv {
 				w.Header().Add(k, v)
@@ -131,6 +153,20 @@ func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, path
 	}
 
 	return result
+}
+
+func readBoundedBody(r io.Reader, max int64) ([]byte, error) {
+	if max <= 0 {
+		return nil, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return body, err
+	}
+	if int64(len(body)) > max {
+		return body[:max], nil
+	}
+	return body, nil
 }
 
 // WriteResponse flushes a buffered non-stream response to the client.

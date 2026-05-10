@@ -183,6 +183,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			lastStatusCode = result.StatusCode
 
 			if isStream {
+				result.WriteResponse(w)
 				h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed)
 				return
 			}
