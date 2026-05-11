@@ -4,6 +4,60 @@
 
 Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本，但在默认体验、部署方式、配置形态还没有完全稳定前，minor 版本可能会调整产品边界。
 
+## [0.1.6] - 未发布
+
+状态：准备中。
+
+### 重点变化
+
+- 收紧 CPA 账号导入与登录生命周期，避免同一 CPA 凭据被重复导入为多条账号。
+- 将 CPA 凭据、Codex 额度和网关 serving 冷却拆成独立路由状态，减少“需要重新登录”的误判。
+- 普通路由和 `X-Lune-Account-Id` 强制账号路由都会遵守不可接流量状态；被 quota blocked、credential 异常或 serving cooldown 的账号不会继续接普通请求。
+- Pool、Overview 和前端账号卡片的“可用账号”口径对齐后端路由口径，避免管理界面显示可用但网关实际无法路由。
+
+### CPA 账号幂等与 runtime reload
+
+- 对 CPA 账号增加唯一性约束：同一 `(cpa_service_id, cpa_account_key)` 只能存在一条账号记录。
+- 数据库迁移会在创建唯一索引前检测重复 CPA key，并输出可诊断错误，避免静默迁移失败。
+- Device Code 登录、远程单账号导入、批量导入共用同一套 upsert 逻辑；同一 account key 重登会更新已有账号，而不是创建重复账号。
+- Pool attach 改为幂等，重复导入或重登不会产生重复 Pool membership。
+- 同名 auth file 被重登覆盖后会请求 embedded CPA runtime reload，并重新读取 runtime metadata。
+- `resolveAuthMetadata` 会校验 runtime metadata 与磁盘 auth file 的关键身份信息；发现旧 auth index 时会触发 reload。
+- `syncCpaMetadata` 和 runtime 解析路径会基于 `last_refresh` 防止旧 auth file metadata 覆盖 DB 中的新登录状态。
+- 覆盖导入成功会清理旧的通用 health error，避免重登后账号仍因旧 `status=error` 被路由拒绝。
+
+### quota、credential 与 serving 状态
+
+- Codex quota 辅助接口 `wham/usage` 返回 `401/403` 时，不再直接把 CPA 账号标记为 `needs_login`。
+- quota 查询失败会写入 `cpa_quota_status`、`cpa_quota_last_error` 和 `cpa_quota_checked_at`，前端按 quota 问题展示。
+- 已有 quota 快照显示 `allowed=false` 或 `limit_reached=true` 时，会标记为 `blocked`，并在普通路由中跳过该账号。
+- 网关上游 5xx、EOF、timeout、网络错误等 serving 失败会进入账号级 cooldown，不再污染模型发现健康状态。
+- discovery health 与 serving health 拆分：`/v1/models` 成功不会直接清除网关 serving cooldown。
+- CPA gateway 鉴权失败只更新 CPA credential 状态，不再覆盖 discovery health。
+- 禁用的 access token 会被网关拒绝。
+
+### 管理界面
+
+- 账号卡片和账号详情页增加 quota blocked / quota error 展示。
+- 前端 `isAccountRoutable` 与后端路由条件对齐，用于 Pool 快照和可用账号统计。
+- Overview 的账号健康、Pool 健康和 `pool_unhealthy` 告警改为使用 routable 口径。
+- Pool API 和配置导入 helper 的 `routable_account_count` 使用同一套后端条件，包含 credential、quota 和 serving cooldown。
+
+### 已知后续项
+
+- 删除 CPA 账号后的 auth file 语义仍需单独设计：删除、保留或提供显式选项。
+- 独立诊断入口尚未补齐；当前强制账号路由已不能绕过普通不可接流量状态。
+- 显式 `subscription_status` 状态机尚未完成；本轮已覆盖 quota blocked 的路由阻断。
+
+### 验证
+
+- `go test ./...`
+- 在 `web/` 下执行 `npm run build`
+- `git diff --check`
+- `docker build -t lune:v016-current-audit .`
+- 使用临时容器验证 `/healthz`、`lune check` schema v16、admin settings API 和 `/admin` 静态页面。
+- 多轮 `gpt-5.5` subagent 严格只读审计；审计发现的 stale health error、Overview 旧口径和 cooldown 空时间误判均已修复并复审通过。
+
 ## [0.1.5] - 2026-04-30
 
 状态：已发布。
