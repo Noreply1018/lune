@@ -28,7 +28,7 @@ Lune 是一个面向**个人使用**的 LLM API 网关：对下游暴露 OpenAI 
 - **双源账号** — OpenAI 兼容直连 + CPA 服务聚合，统一池化路由
 - **账号池** — Priority-weighted 调度、自动重试、健康检查
 - **模型路由** — alias → pool → account → upstream，支持混合 pool
-- **CPA 服务管理** — Device Code 登录 OpenAI Codex、凭据热加载、远程账号批量导入、过期预警
+- **CPA 服务管理** — Device Code 登录 OpenAI Codex、凭据热加载、远程账号批量导入、runtime binding、过期预警
 - **体验细节** — Provider 模板自动填充、一键测试连接、Pool 级 Codex CLI、内置 Playground
 - **观测** — 成本估算、延迟百分位追踪（p50/p95/p99）、账号级 Sparkline
 
@@ -39,6 +39,8 @@ Lune 是一个面向**个人使用**的 LLM API 网关：对下游暴露 OpenAI 
 你可能第一次听说 CPA——它是 [CLI Proxy API](https://github.com/router-for-me/CLIProxyAPI) 的简称，把 Claude Code、OpenAI Codex CLI 这类工具的登录凭据包装成统一的 OpenAI 兼容接口。
 
 Lune 做的事，是把 CPA 当成**另一类账号来源**：你可以直接把 API Key 填进 Lune（`openai_compat` 模式），也可以让 Lune 通过 CPA 托管一批 CLI 登录账号（`cpa` 模式）。两种账号并存在同一个池里，Lune 负责挑一条可用的路发出去。
+
+从 v0.1.6 起，内置 CPA 使用 Lune 补丁构建的 `CLIProxyAPI v7.0.2-lune.1`。当 Lune 选中某个 CPA 账号时，请求会带上 runtime auth pinning 信息，要求 CPA 使用该账号对应的 auth file；如果外部 CPA 没声明支持逐请求 pinning，相关 CPA 账号普通流量会 fail closed，避免请求量和额度消耗记到错误账号。
 
 什么时候用哪种？大致是：
 
@@ -110,7 +112,7 @@ http://127.0.0.1:7788/admin
 如果你使用固定版本，建议拉取类似：
 
 ```text
-noreply1018/lune:0.1.5
+noreply1018/lune:0.1.6
 ```
 
 ## 服务器 / Compose 运行
@@ -197,13 +199,15 @@ cp .env.example .env
 
 ## Docker 与 CPA 服务
 
-CPA 是 Lune 默认镜像内置的运行时能力。镜像内的 `CLIProxyAPI` 会随 Lune 一起启动，版本由 Lune release 固定；如需新版 CPA，升级 Lune 镜像即可。内置 CPA 使用 Lune 补丁构建以支持逐请求凭据 pinning；外部 CPA 未声明支持时，CPA 账号流量会 fail closed，避免账号统计和额度归因误绑。
+CPA 是 Lune 默认镜像内置的运行时能力。镜像内的 `CLIProxyAPI` 会随 Lune 一起启动，版本由 Lune release 固定；如需新版 CPA，升级 Lune 镜像即可。当前 v0.1.6 内置 CPA 为 `v7.0.2-lune.1`，基于 `router-for-me/CLIProxyAPI@v7.0.2` 的固定 commit 加 Lune provider pinning patch 构建。外部 CPA 未声明支持逐请求 pinning 时，CPA 账号流量会 fail closed，避免账号统计和额度归因误绑。
 
 在 Docker Compose 场景下：
 
 - `./scripts/up.sh` 会启动单个 `lune` 容器，容器内同时运行 Lune 和 CPA
 - Lune 默认通过 `http://127.0.0.1:8317` 访问内置 CPA 服务
 - CPA 配置由入口脚本根据环境变量自动生成，无需维护 `cpa-config.yaml`
+- embedded CPA 自动设置 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED=1`；外部 CPA 默认视为不支持 pinning
+- entrypoint 会监督 embedded CPA 子进程，CPA 异常退出时容器会失败而不是静默继续运行
 - 默认只挂载一个数据卷到 `/app/data`，SQLite、CPA 凭据和网关临时文件都在这个目录下
 - 双方通过容器内 `/app/data/cpa-auth` 目录交换凭据文件：Lune 直接对接 OpenAI Device Code 登录后将凭据写入该目录，CPA 服务热加载自动识别
 - 网关请求体默认上限为 100MB，超过 8MB 的请求会写入 `/app/data/tmp` 用于重试重放，避免全部常驻内存

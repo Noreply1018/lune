@@ -10,6 +10,7 @@
 - `02-managed-cpa-update.md`：由 Lune 管理 CPA binary 更新的未来方案。
 - `03-large-non-stream-response-streaming.md`：大型非流式响应的内存保护与流式转发。
 - `04-lightweight-vps-runtime.md`：轻量 VPS、native systemd、low-resource profile、SQLite/日志/health check/内存控制。
+- `05-runtime-binding-observability.md`：Runtime binding 的 selected auth 回传字段和 normalized reason 体系化。
 
 ## 迁移说明
 

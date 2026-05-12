@@ -185,7 +185,7 @@ CPA 账号过去是“数据库账号行”和“磁盘 auth file”松散同步
 - batch import 遇到已存在 CPA account key 时跳过或更新，不创建重复账号。
 - quota HTTP 401 不会在普通模型请求仍健康时单独把账号展示为“需要重新登录”。
 - 重复 CPA account key 出现在数据库中时，启动检查给出明确诊断。
-- 普通模型转发已复用 runtime auth metadata，并将 runtime auth id/index 写入请求日志，便于后续确认重登后实际执行的是新 auth file。
+- 普通模型转发已复用 runtime auth metadata，并将 pinned runtime auth id/index 写入请求日志，便于确认重登后 Lune 侧绑定的是新 auth file。
 - embedded CPA reload 和 runtime binding 失败会进入明确错误路径，不再静默回落到 provider 级默认调度。
 
 ## 待解决事项

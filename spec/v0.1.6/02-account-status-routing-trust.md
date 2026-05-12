@@ -234,6 +234,23 @@ quota/subscription 错误详情可以展示安全截断后的 reason，但不得
 - 账号详情抽屉使用 `Overview / Playground / 诊断` 三个 tab。
 - Active Pool 卡片在常见 chip 组合下高度稳定。
 
+### Docker 容器验收
+
+02 的最终验收不能只依赖单元测试。实现完成后必须用新 v0.1.6 镜像启动一次临时 Docker 容器，使用全新数据目录和可控 mock upstream / mock CPA 响应验证状态隔离。测试容器不得复用或影响上一版本正在运行的容器，结束后必须删除。
+
+容器验收至少覆盖：
+
+- 启动新容器后，通过 API 创建测试 Pool、token 和至少两个测试账号；一个账号用于模拟 quota/subscription 辅助接口异常，另一个账号用于验证路由 fallback。
+- 模拟 quota `401/403`，再让同一账号的已确认 runtime binding 模型请求返回 `200`：API/页面必须显示 `quota_status=error` 或等价“额度查询失败”，不得把 `credential_status` 改成 `needs_login`，也不得清除 quota error。
+- 模拟 quota `allowed=false` 或 `limit_reached=true`：普通路由必须跳过该账号，强制账号路由也不能绕过该阻断。
+- 模拟 subscription `401/403` 或 metadata 解析失败：只写 `subscription_status=error`，不得写 `credential_status=needs_login`；Codex 普通路由必须跳过该账号。
+- 模拟真实模型请求 `5xx/EOF/timeout`：账号进入 `serving_status=cooldown`，后续独立请求路由到另一个健康账号；cooldown 不得表述成登录失败。
+- 模拟真实模型请求 `200`：只修复 serving 维度和可疑 credential，不得清除 quota blocked/error 或 subscription expired/error。
+- 在管理 UI 或 API 响应中确认账号卡片/详情能区分 `额度查询失败`、`订阅元数据获取失败`、`服务冷却中`、`需要重登`，而不是统一显示红色重登。
+- 检查 `request_logs` / Activity 中的 routed account、状态结果和错误摘要能解释本次路由选择；未确认 runtime binding 的 CPA 请求不得被用来修复该账号健康。
+
+验收记录应保留：镜像 tag 或 digest、容器启动命令、mock upstream/CPA 行为配置、关键 API 响应摘要、UI 截图或 Playwright 断言、清理测试容器的命令结果。
+
 ## 已完成事项
 
 - 增加账号级 serving 熔断状态：`serving_status`、`failure_count`、`last_failure_at`、`last_success_at`、`cooldown_until`。

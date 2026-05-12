@@ -6,14 +6,35 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ## [0.1.6] - 未发布
 
-状态：准备中。
+状态：核心路由、runtime binding、可信记账与内置 CPA 构建闭环已完成；部分运维增强仍在后续计划中。
 
 ### 重点变化
 
+- 修复 CPA 多账号双调度归因问题：Lune 选中某个 CPA 账号后，普通模型请求会先确认该账号对应的 CPA runtime auth，再把请求 pin 到该 auth。
+- 内置 CPA 从固定外部镜像切换为固定上游 commit + Lune provider pinning patch + 本地构建，版本标识为 `v7.0.2-lune.1`。
+- CPA runtime 不支持逐请求 pinning、binding 未就绪或强制账号无法确认 runtime credential 时，普通流量会 fail closed，避免继续用 CPA 默认 round-robin 污染账号统计。
 - 收紧 CPA 账号导入与登录生命周期，避免同一 CPA 凭据被重复导入为多条账号。
 - 将 CPA 凭据、Codex 额度和网关 serving 冷却拆成独立路由状态，减少“需要重新登录”的误判。
 - 普通路由和 `X-Lune-Account-Id` 强制账号路由都会遵守不可接流量状态；被 quota blocked、credential 异常或 serving cooldown 的账号不会继续接普通请求。
-- Pool、Overview 和前端账号卡片的“可用账号”口径对齐后端路由口径，避免管理界面显示可用但网关实际无法路由。
+- Pool、Overview、Activity 和前端账号卡片的“可用/可信用量”口径对齐后端路由口径，避免管理界面显示可用但网关实际无法路由，或把 CPA 默认调度的消耗记到错误账号。
+
+### CPA runtime binding 与可信记账
+
+- 普通 CPA 网关转发已接入 runtime binding。转发前会解析 Lune account 对应的 CPA auth id / auth index / account key。
+- CPA 转发会携带 pinning 与诊断 headers：`X-Lune-CPA-Account-Key`、`X-Lune-Runtime-Auth-Id`、`X-CLIProxyAPI-Pinned-Auth-Id`、`X-Lune-Runtime-Auth-Index`、`X-CLIProxyAPI-Pinned-Auth-Index`、`X-CPA-Auth-Index`、`ChatGPT-Account-Id`。
+- `request_logs` 增加 runtime identity 字段，区分 Lune routed account 与 CPA runtime credential。
+- Activity / usage / Pool 账号统计只把 confirmed CPA binding 作为可信账号级消耗；binding 未确认时不会把请求量当作精确账号事实。
+- 状态写入只信任 confirmed runtime binding。未确认可 pin runtime auth 的模型调用不会把某个 Lune 账号标记为 healthy。
+- `X-Lune-Account-Id` 强制路由也不能绕过 binding 和不可接普通流量状态。
+
+### 内置 CPA 版本与构建
+
+- Dockerfile 固定 `router-for-me/CLIProxyAPI@v7.0.2`，commit `1fca942b9c2c5bbdf78334eb4744a098983a05e9`。
+- Lune patch 文件位于 `third_party/cliproxyapi/v7.0.2-lune-provider-pinning.patch`，构建时应用后生成 `v7.0.2-lune.1`。
+- GitHub Actions release workflow 同步传入 `CPA_VERSION`、`CPA_COMMIT`、`CPA_PATCH_VERSION` build args，避免本地构建与发布镜像版本漂移。
+- `LUNE_EMBEDDED_CPA_VERSION` 更新为 `v7.0.2-lune.1`。
+- embedded CPA 会自动声明 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED=1`；外部 CPA 默认不声明支持，相关 CPA 账号普通流量会 fail closed。
+- entrypoint 现在监督 embedded CPA 子进程。CPA 异常退出时会停止 Lune 并让容器失败，避免 CPA 已死但容器继续看似运行。
 
 ### CPA 账号幂等与 runtime reload
 
@@ -31,6 +52,8 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - Codex quota 辅助接口 `wham/usage` 返回 `401/403` 时，不再直接把 CPA 账号标记为 `needs_login`。
 - quota 查询失败会写入 `cpa_quota_status`、`cpa_quota_last_error` 和 `cpa_quota_checked_at`，前端按 quota 问题展示。
 - 已有 quota 快照显示 `allowed=false` 或 `limit_reached=true` 时，会标记为 `blocked`，并在普通路由中跳过该账号。
+- Codex subscription 非 `active` 时普通路由阻断；订阅资格不会被单次模型成功覆盖。
+- `auth_suspect` 默认可路由但降权，优先选择 credential 确认正常的账号。
 - 网关上游 5xx、EOF、timeout、网络错误等 serving 失败会进入账号级 cooldown，不再污染模型发现健康状态。
 - discovery health 与 serving health 拆分：`/v1/models` 成功不会直接清除网关 serving cooldown。
 - CPA gateway 鉴权失败只更新 CPA credential 状态，不再覆盖 discovery health。
@@ -42,21 +65,31 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - 前端 `isAccountRoutable` 与后端路由条件对齐，用于 Pool 快照和可用账号统计。
 - Overview 的账号健康、Pool 健康和 `pool_unhealthy` 告警改为使用 routable 口径。
 - Pool API 和配置导入 helper 的 `routable_account_count` 使用同一套后端条件，包含 credential、quota 和 serving cooldown。
+- Activity Flow 升级为 `Pool -> Account -> Model`，并按 confirmed CPA binding 解释 CPA 账号级可信统计。
+- 账号详情增加 Runtime Binding 诊断字段，用于查看 runtime auth id/index、binding 状态和最近错误。
+
+### 文档与规格
+
+- `spec/v0.1.6` 从旧的分散主题整理为按问题闭环组织的 5 个主题文档和验收矩阵。
+- 新增 `spec/draft/`，把 external CPA advanced mode、managed CPA update、大响应 streaming、轻量 VPS runtime 等未进入 v0.1.6 完成范围的内容移到后续草案。
+- README 和 Docker Hub 描述同步 CPA pinning、fail-closed、内置 CPA `v7.0.2-lune.1` 语义。
 
 ### 已知后续项
 
 - 删除 CPA 账号后的 auth file 语义仍需单独设计：删除、保留或提供显式选项。
 - 独立诊断入口尚未补齐；当前强制账号路由已不能绕过普通不可接流量状态。
-- 显式 `subscription_status` 状态机尚未完成；本轮已覆盖 quota blocked 的路由阻断。
+- Docker Compose healthcheck、日志轮转、stop grace period、管理端 trusted private IP 收紧仍在后续计划中。
+- management API、provider endpoint、reload signal 的容器级全链路测试仍需补齐；本轮完成的是构建、entrypoint 启动和 health/API 空状态 smoke test。
 
 ### 验证
 
 - `go test ./...`
 - 在 `web/` 下执行 `npm run build`
+- `sh -n docker/entrypoint.sh`
 - `git diff --check`
-- `docker build -t lune:v016-current-audit .`
-- 使用临时容器验证 `/healthz`、`lune check` schema v16、admin settings API 和 `/admin` 静态页面。
-- 多轮 `gpt-5.5` subagent 严格只读审计；审计发现的 stale health error、Overview 旧口径和 cooldown 空时间误判均已修复并复审通过。
+- `docker build -t lune:v0.1.6-pinning-final5 .`
+- 使用临时容器 `lune-v016-final5-verify` 验证 `/healthz` 和 API 空状态 smoke test；旧版 `lune-0.1.5` 容器未被停止或修改。
+- 多轮 `gpt-5.5` subagent 严格只读审计；审计发现的验证范围表述、spec 状态口径、测试容器清理和 patch whitespace 检查问题均已修复并复审通过。
 
 ## [0.1.5] - 2026-04-30
 

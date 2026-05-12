@@ -18,8 +18,8 @@
 
 本轮已完成：runtime binding 接入普通转发、pinning headers、缺失 binding fail closed、request log runtime identity、Activity/usage 可信统计、相关单元测试和容器 smoke test。
 
-- 同一个 CPA runtime 中导入 3 个 Codex auth file 后，固定选择第一个 Lune CPA account，连续发起 10 次普通模型请求时，CPA actual credential 必须全部等于该账号对应凭据。
-- 强制路由 `X-Lune-Account-Id` 指向某个 CPA account 时，CPA actual credential 必须等于该 account 对应凭据；否则请求 fail closed。
+- 同一个 CPA runtime 中导入 3 个 Codex auth file 后，固定选择第一个 Lune CPA account，连续发起 10 次普通模型请求时，Lune 必须全部携带该账号对应的 pinned runtime auth。
+- 强制路由 `X-Lune-Account-Id` 指向某个 CPA account 时，Lune 必须携带该 account 对应的 pinned runtime auth；否则请求 fail closed。
 - 普通 Pool 自动路由选择第 N 个 CPA account 时，`request_logs.account_id` 与 `runtime_auth_id/runtime_auth_index` 能够一一对应。
 - 当 CPA runtime 不支持 credential pinning 或 auth metadata 未就绪时，该账号不可接普通流量，错误 reason 明确。
 - Activity 页面账号请求量基于已确认 runtime credential 归属；无法确认时显示不确定状态。
@@ -46,6 +46,7 @@
 - 右上角 badge 使用严重程度色并只表达 `正常/降级/异常/待检查/已停用` 的组合路由摘要。
 - 账号详情抽屉使用 `Overview / Playground / 诊断` 三个 tab。
 - Active Pool 卡片在常见 chip 组合下高度稳定。
+- 容器验收覆盖：用新 v0.1.6 镜像、全新数据目录和可控 mock upstream / mock CPA 响应，验证 quota/subscription/serving/credential 状态互不串写、路由按组合状态跳过不可用账号、UI/API 展示具体原因；测试容器不得影响旧版本容器，用完必须删除。
 
 ## 03. Streaming 失败与 Activity 记账不准确
 
@@ -66,7 +67,8 @@
 - Activity flow 展示 `Pool -> Account -> Model`。
 - failed routed requests 默认纳入 flow。
 - 没有 selected account 的 rows 被排除或归入明确 `Unrouted` 语义。
-- CPA actual credential 未确认时，Activity 不把账号级统计表述成精确实际消耗。
+- CPA runtime binding 未确认时，Activity 不把账号级统计表述成精确实际消耗。
+- 容器验收覆盖：用新 v0.1.6 镜像、全新数据目录和可控 mock upstream / mock CPA SSE 响应，验证缺 completion marker、semantic failure、EOF/timeout、stream 已写出后不 retry、后续请求绕开 cooldown 账号、Activity Flow 和可信 usage 统计；测试容器不得影响旧版本容器，用完必须删除。
 
 ## 04. CPA 凭据生命周期、重复账号、删除与重登
 

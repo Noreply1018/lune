@@ -110,7 +110,7 @@ Activity Flow 从两列升级为三列：
 - UI 是否需要单独展示 `stream_incomplete` badge，而不只是一条 failed request row。
 - 是否展示 per-attempt retry path。需要 request log 存更丰富的 attempt history。
 - 是否在 request log API 中增加 `pool_label`，避免 diagram 依赖额外 `/pools` fetch。
-- CPA runtime binding 未确认时，flow 应如何标注 routed account 与 actual credential 的差异。
+- CPA runtime binding 未确认时，flow 应如何标注 routed account 与 pinned runtime binding 的差异。
 
 ## 日志与诊断
 
@@ -146,7 +146,24 @@ Activity 应在收到结构化 upstream error body 时保留有用细节。泛�
 - 长流超过 gateway timeout，Activity 记录 timeout 相关失败。
 - stream bytes 已写出后不 retry，但仍更新 request log 和 serving cooldown。
 - Activity flow 展示 `Pool -> Account -> Model`，并明确其基于 request log final route。
-- CPA actual credential 未确认时，Activity 不把账号级统计表述成精确实际消耗。
+- CPA runtime binding 未确认时，Activity 不把账号级统计表述成精确实际消耗。
+
+### Docker 容器验收
+
+03 的最终验收必须包含真实 Docker 容器中的 streaming 行为验证。实现完成后必须用新 v0.1.6 镜像启动一次临时 Docker 容器，使用全新数据目录和可控 mock upstream / mock CPA 响应验证 SSE 转发、timeout、Activity 记账和后续路由行为。测试容器不得复用或影响上一版本正在运行的容器，结束后必须删除。
+
+容器验收至少覆盖：
+
+- mock upstream 返回 Chat Completions stream，但缺少 `[DONE]`：客户端收到 stream 后，Activity 必须记录 `success=false`，错误摘要包含缺少 `[DONE]`，状态码保留 upstream HTTP status。
+- mock upstream 返回 Responses stream，但缺少 `response.completed`：Activity 必须记录失败，错误摘要能解释 `stream closed before response.completed`。
+- mock upstream 返回 Responses stream 中的 `response.failed` 容量错误：Activity 必须保留上游容量 message，账号进入 `serving_status=cooldown`，不得把该账号标记为生成健康。
+- mock upstream 在 stream 中途 EOF 或超过 gateway timeout：Activity 必须记录失败，保留已解析 usage 或 partial metadata，并更新 request log 与 serving cooldown。
+- stream bytes 已写出后不得重试当前请求；如果后续独立请求发生在失败账号 cooldown 期间，路由必须选择另一个健康账号。
+- mock CPA provider 返回 streaming HTTP `500` 且 body 为 JSON error：Activity 必须记录提取后的安全上游 message，而不是泛化为 `upstream error`。
+- Activity Flow 必须展示 `Pool -> Account -> Model`，failed routed requests 默认纳入 flow；没有 selected account 的路由拒绝请求不得混入普通账号路径。
+- CPA runtime binding 未确认或 binding 失败的 streaming 请求不得计入可信账号请求量/usage。
+
+验收记录应保留：镜像 tag 或 digest、容器启动命令、mock upstream/CPA SSE 行为配置、关键 Activity API 响应摘要、UI 截图或 Playwright 断言、清理测试容器的命令结果。
 
 ## 已完成事项
 
