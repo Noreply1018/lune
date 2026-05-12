@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -274,7 +275,9 @@ func (s *Store) GetUsage(f UsageFilter) ([]RequestLog, int, error) {
 
 	query := `SELECT rl.id, rl.request_id, rl.access_token_name, rl.model_requested, rl.model_actual, rl.pool_id, rl.account_id,
 		COALESCE(a.label, '') AS account_label, rl.status_code, rl.latency_ms, rl.input_tokens, rl.output_tokens,
-		rl.stream, rl.request_ip, rl.success, rl.error_message, rl.source_kind, rl.attempt_count, rl.created_at
+		rl.stream, rl.request_ip, rl.success, rl.error_message, rl.source_kind, rl.attempt_count,
+		rl.runtime_auth_index, rl.runtime_auth_id, rl.runtime_account_key, rl.runtime_binding_status, rl.runtime_binding_reason,
+		rl.created_at
 		FROM request_logs rl
 		LEFT JOIN accounts a ON a.id = rl.account_id
 		WHERE ` + where + ` ORDER BY rl.id DESC LIMIT ? OFFSET ?`
@@ -290,7 +293,13 @@ func (s *Store) GetUsage(f UsageFilter) ([]RequestLog, int, error) {
 	for rows.Next() {
 		var l RequestLog
 		var stream, success int
-		if err := rows.Scan(&l.ID, &l.RequestID, &l.AccessTokenName, &l.ModelRequested, &l.ModelActual, &l.PoolID, &l.AccountID, &l.AccountLabel, &l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP, &success, &l.ErrorMessage, &l.SourceKind, &l.AttemptCount, &l.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&l.ID, &l.RequestID, &l.AccessTokenName, &l.ModelRequested, &l.ModelActual, &l.PoolID, &l.AccountID,
+			&l.AccountLabel, &l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP,
+			&success, &l.ErrorMessage, &l.SourceKind, &l.AttemptCount,
+			&l.RuntimeAuthIndex, &l.RuntimeAuthID, &l.RuntimeAccountKey, &l.RuntimeBindingStatus, &l.RuntimeBindingReason,
+			&l.CreatedAt,
+		); err != nil {
 			return nil, 0, err
 		}
 		l.Stream = stream != 0
@@ -307,10 +316,13 @@ func (s *Store) GetUsageSummary(f UsageFilter) (*UsageStats, error) {
 		ByToken:   []UsageByToken{},
 	}
 
+	trustedWhere := where + " AND " + preciseAccountUsageWhere("rl")
+	trustedArgs := append([]any{}, args...)
+
 	if err := s.db.QueryRow(
 		`SELECT COUNT(*), COALESCE(SUM(rl.input_tokens), 0), COALESCE(SUM(rl.output_tokens), 0)
 		 FROM request_logs rl
-		 WHERE `+where, args...,
+		 WHERE `+trustedWhere, trustedArgs...,
 	).Scan(&stats.TotalRequests, &stats.TotalInputTokens, &stats.TotalOutputTokens); err != nil {
 		return nil, err
 	}
@@ -319,7 +331,7 @@ func (s *Store) GetUsageSummary(f UsageFilter) (*UsageStats, error) {
 	if stats.TotalRequests > 0 {
 		var successCount int64
 		s.db.QueryRow(
-			`SELECT COALESCE(SUM(rl.success), 0) FROM request_logs rl WHERE `+where, args...,
+			`SELECT COALESCE(SUM(rl.success), 0) FROM request_logs rl WHERE `+trustedWhere, trustedArgs...,
 		).Scan(&successCount)
 		stats.SuccessRate = float64(successCount) / float64(stats.TotalRequests)
 	}
@@ -330,10 +342,10 @@ func (s *Store) GetUsageSummary(f UsageFilter) (*UsageStats, error) {
 			COALESCE(SUM(rl.input_tokens), 0), COALESCE(SUM(rl.output_tokens), 0)
 		 FROM request_logs rl
 		 LEFT JOIN accounts a ON a.id = rl.account_id
-		 WHERE `+where+`
+		 WHERE `+trustedWhere+`
 		 GROUP BY rl.account_id, a.label
 		 ORDER BY COUNT(*) DESC, rl.account_id ASC
-		 LIMIT 20`, args...,
+		 LIMIT 20`, trustedArgs...,
 	)
 	if err != nil {
 		return nil, err
@@ -357,10 +369,10 @@ func (s *Store) GetUsageSummary(f UsageFilter) (*UsageStats, error) {
 		`SELECT COALESCE(rl.access_token_name, '') AS token_name, COUNT(*),
 			COALESCE(SUM(rl.input_tokens), 0), COALESCE(SUM(rl.output_tokens), 0)
 		 FROM request_logs rl
-		 WHERE `+where+`
+		 WHERE `+trustedWhere+`
 		 GROUP BY rl.access_token_name
 		 ORDER BY COUNT(*) DESC, token_name ASC
-		 LIMIT 20`, args...,
+		 LIMIT 20`, trustedArgs...,
 	)
 	if err != nil {
 		return nil, err
@@ -408,10 +420,13 @@ func (s *Store) GetPoolStats(poolID int64, window string) (*UsageStats, error) {
 		ByToken:   []UsageByToken{},
 	}
 
+	trustedWhere := where + " AND " + preciseAccountUsageWhere("rl")
+	trustedArgs := append([]any{}, args...)
+
 	if err := s.db.QueryRow(
 		`SELECT COUNT(*), COALESCE(SUM(rl.input_tokens), 0), COALESCE(SUM(rl.output_tokens), 0)
 		 FROM request_logs rl
-		 WHERE `+where, args...,
+		 WHERE `+trustedWhere, trustedArgs...,
 	).Scan(&stats.TotalRequests, &stats.TotalInputTokens, &stats.TotalOutputTokens); err != nil {
 		return nil, err
 	}
@@ -419,7 +434,7 @@ func (s *Store) GetPoolStats(poolID int64, window string) (*UsageStats, error) {
 	if stats.TotalRequests > 0 {
 		var successCount int64
 		s.db.QueryRow(
-			`SELECT COALESCE(SUM(rl.success), 0) FROM request_logs rl WHERE `+where, args...,
+			`SELECT COALESCE(SUM(rl.success), 0) FROM request_logs rl WHERE `+trustedWhere, trustedArgs...,
 		).Scan(&successCount)
 		stats.SuccessRate = float64(successCount) / float64(stats.TotalRequests)
 	}
@@ -430,10 +445,10 @@ func (s *Store) GetPoolStats(poolID int64, window string) (*UsageStats, error) {
 			COALESCE(SUM(rl.input_tokens), 0), COALESCE(SUM(rl.output_tokens), 0)
 		 FROM request_logs rl
 		 LEFT JOIN accounts a ON a.id = rl.account_id
-		 WHERE `+where+`
+		 WHERE `+trustedWhere+`
 		 GROUP BY rl.account_id, a.label
 		 ORDER BY COUNT(*) DESC, rl.account_id ASC
-		 LIMIT 20`, args...,
+		 LIMIT 20`, trustedArgs...,
 	)
 	if err != nil {
 		return nil, err
@@ -457,10 +472,10 @@ func (s *Store) GetPoolStats(poolID int64, window string) (*UsageStats, error) {
 		`SELECT COALESCE(rl.access_token_name, '') AS token_name, COUNT(*),
 			COALESCE(SUM(rl.input_tokens), 0), COALESCE(SUM(rl.output_tokens), 0)
 		 FROM request_logs rl
-		 WHERE `+where+`
+		 WHERE `+trustedWhere+`
 		 GROUP BY rl.access_token_name
 		 ORDER BY COUNT(*) DESC, token_name ASC
-		 LIMIT 20`, args...,
+		 LIMIT 20`, trustedArgs...,
 	)
 	if err != nil {
 		return nil, err
@@ -478,6 +493,14 @@ func (s *Store) GetPoolStats(poolID int64, window string) (*UsageStats, error) {
 	}
 
 	return stats, nil
+}
+
+func preciseAccountUsageWhere(alias string) string {
+	prefix := strings.TrimSpace(alias)
+	if prefix != "" {
+		prefix += "."
+	}
+	return "(" + prefix + "source_kind <> 'cpa' OR " + prefix + "runtime_binding_status = 'confirmed')"
 }
 
 func (s *Store) GetLatencyStats(model, period, bucket string, accountID, poolID int64) ([]LatencyBucket, error) {

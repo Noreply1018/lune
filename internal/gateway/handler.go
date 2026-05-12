@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"lune/internal/auth"
+	"lune/internal/health"
 	"lune/internal/router"
 	"lune/internal/store"
 	"lune/internal/syscfg"
@@ -22,14 +24,61 @@ import (
 const servingCooldownDuration = 5 * time.Minute
 
 type Handler struct {
-	router *router.Router
-	cache  *store.RoutingCache
-	store  *store.Store
-	tmpDir string
+	router        *router.Router
+	cache         *store.RoutingCache
+	store         *store.Store
+	tmpDir        string
+	runtimeBinder runtimeBinder
 }
 
-func NewHandler(rt *router.Router, cache *store.RoutingCache, st *store.Store, tmpDir string) *Handler {
-	return &Handler{router: rt, cache: cache, store: st, tmpDir: tmpDir}
+type runtimeBinder interface {
+	ResolveRuntimeBinding(ctx context.Context, acc store.Account, waitAuthIndex bool, readOnly bool) (*health.RuntimeBinding, error)
+}
+
+type providerPinningCapable interface {
+	ProviderPinningSupported() bool
+}
+
+type runtimeBindingLog struct {
+	AuthIndex  string
+	AuthID     string
+	AccountKey string
+	Status     string
+	Reason     string
+}
+
+type runtimeBindingUnavailableError struct {
+	status string
+	reason string
+}
+
+func (e *runtimeBindingUnavailableError) Error() string {
+	if e == nil || e.reason == "" {
+		return "runtime_auth_binding_unavailable"
+	}
+	return e.reason
+}
+
+func (e *runtimeBindingUnavailableError) Status() string {
+	if e == nil {
+		return ""
+	}
+	return e.status
+}
+
+func (e *runtimeBindingUnavailableError) Reason() string {
+	if e == nil {
+		return ""
+	}
+	return e.reason
+}
+
+func NewHandler(rt *router.Router, cache *store.RoutingCache, st *store.Store, tmpDir string, binders ...runtimeBinder) *Handler {
+	var binder runtimeBinder
+	if len(binders) > 0 {
+		binder = binders[0]
+	}
+	return &Handler{router: rt, cache: cache, store: st, tmpDir: tmpDir, runtimeBinder: binder}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -107,6 +156,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.logRequest(requestID, accessToken, model, nil, 503, start, isStream, r, false, err.Error(), Usage{}, "", 0)
 			return
 		}
+		if errors.Is(err, router.ErrRuntimeBinding) {
+			reason := "provider_pinning_unsupported"
+			webutil.WriteGatewayError(w, 503, "runtime_auth_binding_unavailable", reason)
+			h.logRequest(requestID, accessToken, model, nil, 503, start, isStream, r, false, "runtime_auth_binding_unavailable: "+reason, Usage{}, "cpa", 0)
+			return
+		}
 		if errors.Is(err, router.ErrModelNotOnAccount) {
 			var accID int64
 			if forceAccountID != nil {
@@ -138,6 +193,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// "all retries exhausted" log below still carries pool/account context
 	// instead of an anonymous failure.
 	var lastResolved *router.ResolvedRoute
+	var lastBindingLog runtimeBindingLog
 	attemptsUsed := 0
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -159,8 +215,49 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		lastResolved = resolved
 
+		bindingLog := runtimeBindingLog{}
+		targetBinding, bindErr := h.resolveForwardRuntimeBinding(r.Context(), resolved.Account)
+		if bindErr != nil {
+			status, reason := health.RuntimeBindingErrorState(bindErr)
+			if reason == "" {
+				reason = "runtime_auth_binding_unavailable"
+			}
+			bindingLog = runtimeBindingLog{
+				AuthIndex:  "",
+				AuthID:     "",
+				AccountKey: resolved.Account.CpaAccountKey,
+				Status:     status,
+				Reason:     reason,
+			}
+			if targetBinding != nil {
+				bindingLog.AuthIndex = targetBinding.AuthIndex
+				bindingLog.AuthID = targetBinding.AuthID
+				bindingLog.AccountKey = targetBinding.AccountKey
+			}
+			slog.Warn("gateway CPA runtime binding unavailable",
+				"request_id", requestID,
+				"account_id", resolved.AccountID,
+				"cpa_account_key", resolved.Account.CpaAccountKey,
+				"status", status,
+				"reason", reason,
+				"err", bindErr,
+			)
+			webutil.WriteGatewayError(w, 503, "runtime_auth_binding_unavailable", reason)
+			h.logRequestWithBinding(requestID, accessToken, model, resolved, 503, start, isStream, r, false, "runtime_auth_binding_unavailable: "+reason, Usage{}, resolved.Account.SourceKind, 0, bindingLog)
+			return
+		}
+		if targetBinding != nil {
+			bindingLog = runtimeBindingLog{
+				AuthIndex:  targetBinding.AuthIndex,
+				AuthID:     targetBinding.AuthID,
+				AccountKey: targetBinding.AccountKey,
+				Status:     "confirmed",
+			}
+		}
+		lastBindingLog = bindingLog
+
 		// resolve upstream target based on source_kind
-		target := h.resolveTarget(resolved.Account)
+		target := h.resolveTarget(resolved.Account, targetBinding)
 
 		timeout := h.getRequestTimeout()
 		result := Forward(w, r, target, pathSuffix, body, isStream, requestID, timeout)
@@ -173,7 +270,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if !IsRetryable(result.Err) {
 				webutil.WriteGatewayError(w, 502, "upstream_failed", result.Err.Error())
-				h.logRequest(requestID, accessToken, model, resolved, 0, start, isStream, r, false, result.Err.Error(), Usage{}, resolved.Account.SourceKind, attemptsUsed)
+				h.logRequestWithBinding(requestID, accessToken, model, resolved, 0, start, isStream, r, false, result.Err.Error(), Usage{}, resolved.Account.SourceKind, attemptsUsed, bindingLog)
 				return
 			}
 			continue
@@ -186,12 +283,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if isStream {
 				result.WriteResponse(w)
-				h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed)
+				h.logRequestWithBinding(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog)
 				return
 			}
 			if attempt >= maxRetries-1 {
 				result.WriteResponse(w)
-				h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed)
+				h.logRequestWithBinding(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog)
 				return
 			}
 			exclude = append(exclude, resolved.AccountID)
@@ -225,7 +322,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if success {
 			h.recordServingSuccess(resolved.AccountID)
-			if resolved.Account.SourceKind == "cpa" {
+			if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaCredentialStatus, "auth_suspect") {
 				h.updateCpaCredential(resolved.AccountID, "ok", "", "")
 			}
 			// v3: update token last_used_at (no quota tracking)
@@ -234,14 +331,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					_ = h.store.UpdateTokenLastUsed(accessToken.ID)
 				}()
 			}
-		} else if resolved.Account.SourceKind == "cpa" && isGatewayAuthFailure(result.StatusCode, result.Body) {
+		} else if resolved.Account.SourceKind == "cpa" && isCpaAccountUpstreamAuthFailure(result.StatusCode, result.Body) {
 			msg := fmt.Sprintf("HTTP %d", result.StatusCode)
 			h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
+		} else if resolved.Account.SourceKind != "cpa" && isGatewayAuthFailure(result.StatusCode, result.Body) {
+			h.updateHealth(resolved.AccountID, "error", "upstream authentication failed")
 		} else if result.Stream != nil && result.Stream.Failed {
 			h.recordServingFailure(resolved.AccountID, errMsg)
 		}
 
-		h.logRequest(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed)
+		h.logRequestWithBinding(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog)
 		return
 	}
 
@@ -257,7 +356,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if lastResolved != nil {
 		lastSourceKind = lastResolved.Account.SourceKind
 	}
-	h.logRequest(requestID, accessToken, model, lastResolved, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, lastSourceKind, attemptsUsed)
+	h.logRequestWithBinding(requestID, accessToken, model, lastResolved, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, lastSourceKind, attemptsUsed, lastBindingLog)
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter, tokenPoolID *int64) {
@@ -286,14 +385,41 @@ func (h *Handler) handleModels(w http.ResponseWriter, tokenPoolID *int64) {
 	})
 }
 
-func (h *Handler) resolveTarget(account store.Account) UpstreamTarget {
+func (h *Handler) resolveForwardRuntimeBinding(ctx context.Context, account store.Account) (*RuntimeBinding, error) {
+	if account.SourceKind != "cpa" {
+		return nil, nil
+	}
+	if h.runtimeBinder == nil {
+		return nil, fmt.Errorf("runtime_auth_binding_unavailable")
+	}
+	binding, err := h.runtimeBinder.ResolveRuntimeBinding(ctx, account, true, true)
+	if err != nil {
+		return nil, err
+	}
+	if binding == nil || strings.TrimSpace(binding.AuthIndex) == "" {
+		return nil, fmt.Errorf("runtime_auth_binding_unavailable")
+	}
+	targetBinding := &RuntimeBinding{
+		AccountKey: binding.AccountKey,
+		AuthID:     binding.AuthID,
+		AuthIndex:  binding.AuthIndex,
+		OpenAIID:   binding.OpenAIID,
+	}
+	if capable, ok := h.runtimeBinder.(providerPinningCapable); ok && capable.ProviderPinningSupported() {
+		return targetBinding, nil
+	}
+	return targetBinding, &runtimeBindingUnavailableError{status: "unsupported", reason: "provider_pinning_unsupported"}
+}
+
+func (h *Handler) resolveTarget(account store.Account, binding *RuntimeBinding) UpstreamTarget {
 	if account.SourceKind == "cpa" && account.CpaServiceID != nil {
 		svc := h.cache.GetCpaService(*account.CpaServiceID)
 		if svc != nil {
 			return UpstreamTarget{
-				BaseURL:   strings.TrimRight(svc.BaseURL, "/") + "/api/provider/" + account.CpaProvider + "/v1",
-				APIKey:    svc.APIKey,
-				AccountID: account.ID,
+				BaseURL:        strings.TrimRight(svc.BaseURL, "/") + "/api/provider/" + account.CpaProvider + "/v1",
+				APIKey:         svc.APIKey,
+				AccountID:      account.ID,
+				RuntimeBinding: binding,
 			}
 		}
 	}
@@ -305,6 +431,10 @@ func (h *Handler) resolveTarget(account store.Account) UpstreamTarget {
 }
 
 func (h *Handler) logRequest(requestID string, token *store.AccessToken, model string, resolved *router.ResolvedRoute, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string, attemptCount int) {
+	h.logRequestWithBinding(requestID, token, model, resolved, statusCode, start, stream, r, success, errMsg, usage, sourceKind, attemptCount, runtimeBindingLog{})
+}
+
+func (h *Handler) logRequestWithBinding(requestID string, token *store.AccessToken, model string, resolved *router.ResolvedRoute, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string, attemptCount int, binding runtimeBindingLog) {
 	tokenName := ""
 	if token != nil {
 		tokenName = token.Name
@@ -323,22 +453,27 @@ func (h *Handler) logRequest(requestID string, token *store.AccessToken, model s
 	}
 
 	log := &store.RequestLog{
-		RequestID:       requestID,
-		AccessTokenName: tokenName,
-		ModelRequested:  model,
-		ModelActual:     modelActual,
-		PoolID:          poolID,
-		AccountID:       accountID,
-		StatusCode:      statusCode,
-		LatencyMs:       time.Since(start).Milliseconds(),
-		InputTokens:     usage.InputTokens,
-		OutputTokens:    usage.OutputTokens,
-		Stream:          stream,
-		RequestIP:       clientIP(r),
-		Success:         success,
-		ErrorMessage:    errMsg,
-		SourceKind:      sourceKind,
-		AttemptCount:    attemptCount,
+		RequestID:            requestID,
+		AccessTokenName:      tokenName,
+		ModelRequested:       model,
+		ModelActual:          modelActual,
+		PoolID:               poolID,
+		AccountID:            accountID,
+		StatusCode:           statusCode,
+		LatencyMs:            time.Since(start).Milliseconds(),
+		InputTokens:          usage.InputTokens,
+		OutputTokens:         usage.OutputTokens,
+		Stream:               stream,
+		RequestIP:            clientIP(r),
+		Success:              success,
+		ErrorMessage:         errMsg,
+		SourceKind:           sourceKind,
+		AttemptCount:         attemptCount,
+		RuntimeAuthIndex:     binding.AuthIndex,
+		RuntimeAuthID:        binding.AuthID,
+		RuntimeAccountKey:    binding.AccountKey,
+		RuntimeBindingStatus: binding.Status,
+		RuntimeBindingReason: binding.Reason,
 	}
 	go func() {
 		if err := h.store.InsertLog(log); err != nil {
@@ -385,6 +520,26 @@ func isGatewayAuthFailure(statusCode int, body []byte) bool {
 		strings.Contains(text, "access denied") ||
 		strings.Contains(text, "refresh token") ||
 		strings.Contains(text, "expired token")
+}
+
+func isCpaAccountUpstreamAuthFailure(statusCode int, body []byte) bool {
+	if statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden {
+		return false
+	}
+	text := strings.ToLower(string(body))
+	if strings.Contains(text, "service key") ||
+		strings.Contains(text, "api key") ||
+		strings.Contains(text, "management key") ||
+		strings.Contains(text, "invalid authorization") {
+		return false
+	}
+	return strings.Contains(text, "refresh token") ||
+		strings.Contains(text, "invalid_grant") ||
+		strings.Contains(text, "token_invalidated") ||
+		strings.Contains(text, "upstream credential") ||
+		strings.Contains(text, "upstream authentication") ||
+		strings.Contains(text, "chatgpt") ||
+		strings.Contains(text, "codex credential")
 }
 
 func gatewayCredentialReason(body []byte) string {

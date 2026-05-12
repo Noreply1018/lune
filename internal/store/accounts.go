@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -10,7 +11,7 @@ var accountColumns = `id, label, source_kind, base_url, api_key, provider,
 	cpa_service_id, cpa_provider, cpa_account_key, cpa_email, cpa_plan_type, cpa_openai_id,
 	cpa_expired_at, cpa_last_refresh_at, cpa_disabled,
 	cpa_credential_status, cpa_credential_reason, cpa_credential_last_error, cpa_credential_checked_at,
-	cpa_subscription_expires_at, cpa_subscription_fetched_at, cpa_subscription_last_error,
+	cpa_subscription_expires_at, cpa_subscription_fetched_at, cpa_subscription_last_error, cpa_subscription_status,
 	codex_quota_json, codex_quota_fetched_at, cpa_quota_status, cpa_quota_last_error, cpa_quota_checked_at,
 	serving_status, failure_count, last_failure_at, last_success_at, cooldown_until,
 	probe_models, last_probe_status, last_probe_at, last_probe_error,
@@ -20,7 +21,7 @@ var accountColumnsWithAlias = `a.id, a.label, a.source_kind, a.base_url, a.api_k
 	a.cpa_service_id, a.cpa_provider, a.cpa_account_key, a.cpa_email, a.cpa_plan_type, a.cpa_openai_id,
 	a.cpa_expired_at, a.cpa_last_refresh_at, a.cpa_disabled,
 	a.cpa_credential_status, a.cpa_credential_reason, a.cpa_credential_last_error, a.cpa_credential_checked_at,
-	a.cpa_subscription_expires_at, a.cpa_subscription_fetched_at, a.cpa_subscription_last_error,
+	a.cpa_subscription_expires_at, a.cpa_subscription_fetched_at, a.cpa_subscription_last_error, a.cpa_subscription_status,
 	a.codex_quota_json, a.codex_quota_fetched_at, a.cpa_quota_status, a.cpa_quota_last_error, a.cpa_quota_checked_at,
 	a.serving_status, a.failure_count, a.last_failure_at, a.last_success_at, a.cooldown_until,
 	a.probe_models, a.last_probe_status, a.last_probe_at, a.last_probe_error,
@@ -53,16 +54,16 @@ func (s *Store) CreateAccount(a *Account) (int64, error) {
 			cpa_service_id, cpa_provider, cpa_account_key, cpa_email, cpa_plan_type, cpa_openai_id,
 			cpa_expired_at, cpa_last_refresh_at, cpa_disabled,
 			cpa_credential_status, cpa_credential_reason, cpa_credential_last_error, cpa_credential_checked_at,
-			cpa_subscription_expires_at, cpa_subscription_fetched_at, cpa_subscription_last_error,
+			cpa_subscription_expires_at, cpa_subscription_fetched_at, cpa_subscription_last_error, cpa_subscription_status,
 			cpa_quota_status, cpa_quota_last_error, cpa_quota_checked_at,
 			serving_status, failure_count, last_failure_at, last_success_at, cooldown_until,
 			enabled, status, notes, quota_display)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.Label, a.SourceKind, a.BaseURL, a.APIKey, a.Provider,
 		a.CpaServiceID, a.CpaProvider, a.CpaAccountKey, a.CpaEmail, a.CpaPlanType, a.CpaOpenaiID,
 		a.CpaExpiredAt, a.CpaLastRefreshAt, a.CpaDisabled,
 		defaultCpaCredentialStatus(a.CpaCredentialStatus), a.CpaCredentialReason, a.CpaCredentialLastError, a.CpaCredentialCheckedAt,
-		a.CpaSubscriptionExpiresAt, a.CpaSubscriptionFetchedAt, a.CpaSubscriptionLastError,
+		a.CpaSubscriptionExpiresAt, a.CpaSubscriptionFetchedAt, a.CpaSubscriptionLastError, defaultCpaSubscriptionStatus(a.CpaSubscriptionStatus),
 		defaultCpaQuotaStatus(a.CpaQuotaStatus), a.CpaQuotaLastError, a.CpaQuotaCheckedAt,
 		defaultServingStatus(a.ServingStatus), a.FailureCount, a.LastFailureAt, a.LastSuccessAt, a.CooldownUntil,
 		a.Enabled, "healthy", a.Notes, a.QuotaDisplay,
@@ -204,13 +205,13 @@ func (s *Store) UpdateCpaAccountFromImport(id int64, a *Account) error {
 			label=?, cpa_provider=?, cpa_email=?, cpa_plan_type=?, cpa_openai_id=?,
 			cpa_expired_at=?, cpa_last_refresh_at=?, cpa_disabled=?,
 			cpa_credential_status=?, cpa_credential_reason=?, cpa_credential_last_error=?, cpa_credential_checked_at=?,
-			cpa_subscription_expires_at=?, cpa_subscription_fetched_at=?, cpa_subscription_last_error=?,
+			cpa_subscription_expires_at=?, cpa_subscription_fetched_at=?, cpa_subscription_last_error=?, cpa_subscription_status=?,
 			enabled=?, status='healthy', last_error='', last_checked_at=datetime('now'), notes=?, updated_at=datetime('now')
 		 WHERE id=?`,
 		a.Label, a.CpaProvider, a.CpaEmail, a.CpaPlanType, a.CpaOpenaiID,
 		a.CpaExpiredAt, a.CpaLastRefreshAt, a.CpaDisabled,
 		defaultCpaCredentialStatus(a.CpaCredentialStatus), a.CpaCredentialReason, a.CpaCredentialLastError, a.CpaCredentialCheckedAt,
-		a.CpaSubscriptionExpiresAt, a.CpaSubscriptionFetchedAt, a.CpaSubscriptionLastError,
+		a.CpaSubscriptionExpiresAt, a.CpaSubscriptionFetchedAt, a.CpaSubscriptionLastError, defaultCpaSubscriptionStatus(a.CpaSubscriptionStatus),
 		a.Enabled, a.Notes, id,
 	)
 	return err
@@ -274,9 +275,18 @@ func (s *Store) UpdateAccountQuotaDisplay(id int64, quotaDisplay string) error {
 }
 
 func (s *Store) UpdateAccountCpaSubscription(id int64, expiresAt, fetchedAt, lastError string) error {
+	status := deriveCpaSubscriptionStatus(expiresAt, lastError)
 	_, err := s.db.Exec(
-		`UPDATE accounts SET cpa_subscription_expires_at=?, cpa_subscription_fetched_at=?, cpa_subscription_last_error=? WHERE id=?`,
-		expiresAt, fetchedAt, lastError, id,
+		`UPDATE accounts SET cpa_subscription_expires_at=?, cpa_subscription_fetched_at=?, cpa_subscription_last_error=?, cpa_subscription_status=?, updated_at=datetime('now') WHERE id=?`,
+		expiresAt, fetchedAt, lastError, status, id,
+	)
+	return err
+}
+
+func (s *Store) UpdateAccountCpaSubscriptionStatus(id int64, status, lastError, checkedAt string) error {
+	_, err := s.db.Exec(
+		`UPDATE accounts SET cpa_subscription_status=?, cpa_subscription_last_error=?, cpa_subscription_fetched_at=?, updated_at=datetime('now') WHERE id=?`,
+		defaultCpaSubscriptionStatus(status), lastError, checkedAt, id,
 	)
 	return err
 }
@@ -365,7 +375,7 @@ func (s *accountScanState) targets() []any {
 		&s.cpaServiceID, &a.CpaProvider, &a.CpaAccountKey, &a.CpaEmail, &a.CpaPlanType, &a.CpaOpenaiID,
 		&a.CpaExpiredAt, &a.CpaLastRefreshAt, &s.cpaDisabled,
 		&a.CpaCredentialStatus, &a.CpaCredentialReason, &a.CpaCredentialLastError, &a.CpaCredentialCheckedAt,
-		&a.CpaSubscriptionExpiresAt, &a.CpaSubscriptionFetchedAt, &a.CpaSubscriptionLastError,
+		&a.CpaSubscriptionExpiresAt, &a.CpaSubscriptionFetchedAt, &a.CpaSubscriptionLastError, &a.CpaSubscriptionStatus,
 		&a.CodexQuotaJSON, &a.CodexQuotaFetchedAt, &a.CpaQuotaStatus, &a.CpaQuotaLastError, &a.CpaQuotaCheckedAt,
 		&a.ServingStatus, &a.FailureCount, &a.LastFailureAt, &a.LastSuccessAt, &a.CooldownUntil,
 		&s.probeModelsJSON, &a.LastProbeStatus, &s.lastProbeAt, &a.LastProbeError,
@@ -378,6 +388,7 @@ func (s *accountScanState) apply() {
 	a.Enabled = s.enabled != 0
 	a.CpaDisabled = s.cpaDisabled != 0
 	a.CpaCredentialStatus = defaultCpaCredentialStatus(a.CpaCredentialStatus)
+	a.CpaSubscriptionStatus = defaultCpaSubscriptionStatus(a.CpaSubscriptionStatus)
 	a.CpaQuotaStatus = defaultCpaQuotaStatus(a.CpaQuotaStatus)
 	a.ServingStatus = defaultServingStatus(a.ServingStatus)
 
@@ -425,6 +436,51 @@ func defaultCpaQuotaStatus(status string) string {
 		return "unknown"
 	}
 	return status
+}
+
+func defaultCpaSubscriptionStatus(status string) string {
+	if status == "" {
+		return "unknown"
+	}
+	return status
+}
+
+func deriveCpaSubscriptionStatus(expiresAt, lastError string) string {
+	lastError = strings.TrimSpace(lastError)
+	if strings.EqualFold(lastError, "subscription metadata pending") {
+		expiresAt = strings.TrimSpace(expiresAt)
+		if t, ok := parseCpaSubscriptionTime(expiresAt); ok {
+			if t.After(time.Now().UTC()) {
+				return "active"
+			}
+			return "expired"
+		}
+		return "pending"
+	}
+	if lastError != "" {
+		return "error"
+	}
+	expiresAt = strings.TrimSpace(expiresAt)
+	if expiresAt == "" {
+		return "unknown"
+	}
+	if t, ok := parseCpaSubscriptionTime(expiresAt); ok {
+		if t.After(time.Now().UTC()) {
+			return "active"
+		}
+		return "expired"
+	}
+	return "error"
+}
+
+func parseCpaSubscriptionTime(value string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02"} {
+		t, err := time.Parse(layout, value)
+		if err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func defaultServingStatus(status string) string {

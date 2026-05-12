@@ -216,6 +216,49 @@ func TestUpsertImportedCpaAccountUpdatesExistingKey(t *testing.T) {
 	}
 }
 
+func TestUpsertImportedCodexAccountDerivesActiveSubscriptionStatus(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
+
+	svcID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://example.com",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	svc, err := st.GetCpaServiceByID(svcID)
+	if err != nil || svc == nil {
+		t.Fatalf("get cpa service: %v", err)
+	}
+
+	account, err := handler.upsertImportedCpaAccount(svc, "codex-user@example.com-plus", &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+		IDToken: adminTestJWT(map[string]any{
+			"email": "user@example.com",
+			"https://api.openai.com/auth": map[string]any{
+				"chatgpt_plan_type":                 "plus",
+				"chatgpt_account_id":                "acct_123",
+				"chatgpt_subscription_active_until": "2099-01-01T00:00:00+00:00",
+			},
+		}),
+	}, "", true, "")
+	if err != nil {
+		t.Fatalf("upsert account: %v", err)
+	}
+	acc, err := st.GetAccount(account.ID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.CpaSubscriptionStatus != "active" || acc.CpaSubscriptionExpiresAt != "2099-01-01T00:00:00Z" {
+		t.Fatalf("expected active subscription status from imported auth file, got %+v", acc)
+	}
+}
+
 func TestUpsertImportedCpaAccountClearsStaleHealthError(t *testing.T) {
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
@@ -774,6 +817,9 @@ func TestGetCpaServiceDoesNotExposeManagementKey(t *testing.T) {
 
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
+	if err := st.SetSetting("cpa_provider_pinning_supported", "1"); err != nil {
+		t.Fatalf("set provider pinning capability: %v", err)
+	}
 	if _, err := st.CreateCpaService(&store.CpaService{
 		Label:         "CPA",
 		BaseURL:       "https://cpa.example.com",
@@ -800,6 +846,9 @@ func TestGetCpaServiceDoesNotExposeManagementKey(t *testing.T) {
 	}
 	if _, ok := resp.Data["management_key"]; ok {
 		t.Fatalf("expected management_key to be omitted from response")
+	}
+	if got, ok := resp.Data["provider_pinning_supported"].(bool); !ok || !got {
+		t.Fatalf("expected provider_pinning_supported=true, got %#v", resp.Data["provider_pinning_supported"])
 	}
 }
 
@@ -840,6 +889,19 @@ func TestUpsertCpaServicePreservesManagementKey(t *testing.T) {
 	}
 	if svc.ManagementKey != "manage-secret" {
 		t.Fatalf("expected management key to be preserved, got %q", svc.ManagementKey)
+	}
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	got, ok := resp.Data["provider_pinning_supported"].(bool)
+	if !ok {
+		t.Fatalf("expected provider_pinning_supported field in response, got %#v", resp.Data["provider_pinning_supported"])
+	}
+	if got {
+		t.Fatalf("expected provider_pinning_supported=false when capability is unset")
 	}
 }
 

@@ -5,16 +5,21 @@ import (
 	"fmt"
 )
 
-const accountRoutableWhereSQL = `a.enabled = 1
-	AND a.status IN ('healthy', 'degraded')
-	AND (a.serving_status <> 'cooldown' OR (a.cooldown_until <> '' AND datetime(a.cooldown_until) <= datetime('now')))
-	AND (
-		a.source_kind <> 'cpa'
-		OR (
-			a.cpa_credential_status NOT IN ('needs_login', 'refresh_failed', 'runtime_pending', 'runtime_error', 'auth_suspect')
-			AND a.cpa_quota_status <> 'blocked'
-		)
-	)`
+const accountRoutableBaseWhereSQL = `a.enabled = 1
+		AND a.status IN ('healthy', 'degraded')
+		AND a.serving_status <> 'error'
+		AND (a.serving_status <> 'cooldown' OR (a.cooldown_until <> '' AND datetime(a.cooldown_until) <= datetime('now')))
+		AND (
+			a.source_kind <> 'cpa'
+			OR (
+				COALESCE((SELECT value FROM system_config WHERE key='cpa_provider_pinning_supported'), '0') = '1'
+				AND lower(a.cpa_credential_status) NOT IN ('needs_login', 'refresh_failed', 'runtime_pending', 'runtime_error', 'unknown', '')
+				AND lower(a.cpa_quota_status) <> 'blocked'
+				AND (lower(a.cpa_provider) <> 'codex' OR lower(a.cpa_subscription_status) = 'active')
+			)
+		)`
+
+const accountRoutableWhereSQL = accountRoutableBaseWhereSQL
 
 const routableAccountWhereSQL = `pm.enabled = 1 AND ` + accountRoutableWhereSQL
 

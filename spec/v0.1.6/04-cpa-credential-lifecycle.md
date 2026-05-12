@@ -1,16 +1,8 @@
-# 02. CPA 凭据生命周期
+# 04. CPA 凭据生命周期、重复账号、删除与重登
 
-## 目标
+## 问题
 
-把 CPA 账号从“数据库账号行”和“磁盘 auth file”松散同步，改成可审计、可幂等、可重登的生命周期：
-
-- 同一个 `cpa_service_id + cpa_account_key` 只能对应一条 Lune account。
-- Device Code 登录、远程导入、批量导入必须复用同一套 upsert 逻辑。
-- 删除、覆盖、重登同名 auth file 后，embedded CPA runtime 必须 reload 或重启到新状态。
-- quota 初次失败不能立即把刚登录账号定性为 `needs_login`。
-- 磁盘旧 metadata 不能覆盖数据库中更新后的登录状态。
-
-## 问题根源
+CPA 账号过去是“数据库账号行”和“磁盘 auth file”松散同步，导致重复账号、同名重登污染和删除语义不明确。
 
 2026-05-10 的生产审计暴露了两类问题。
 
@@ -50,20 +42,20 @@
 6. quota 401 被 Lune 写成 `needs_login`，UI 显示“需要重新登录”。
 7. 如果 CPA runtime 又把旧内存凭据落回同名 auth file，`syncCpaMetadata` / `resolveCpaRuntime` 会把旧 metadata 写回 DB。
 
-## 解决的问题
+## 改进策略
 
-- 防止同一个 CPA credential key 出现多条账号记录。
-- 防止删除后重登仍复用旧 runtime auth index。
-- 防止旧 auth file metadata 回写覆盖新登录状态。
-- 防止首次 quota 401 把刚登录账号误判为需要重新登录。
-- 让删除账号时凭据文件是否保留成为显式语义，而不是隐式残留。
+把 CPA 账号改成可审计、可幂等、可重登的生命周期：
 
-## 设计规则
+- 同一个 `cpa_service_id + cpa_account_key` 只能对应一条 Lune account。
+- Device Code 登录、远程导入、批量导入必须复用同一套 upsert 逻辑。
+- 删除、覆盖、重登同名 auth file 后，embedded CPA runtime 必须 reload 或重启到新状态。
+- quota 初次失败不能立即把刚登录账号定性为 `needs_login`。
+- 磁盘旧 metadata 不能覆盖数据库中更新后的登录状态。
 
 ### 唯一性与幂等导入
 
 - 对 `source_kind='cpa' AND cpa_service_id IS NOT NULL AND cpa_account_key <> ''` 建立唯一约束：`UNIQUE(cpa_service_id, cpa_account_key)`。
-- 迁移前必须检测重复 CPA key。若已有重复记录，迁移应输出可诊断信息，不能静默失败。
+- 启动检查必须检测重复 CPA key。若已有重复记录，应输出可诊断信息，不能静默忽略。
 - Device Code 登录、远程单账号导入、批量导入统一走 CPA account upsert。
 - 同一 `cpa_account_key` 重新登录时更新已有账号和 Pool membership，不创建重复账号。
 - Pool attach 必须幂等；已有账号加入已有 Pool 时不创建新账号，也不产生用户不可见的重复状态。
@@ -122,16 +114,34 @@
 - 对 embedded CPA runtime 执行 reload 或释放旧 auth entry。
 - 写入安全审计日志。
 
-## UI 要求
+## UI 表现
 
-- 前端“需要重新登录”不能再作为所有 CPA 异常的默认文案。
-- quota 获取失败应显示“额度查询失败”。
-- 订阅 metadata 获取失败应显示“订阅元数据获取失败”。
-- CPA runtime 未就绪或异常应显示“CPA runtime 初始化中”或“CPA runtime 异常”。
+前端“需要重新登录”不能再作为所有 CPA 异常的默认文案。
+
+应区分展示：
+
+- quota 获取失败：`额度查询失败`。
+- 订阅 metadata 获取失败：`订阅元数据获取失败`。
+- CPA runtime 未就绪或异常：`CPA runtime 初始化中` 或 `CPA runtime 异常`。
 - 浏览器登录正常但本地 CPA 凭据异常时，应解释两者不是同一个登录态。
-- 当多个启用账号拥有相同 `(cpa_service_id, cpa_account_key)` 时，应显示“重复导入”并提供安全清理入口。
 
-## 审计日志要求
+当多个启用账号拥有相同 `(cpa_service_id, cpa_account_key)` 时：
+
+- 显示“重复导入”。
+- 标注哪些账号行共享同一 credential key。
+- 提供安全清理入口。
+- 清理前说明是否删除 auth file、是否只禁用账号、是否从 Pool 移除。
+
+删除 CPA 账号时必须明确：
+
+- 是否删除数据库 account row。
+- 是否删除 Pool membership。
+- 是否删除磁盘 auth file。
+- 是否触发 embedded CPA runtime reload。
+
+如果 auth file 默认保留，UI 必须明说“凭据文件仍保留”；如果同步删除，也必须明说该操作会使后续重登需要重新授权。
+
+## 日志与诊断
 
 登录、删除、reload、metadata sync 和 quota refresh 必须写入安全审计日志。
 
@@ -148,10 +158,24 @@
 
 日志不得包含 refresh token、access token、完整 auth file、完整 prompt 或 request body。
 
+启动检查发现重复 CPA account key 时，必须给出明确诊断，包含重复 key、涉及账号 id 和建议清理路径。
+
+## 测试与验收
+
+- Device Code 登录同一个已存在 CPA account key 时，更新现有账号，不创建重复账号。
+- 删除 CPA 账号后重新登录同一个 account key，embedded CPA runtime 使用新 token。
+- 重新登录后的首次 quota refresh 不继续使用旧 auth index。
+- 同名 auth file 被覆盖后，`resolveAuthMetadata` 能检测 runtime metadata 与磁盘 metadata 不一致并触发 reload。
+- `syncCpaMetadata` 不会用旧 `last_refresh` 覆盖更新后的 DB 登录状态。
+- batch import 遇到已存在 CPA account key 时跳过或更新，不创建重复账号。
+- quota HTTP 401 不会在普通模型请求仍健康时单独把账号展示为“需要重新登录”。
+- 重复 CPA account key 出现在数据库中时，启动检查能给出明确诊断。
+- 删除账号时，用户能明确知道 auth file 是删除还是保留；runtime 状态与该选择一致。
+
 ## 已完成事项
 
 - 增加 CPA 账号唯一性约束方向：`UNIQUE(cpa_service_id, cpa_account_key)`。
-- 增加迁移前重复检测。
+- 增加启动前重复检测。
 - Device Code 登录同一个已存在 CPA account key 时更新现有账号，不创建重复账号。
 - 同一 `cpa_account_key` 重新登录时更新已有账号和 Pool membership。
 - Pool attach 幂等。
@@ -160,7 +184,9 @@
 - `syncCpaMetadata` 不会用旧 `last_refresh` 覆盖更新后的 DB 登录状态。
 - batch import 遇到已存在 CPA account key 时跳过或更新，不创建重复账号。
 - quota HTTP 401 不会在普通模型请求仍健康时单独把账号展示为“需要重新登录”。
-- 重复 CPA account key 出现在数据库中时，迁移或启动检查给出明确诊断。
+- 重复 CPA account key 出现在数据库中时，启动检查给出明确诊断。
+- 普通模型转发已复用 runtime auth metadata，并将 runtime auth id/index 写入请求日志，便于后续确认重登后实际执行的是新 auth file。
+- embedded CPA reload 和 runtime binding 失败会进入明确错误路径，不再静默回落到 provider 级默认调度。
 
 ## 待解决事项
 
@@ -168,14 +194,3 @@
 - 删除 auth file 或删除账号后的 embedded CPA runtime reload 仍需补齐。
 - UI 增加重复账号检测与安全清理入口。
 - 登录、删除、reload、metadata sync、quota refresh 的安全审计日志仍需补齐。
-
-## 验收标准
-
-- Device Code 登录同一个已存在 CPA account key 时，更新现有账号，不创建重复账号。
-- 删除 CPA 账号后重新登录同一个 account key，embedded CPA runtime 使用新 token；首次 quota refresh 不继续使用旧 auth index。
-- 同名 auth file 被覆盖后，`resolveAuthMetadata` 能检测 runtime metadata 与磁盘 metadata 不一致并触发 reload。
-- `syncCpaMetadata` 不会用旧 `last_refresh` 覆盖更新后的 DB 登录状态。
-- batch import 遇到已存在 CPA account key 时跳过或更新，不创建重复账号。
-- quota HTTP 401 不会在普通模型请求仍健康时单独把账号展示为“需要重新登录”。
-- 重复 CPA account key 出现在数据库中时，迁移或启动检查能给出明确诊断。
-- 删除账号时，用户能明确知道 auth file 是删除还是保留；runtime 状态与该选择一致。

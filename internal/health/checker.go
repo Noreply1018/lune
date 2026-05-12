@@ -55,6 +55,19 @@ type RefreshResult struct {
 	CredentialReason string `json:"credential_reason,omitempty"`
 }
 
+type RuntimeBinding struct {
+	AccountID     int64
+	AccountKey    string
+	AuthID        string
+	AuthIndex     string
+	OpenAIID      string
+	Provider      string
+	Email         string
+	PlanType      string
+	BindingStatus string
+	BindingReason string
+}
+
 type cpaRuntime struct {
 	account  store.Account
 	service  store.CpaService
@@ -66,6 +79,7 @@ type cpaRuntime struct {
 type resolveOptions struct {
 	NeedAuthIndex bool
 	WaitAuthIndex bool
+	ReadOnly      bool
 }
 
 type resolveError struct {
@@ -78,6 +92,20 @@ func (e *resolveError) Error() string {
 	return e.message
 }
 
+func (e *resolveError) Status() string {
+	if e == nil {
+		return ""
+	}
+	return e.status
+}
+
+func (e *resolveError) Reason() string {
+	if e == nil {
+		return ""
+	}
+	return e.reason
+}
+
 type Checker struct {
 	store               *store.Store
 	cache               *store.RoutingCache
@@ -87,11 +115,12 @@ type Checker struct {
 	cpaReloadSignalPath string
 	notifier            *notify.Service
 
-	cpaHealthAttempts   int
-	cpaHealthRetryDelay time.Duration
-	authIndexAttempts   int
-	authIndexRetryDelay time.Duration
-	reloadMu            sync.Mutex
+	cpaHealthAttempts        int
+	cpaHealthRetryDelay      time.Duration
+	authIndexAttempts        int
+	authIndexRetryDelay      time.Duration
+	providerPinningSupported bool
+	reloadMu                 sync.Mutex
 }
 
 func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir, managementKey string, notifier *notify.Service) *Checker {
@@ -112,6 +141,10 @@ func NewChecker(st *store.Store, cache *store.RoutingCache, cpaAuthDir, manageme
 
 func (c *Checker) SetCpaReloadSignalPath(path string) {
 	c.cpaReloadSignalPath = strings.TrimSpace(path)
+}
+
+func (c *Checker) SetProviderPinningSupported(supported bool) {
+	c.providerPinningSupported = supported
 }
 
 func (c *Checker) Run(ctx context.Context) {
@@ -396,18 +429,24 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 	}
 	if acc.CpaServiceID == nil {
 		err := &resolveError{status: "runtime_error", reason: "service_missing", message: "missing CPA service"}
-		c.markCpaCredentialState(acc.ID, err.status, err.reason, err.message)
+		if !opts.ReadOnly {
+			c.markCpaCredentialState(acc.ID, err.status, err.reason, err.message)
+		}
 		return nil, err
 	}
 	svc := c.cache.GetCpaService(*acc.CpaServiceID)
 	if svc == nil || !svc.Enabled {
 		err := &resolveError{status: "runtime_error", reason: "runtime_unreachable", message: "CPA service unreachable"}
-		c.markCpaCredentialState(acc.ID, err.status, err.reason, err.message)
+		if !opts.ReadOnly {
+			c.markCpaCredentialState(acc.ID, err.status, err.reason, err.message)
+		}
 		return nil, err
 	}
 	if c.cpaAuthDir == "" {
 		err := &resolveError{status: "runtime_error", reason: "auth_dir_missing", message: "cpa_auth_dir is not configured"}
-		c.markCpaCredentialState(acc.ID, err.status, err.reason, err.message)
+		if !opts.ReadOnly {
+			c.markCpaCredentialState(acc.ID, err.status, err.reason, err.message)
+		}
 		return nil, err
 	}
 
@@ -415,16 +454,20 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 	if err != nil {
 		if os.IsNotExist(err) {
 			rerr := &resolveError{status: "needs_login", reason: "file_missing", message: "Credential file not found"}
-			c.store.UpdateAccountHealth(acc.ID, "error", rerr.message)
-			c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+			if !opts.ReadOnly {
+				c.store.UpdateAccountHealth(acc.ID, "error", rerr.message)
+				c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+			}
 			return nil, rerr
 		}
 		rerr := &resolveError{status: "needs_login", reason: "file_corrupt", message: "Credential file corrupt"}
-		c.store.UpdateAccountHealth(acc.ID, "error", rerr.message)
-		c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+		if !opts.ReadOnly {
+			c.store.UpdateAccountHealth(acc.ID, "error", rerr.message)
+			c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+		}
 		return nil, rerr
 	}
-	if !authFileMetadataIsOlder(acc.CpaLastRefreshAt, authFile.LastRefresh) {
+	if !opts.ReadOnly && !authFileMetadataIsOlder(acc.CpaLastRefreshAt, authFile.LastRefresh) {
 		if err := c.store.UpdateAccountCpaMetadata(acc.ID, authFile.Expired, authFile.LastRefresh, authFile.Disabled); err != nil {
 			slog.Warn("resolve cpa runtime: update metadata", "account_id", acc.ID, "err", err)
 		}
@@ -433,8 +476,10 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 	}
 	if authFile.Disabled {
 		rerr := &resolveError{status: "needs_login", reason: "disabled", message: "CPA credential disabled"}
-		c.store.UpdateAccountHealth(acc.ID, "error", rerr.message)
-		c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+		if !opts.ReadOnly {
+			c.store.UpdateAccountHealth(acc.ID, "error", rerr.message)
+			c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+		}
 		return nil, rerr
 	}
 
@@ -450,7 +495,7 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 		client:   client,
 	}
 
-	if strings.ToLower(authFile.Type) == "codex" {
+	if !opts.ReadOnly && strings.ToLower(authFile.Type) == "codex" {
 		if expiresAt := cpa.SubscriptionActiveUntilFromTokens(authFile.IDToken, authFile.AccessToken); expiresAt != "" {
 			fetchedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 			_ = c.store.UpdateAccountCpaSubscription(acc.ID, expiresAt, fetchedAt, "")
@@ -461,14 +506,18 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 	}
 	if managementKey == "" {
 		rerr := &resolveError{status: "runtime_error", reason: "management_key_missing", message: "CPA management key is empty"}
-		c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+		if !opts.ReadOnly {
+			c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+		}
 		return nil, rerr
 	}
 
-	meta, err := c.resolveAuthMetadata(ctx, client, *svc, acc.CpaAccountKey, *authFile, opts.WaitAuthIndex)
+	meta, err := c.resolveAuthMetadata(ctx, client, *svc, acc.CpaAccountKey, *authFile, opts)
 	if err == nil && meta.authIndex != "" {
 		rt.authMeta = meta
-		c.markCpaCredentialOK(acc.ID)
+		if !opts.ReadOnly {
+			c.markCpaCredentialOK(acc.ID)
+		}
 		return rt, nil
 	}
 
@@ -476,17 +525,60 @@ func (c *Checker) resolveCpaRuntime(ctx context.Context, acc store.Account, opts
 	if err != nil && !isAuthIndexMissingError(err) {
 		message = err.Error()
 		rerr := &resolveError{status: "runtime_error", reason: "runtime_unreachable", message: message}
-		c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+		if !opts.ReadOnly {
+			c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+		}
 		return nil, rerr
 	}
 	rerr := &resolveError{status: "runtime_pending", reason: "auth_index_pending", message: message}
-	c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+	if !opts.ReadOnly {
+		c.markCpaCredentialState(acc.ID, rerr.status, rerr.reason, rerr.message)
+	}
 	return nil, rerr
 }
 
-func (c *Checker) resolveAuthMetadata(ctx context.Context, client *cpa.ManagementClient, svc store.CpaService, accountKey string, authFile cpa.CpaAuthFile, wait bool) (authFileMetadata, error) {
+func (c *Checker) ResolveRuntimeBinding(ctx context.Context, acc store.Account, waitAuthIndex bool, readOnly bool) (*RuntimeBinding, error) {
+	rt, err := c.resolveCpaRuntime(ctx, acc, resolveOptions{NeedAuthIndex: true, WaitAuthIndex: waitAuthIndex, ReadOnly: readOnly})
+	if err != nil {
+		return nil, err
+	}
+	return &RuntimeBinding{
+		AccountID:     acc.ID,
+		AccountKey:    acc.CpaAccountKey,
+		AuthID:        rt.authMeta.id,
+		AuthIndex:     rt.authMeta.authIndex,
+		OpenAIID:      firstNonEmpty(rt.authMeta.openaiID, acc.CpaOpenaiID),
+		Provider:      firstNonEmpty(rt.authMeta.provider, acc.CpaProvider),
+		Email:         firstNonEmpty(rt.authMeta.email, acc.CpaEmail),
+		PlanType:      firstNonEmpty(rt.authMeta.planType, acc.CpaPlanType),
+		BindingStatus: "confirmed",
+		BindingReason: "",
+	}, nil
+}
+
+func (c *Checker) ProviderPinningSupported() bool {
+	return c.providerPinningSupported
+}
+
+func RuntimeBindingErrorState(err error) (status, reason string) {
+	type stateReason interface {
+		Status() string
+		Reason() string
+	}
+	var sr stateReason
+	if errors.As(err, &sr) {
+		return sr.Status(), sr.Reason()
+	}
+	var rerr *resolveError
+	if errors.As(err, &rerr) {
+		return rerr.status, rerr.reason
+	}
+	return "runtime_error", "runtime_auth_binding_unavailable"
+}
+
+func (c *Checker) resolveAuthMetadata(ctx context.Context, client *cpa.ManagementClient, svc store.CpaService, accountKey string, authFile cpa.CpaAuthFile, opts resolveOptions) (authFileMetadata, error) {
 	attempts := 1
-	if wait {
+	if opts.WaitAuthIndex {
 		attempts = c.authIndexAttempts
 		if attempts < 1 {
 			attempts = 1
@@ -499,7 +591,7 @@ func (c *Checker) resolveAuthMetadata(ctx context.Context, client *cpa.Managemen
 	if err == nil {
 		err = fmt.Errorf("CPA auth index metadata mismatch")
 	}
-	if !wait || (!isAuthIndexMissingError(err) && !isAuthMetadataMismatchError(err)) || c.cpaReloadSignalPath == "" {
+	if !opts.WaitAuthIndex || opts.ReadOnly || (!isAuthIndexMissingError(err) && !isAuthMetadataMismatchError(err)) || c.cpaReloadSignalPath == "" {
 		return meta, err
 	}
 
@@ -643,6 +735,10 @@ func (c *Checker) RefreshAccount(ctx context.Context, acc store.Account, opts Re
 		}
 	}
 	if opts.Quota && strings.ToLower(acc.CpaProvider) == "codex" {
+		credentialBeforeQuota := acc
+		if latest, getErr := c.store.GetAccount(acc.ID); getErr == nil && latest != nil {
+			credentialBeforeQuota = *latest
+		}
 		authRuntime, err := c.resolveCpaRuntime(ctx, acc, resolveOptions{NeedAuthIndex: true, WaitAuthIndex: opts.WaitAuthIndex})
 		if err != nil {
 			status, reason := cpaResolveState(err)
@@ -660,7 +756,7 @@ func (c *Checker) RefreshAccount(ctx context.Context, acc store.Account, opts Re
 				firstErr = err
 			}
 		} else {
-			result.CredentialStatus = "ok"
+			c.restoreCpaCredentialStateIfNeeded(credentialBeforeQuota)
 			refreshed, err := c.refreshCodexQuotaResolved(ctx, authRuntime)
 			result.QuotaRefreshed = refreshed
 			if err != nil {
@@ -702,7 +798,6 @@ func (c *Checker) RefreshAccount(ctx context.Context, acc store.Account, opts Re
 				firstErr = err
 			}
 		} else {
-			result.CredentialStatus = "ok"
 			refreshed, err := c.refreshCodexSubscriptionResolved(authRuntime)
 			result.SubscriptionRefreshed = refreshed
 			result.SubscriptionPending = false
@@ -809,6 +904,7 @@ func (c *Checker) fetchCodexSubscriptions(ctx context.Context) {
 }
 
 type authFileMetadata struct {
+	id                    string
 	authIndex             string
 	subscriptionExpiresAt string
 	provider              string
@@ -828,6 +924,7 @@ func (c *Checker) listAuthMetadata(ctx context.Context, client *cpa.ManagementCl
 			continue
 		}
 		meta := authFileMetadata{
+			id:                    f.ID,
 			authIndex:             f.AuthIndex,
 			subscriptionExpiresAt: cpa.NormalizeSubscriptionActiveUntil(f.IDToken.ChatGPTSubscriptionActiveUntil),
 			provider:              firstNonEmpty(f.Provider, f.Type),
@@ -948,7 +1045,6 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 			return fmt.Errorf("persist quota status: %w", err)
 		}
 	}
-	c.markCpaCredentialOK(acc.ID)
 	c.cache.Invalidate()
 	return nil
 }
@@ -1089,6 +1185,22 @@ func (c *Checker) markCpaCredentialOK(accountID int64) {
 	checkedAt := time.Now().UTC().Format(time.RFC3339)
 	if err := c.store.UpdateAccountCpaCredentialStatus(accountID, "ok", "", "", checkedAt); err != nil {
 		slog.Warn("mark cpa credential ok", "account_id", accountID, "err", err)
+		return
+	}
+	c.cache.Invalidate()
+}
+
+func (c *Checker) restoreCpaCredentialStateIfNeeded(previous store.Account) {
+	status := strings.TrimSpace(previous.CpaCredentialStatus)
+	if status == "" || status == "unknown" || status == "ok" || status == "runtime_pending" || status == "runtime_error" {
+		return
+	}
+	checkedAt := previous.CpaCredentialCheckedAt
+	if checkedAt == "" {
+		checkedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := c.store.UpdateAccountCpaCredentialStatus(previous.ID, status, previous.CpaCredentialReason, previous.CpaCredentialLastError, checkedAt); err != nil {
+		slog.Warn("restore cpa credential state", "account_id", previous.ID, "status", status, "err", err)
 		return
 	}
 	c.cache.Invalidate()

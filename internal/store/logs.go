@@ -14,8 +14,16 @@ func (s *Store) InsertLog(l *RequestLog) error {
 		attempts = 0
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO request_logs (request_id, access_token_name, model_requested, model_actual, pool_id, account_id, status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success, error_message, source_kind, attempt_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.RequestID, l.AccessTokenName, l.ModelRequested, l.ModelActual, l.PoolID, l.AccountID, l.StatusCode, l.LatencyMs, l.InputTokens, l.OutputTokens, l.Stream, l.RequestIP, l.Success, l.ErrorMessage, sourceKind, attempts,
+		`INSERT INTO request_logs (
+			request_id, access_token_name, model_requested, model_actual, pool_id, account_id,
+			status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success,
+			error_message, source_kind, attempt_count,
+			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.RequestID, l.AccessTokenName, l.ModelRequested, l.ModelActual, l.PoolID, l.AccountID,
+		l.StatusCode, l.LatencyMs, l.InputTokens, l.OutputTokens, l.Stream, l.RequestIP, l.Success,
+		l.ErrorMessage, sourceKind, attempts,
+		l.RuntimeAuthIndex, l.RuntimeAuthID, l.RuntimeAccountKey, l.RuntimeBindingStatus, l.RuntimeBindingReason,
 	)
 	return err
 }
@@ -24,7 +32,13 @@ func scanLogRow(rows *sql.Rows) (RequestLog, error) {
 	var l RequestLog
 	var stream, success int
 	var poolID, accountID sql.NullInt64
-	if err := rows.Scan(&l.ID, &l.RequestID, &l.AccessTokenName, &l.ModelRequested, &l.ModelActual, &poolID, &accountID, &l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP, &success, &l.ErrorMessage, &l.SourceKind, &l.AttemptCount, &l.CreatedAt); err != nil {
+	if err := rows.Scan(
+		&l.ID, &l.RequestID, &l.AccessTokenName, &l.ModelRequested, &l.ModelActual, &poolID, &accountID,
+		&l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP, &success,
+		&l.ErrorMessage, &l.SourceKind, &l.AttemptCount,
+		&l.RuntimeAuthIndex, &l.RuntimeAuthID, &l.RuntimeAccountKey, &l.RuntimeBindingStatus, &l.RuntimeBindingReason,
+		&l.CreatedAt,
+	); err != nil {
 		return l, err
 	}
 	if poolID.Valid {
@@ -45,7 +59,12 @@ func (s *Store) ListLogs(limit, offset int) ([]RequestLog, int, error) {
 	}
 
 	rows, err := s.db.Query(
-		`SELECT id, request_id, access_token_name, model_requested, model_actual, pool_id, account_id, status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success, error_message, source_kind, attempt_count, created_at FROM request_logs ORDER BY id DESC LIMIT ? OFFSET ?`,
+		`SELECT id, request_id, access_token_name, model_requested, model_actual, pool_id, account_id,
+			status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success,
+			error_message, source_kind, attempt_count,
+			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason,
+			created_at
+		 FROM request_logs ORDER BY id DESC LIMIT ? OFFSET ?`,
 		limit, offset,
 	)
 	if err != nil {
@@ -71,7 +90,12 @@ func (s *Store) ListLogsByPool(poolID int64, limit, offset int) ([]RequestLog, i
 	}
 
 	rows, err := s.db.Query(
-		`SELECT id, request_id, access_token_name, model_requested, model_actual, pool_id, account_id, status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success, error_message, source_kind, attempt_count, created_at FROM request_logs WHERE pool_id = ? ORDER BY id DESC LIMIT ? OFFSET ?`,
+		`SELECT id, request_id, access_token_name, model_requested, model_actual, pool_id, account_id,
+			status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success,
+			error_message, source_kind, attempt_count,
+			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason,
+			created_at
+		 FROM request_logs WHERE pool_id = ? ORDER BY id DESC LIMIT ? OFFSET ?`,
 		poolID, limit, offset,
 	)
 	if err != nil {

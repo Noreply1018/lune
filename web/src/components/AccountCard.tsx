@@ -21,14 +21,113 @@ import {
   getAccountHealth,
   getCpaCredentialMeta,
   getCpaQuotaErrorMeta,
-  getCpaSubscriptionErrorMeta,
   getExpiryMeta,
-  parseQuotaDisplay,
+  getRouteHealth,
+  hasRuntimeBindingIssue,
 } from "@/lib/lune";
 import { cn } from "@/lib/utils";
 
 type Variant = "active" | "disabled";
 type FlashState = "success" | "error" | null;
+type CardChip = {
+  label: string;
+  detail?: string;
+  tone?: "default" | "warning" | "danger" | "processing" | "binding";
+};
+
+function chipClass(tone: CardChip["tone"]) {
+  switch (tone) {
+    case "danger":
+      return "bg-status-red/10 text-status-red";
+    case "warning":
+      return "bg-status-yellow/12 text-status-yellow";
+    case "processing":
+      return "bg-fog-100 text-fog-500";
+    case "binding":
+      return "bg-lunar-100/85 text-lunar-700";
+    default:
+      return "bg-moon-100/70 text-moon-500";
+  }
+}
+
+function compactCredentialLabel(label: string) {
+  return label === "需要重新登录" ? "需要重登" : label;
+}
+
+function getSubscriptionChip(
+  account: PoolMember["account"],
+  expiry: ReturnType<typeof getExpiryMeta>,
+  isCodexCpa: boolean,
+): CardChip | null {
+  if (!account || !isCodexCpa) return null;
+  switch (account.cpa_subscription_status || "unknown") {
+    case "active":
+      return expiry ? { label: expiry.label, tone: expiry.tone } : null;
+    case "expired":
+      return { label: "已过期", detail: account.cpa_subscription_last_error, tone: "danger" };
+    case "free":
+      return { label: "Free", detail: account.cpa_subscription_last_error, tone: "danger" };
+    case "pending":
+      return { label: "订阅刷新中", detail: account.cpa_subscription_last_error, tone: "processing" };
+    case "error":
+      return { label: "订阅获取失败", detail: account.cpa_subscription_last_error, tone: "warning" };
+    default:
+      return { label: "订阅未知", detail: account.cpa_subscription_last_error, tone: "warning" };
+  }
+}
+
+function getMainIssueChip(
+  account: PoolMember["account"],
+  credential: ReturnType<typeof getCpaCredentialMeta>,
+  quotaError: ReturnType<typeof getCpaQuotaErrorMeta>,
+): CardChip | null {
+  if (!account) return null;
+  const credentialStatus = account.cpa_credential_status || "unknown";
+  if (hasRuntimeBindingIssue(account)) {
+    return {
+      label: "Binding 未确认",
+      detail: "CPA HTTP provider 当前无法确认 per-request auth pinning，普通流量会 fail closed。",
+      tone: "binding",
+    };
+  }
+  if (
+    account.source_kind === "cpa" &&
+    ["needs_login", "refresh_failed", "runtime_error", "runtime_pending", "unknown", ""].includes(
+      credentialStatus,
+    ) &&
+    credential
+  ) {
+    return {
+      label: compactCredentialLabel(credential.label),
+      detail: credential.detail,
+      tone: credentialStatus === "runtime_pending" ? "processing" : credential.tone,
+    };
+  }
+  if (quotaError?.tone === "danger") {
+    return quotaError;
+  }
+  if (account.serving_status === "cooldown") {
+    return {
+      label: "服务冷却中",
+      detail: account.last_error || account.cooldown_until || "",
+      tone: "processing",
+    };
+  }
+  if (account.serving_status === "error") {
+    return { label: "服务异常", detail: account.last_error || undefined, tone: "danger" };
+  }
+  if (quotaError?.tone === "warning") {
+    return quotaError;
+  }
+  if (account.source_kind === "cpa" && credentialStatus === "auth_suspect" && credential) {
+    return {
+      label: compactCredentialLabel(credential.label),
+      detail: credential.detail,
+      tone: "warning",
+    };
+  }
+  return null;
+}
 
 export default function AccountCard({
   member,
@@ -64,8 +163,9 @@ export default function AccountCard({
   dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 }) {
   const account = member.account;
+  const enabled = member.enabled;
   const health = account ? getAccountHealth(account) : "error";
-  const quota = parseQuotaDisplay(account?.quota_display ?? "");
+  const routeHealth = getRouteHealth(account, enabled, health);
   // Card re-renders on every drag tick; parsing the raw JSON each time is
   // wasted work even though the payload is small.
   const codexQuota = useMemo(
@@ -80,14 +180,17 @@ export default function AccountCard({
       : account?.cpa_expired_at ?? null,
   );
   const credential = account ? getCpaCredentialMeta(account) : null;
-  const credentialLabel = credential?.label === "需要重新登录" ? "请重登" : credential?.label;
-  const subscriptionError = account ? getCpaSubscriptionErrorMeta(account) : null;
   const quotaError = account ? getCpaQuotaErrorMeta(account) : null;
+  const requestChip: CardChip = { label: `今日 ${compact(requests)}` };
+  const subscriptionChip = getSubscriptionChip(account, expiry, isCodexCpa);
+  const mainIssueChip = getMainIssueChip(account, credential, quotaError);
+  const cardChips = [requestChip, subscriptionChip, mainIssueChip].filter(
+    (chip): chip is CardChip => Boolean(chip),
+  );
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
   // Every non-Codex account — direct as well as non-Codex CPA (e.g. Claude) —
   // gets the dual-row signal strip so both card variants share the same height.
   const showDirectSignal = !isCodexCpa;
-  const enabled = member.enabled;
 
   const toneClass = !enabled
     ? "border-moon-200/60 bg-moon-100/55"
@@ -176,7 +279,7 @@ export default function AccountCard({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
-            <StatusBadge status={health === "unknown" ? "degraded" : health} />
+            <StatusBadge status={routeHealth} />
           </div>
         </div>
 
@@ -189,61 +292,18 @@ export default function AccountCard({
         ) : null}
 
         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-moon-500">
-          {isCodexCpa ? (
-            <span className="rounded-full bg-moon-100/80 px-2 py-0.5">
-              今日 {compact(requests)}
-            </span>
-          ) : (
-            <span className="rounded-full bg-moon-100/80 px-2 py-0.5">{quota}</span>
-          )}
-          {expiry ? (
+          {cardChips.map((chip, index) => (
             <span
+              key={`${chip.label}-${index}`}
               className={cn(
-                "rounded-full px-2 py-0.5",
-                expiry.tone === "danger"
-                  ? "bg-status-red/10 text-status-red"
-                  : expiry.tone === "warning"
-                    ? "bg-status-yellow/12 text-status-yellow"
-                    : "bg-moon-100/70 text-moon-500",
+                "max-w-full truncate rounded-full px-2 py-0.5",
+                index === 0 ? "bg-moon-100/80 text-moon-500" : chipClass(chip.tone),
               )}
+              title={chip.detail}
             >
-              {expiry.label}
+              {chip.label}
             </span>
-          ) : null}
-          {credential ? (
-            <span
-              className={cn(
-                "rounded-full px-2 py-0.5",
-                credential.tone === "danger"
-                  ? "bg-status-red/10 text-status-red"
-                  : "bg-moon-100/70 text-moon-500",
-              )}
-              title={credential.detail}
-            >
-              {credentialLabel}
-            </span>
-          ) : null}
-          {subscriptionError ? (
-            <span
-              className="rounded-full bg-status-yellow/12 px-2 py-0.5 text-status-yellow"
-              title={subscriptionError.detail}
-            >
-              {subscriptionError.label}
-            </span>
-          ) : null}
-          {quotaError ? (
-            <span
-              className={cn(
-                "rounded-full px-2 py-0.5",
-                quotaError.tone === "danger"
-                  ? "bg-status-red/10 text-status-red"
-                  : "bg-status-yellow/12 text-status-yellow",
-              )}
-              title={quotaError.detail}
-            >
-              {quotaError.label}
-            </span>
-          ) : null}
+          ))}
         </div>
 
         <div className="mt-auto flex items-center justify-between gap-2 pt-1">

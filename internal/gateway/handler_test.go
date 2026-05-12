@@ -1,16 +1,20 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"lune/internal/auth"
+	"lune/internal/health"
 	"lune/internal/router"
 	"lune/internal/store"
 )
@@ -23,7 +27,7 @@ func newHandlerTestStore(t *testing.T) (*store.Store, *store.RoutingCache, *Hand
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	cache := store.NewRoutingCache(st)
-	handler := NewHandler(router.New(cache), cache, st, filepath.Join(t.TempDir(), "tmp"))
+	handler := NewHandler(router.NewWithOptions(cache, router.Options{CpaRuntimeBindingSupported: true}), cache, st, filepath.Join(t.TempDir(), "tmp"))
 	poolID, err := st.CreatePool("test-pool", 1, true)
 	if err != nil {
 		t.Fatalf("CreatePool: %v", err)
@@ -85,6 +89,46 @@ func TestGatewayNoHealthyAccountLogsHTTPStatus(t *testing.T) {
 	assertLatestLogStatus(t, st, 503)
 }
 
+func TestGatewayProductionCpaRuntimeBindingUnsupportedReturnsExplicitError(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "lune.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(router.New(cache), cache, st, filepath.Join(t.TempDir(), "tmp"))
+	poolID, err := st.CreatePool("test-pool", 1, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	poolIDCopy := poolID
+	tokenID, err := st.CreateToken(&store.AccessToken{Name: "test-token", Token: "sk-test", PoolID: &poolIDCopy, Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+	token := &store.AccessToken{ID: tokenID, Name: "test-token", Token: "sk-test", PoolID: &poolIDCopy, Enabled: true}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "service-key", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, poolID, serviceID, "closed-cpa", "codex", "gpt-5-codex")
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "runtime_auth_binding_unavailable") || !strings.Contains(rr.Body.String(), "provider_pinning_unsupported") {
+		t.Fatalf("expected explicit runtime binding error, got %s", rr.Body.String())
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if log.AccountID != 0 || log.SourceKind != "cpa" || !strings.Contains(log.ErrorMessage, "runtime_auth_binding_unavailable") {
+		t.Fatalf("expected route-level CPA binding failure log without routed account %d, got %+v", accountID, log)
+	}
+}
+
 func TestGatewaySkipsCpaAccountThatNeedsLogin(t *testing.T) {
 	st, cache, handler, token := newHandlerTestStore(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,13 +152,14 @@ func TestGatewaySkipsCpaAccountThatNeedsLogin(t *testing.T) {
 		t.Fatalf("CreateCpaService: %v", err)
 	}
 	accountID, err := st.CreateAccount(&store.Account{
-		Label:               "Codex",
-		SourceKind:          "cpa",
-		CpaServiceID:        &serviceID,
-		CpaProvider:         "codex",
-		CpaCredentialStatus: "needs_login",
-		CpaCredentialReason: "refresh_failed",
-		Enabled:             true,
+		Label:                 "Codex",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaCredentialStatus:   "needs_login",
+		CpaCredentialReason:   "refresh_failed",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
@@ -164,12 +209,14 @@ func TestGatewayCpaAuthFailureDoesNotOverwriteDiscoveryStatus(t *testing.T) {
 		t.Fatalf("CreateCpaService: %v", err)
 	}
 	accountID, err := st.CreateAccount(&store.Account{
-		Label:               "Codex",
-		SourceKind:          "cpa",
-		CpaServiceID:        &serviceID,
-		CpaProvider:         "codex",
-		CpaCredentialStatus: "ok",
-		Enabled:             true,
+		Label:                 "Codex",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         "codex-key",
+		CpaCredentialStatus:   "ok",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
@@ -183,9 +230,11 @@ func TestGatewayCpaAuthFailureDoesNotOverwriteDiscoveryStatus(t *testing.T) {
 	if _, err := st.AddPoolMember(*token.PoolID, accountID); err != nil {
 		t.Fatalf("AddPoolMember: %v", err)
 	}
+	handler.runtimeBinder = staticRuntimeBinder{}
 	cache.Invalidate()
 
 	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
 	rr := httptest.NewRecorder()
 	req.ServeHTTP(rr, req.Request)
 	if rr.Code != http.StatusUnauthorized {
@@ -196,6 +245,375 @@ func TestGatewayCpaAuthFailureDoesNotOverwriteDiscoveryStatus(t *testing.T) {
 		acc, err := st.GetAccount(accountID)
 		return err == nil && acc != nil && acc.CpaCredentialStatus == "needs_login" && acc.Status == "healthy"
 	})
+}
+
+func TestGatewayCpaRuntimeBindingConfirmedPinsHeadersAndLog(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	var sawPinned bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Lune-CPA-Account-Key"); got != "codex-key" {
+			t.Fatalf("expected account key header, got %q", got)
+		}
+		if got := r.Header.Get("X-Lune-Runtime-Auth-Index"); got != "idx-1" {
+			t.Fatalf("expected runtime auth index header, got %q", got)
+		}
+		if got := r.Header.Get("X-Lune-Runtime-Auth-Id"); got != "auth-1" {
+			t.Fatalf("expected runtime auth id header, got %q", got)
+		}
+		sawPinned = true
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"usage": map[string]any{"input_tokens": 2, "output_tokens": 3},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:                 "Codex",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         "codex-key",
+		CpaCredentialStatus:   "ok",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if err := st.RefreshAccountModels(accountID, []string{"gpt-5-codex"}); err != nil {
+		t.Fatalf("RefreshAccountModels: %v", err)
+	}
+	if _, err := st.AddPoolMember(*token.PoolID, accountID); err != nil {
+		t.Fatalf("AddPoolMember: %v", err)
+	}
+	handler.runtimeBinder = fixedRuntimeBinder{authID: "auth-1", authIndex: "idx-1"}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !sawPinned {
+		t.Fatalf("expected upstream to receive pinned binding headers")
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if log.AccountID != accountID || log.RuntimeBindingStatus != "confirmed" || log.RuntimeAuthIndex != "idx-1" || log.RuntimeAuthID != "auth-1" || log.RuntimeAccountKey != "codex-key" {
+		t.Fatalf("expected confirmed runtime binding log for account %d, got %+v", accountID, log)
+	}
+}
+
+type cpaUpstreamHit struct {
+	AccountKey       string
+	RuntimeAuthIndex string
+	RuntimeAuthID    string
+	PinnedAuthIndex  string
+	PinnedAuthID     string
+	LegacyAuthIndex  string
+	OpenAIID         string
+}
+
+func TestGatewayCpaForcedAndAutomaticRoutesPreserveRuntimeBindingAccounting(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+
+	var (
+		mu   sync.Mutex
+		hits []cpaUpstreamHit
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/responses") {
+			http.NotFound(w, r)
+			return
+		}
+		hit := cpaUpstreamHit{
+			AccountKey:       r.Header.Get("X-Lune-CPA-Account-Key"),
+			RuntimeAuthIndex: r.Header.Get("X-Lune-Runtime-Auth-Index"),
+			RuntimeAuthID:    r.Header.Get("X-Lune-Runtime-Auth-Id"),
+			PinnedAuthIndex:  r.Header.Get("X-CLIProxyAPI-Pinned-Auth-Index"),
+			PinnedAuthID:     r.Header.Get("X-CLIProxyAPI-Pinned-Auth-Id"),
+			LegacyAuthIndex:  r.Header.Get("X-CPA-Auth-Index"),
+			OpenAIID:         r.Header.Get("ChatGPT-Account-Id"),
+		}
+		mu.Lock()
+		hits = append(hits, hit)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"usage": map[string]any{"input_tokens": 2, "output_tokens": 3},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountA := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "cpa-a", "codex", "gpt-5-codex")
+	accountB := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "cpa-b", "codex", "gpt-5-codex")
+	accountC := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "cpa-c", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	var lastLogID int64
+	for i := 0; i < 10; i++ {
+		req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"forced"}`)
+		req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountA, 10))
+		rr := httptest.NewRecorder()
+		req.ServeHTTP(rr, req.Request)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("forced request %d expected 200, got %d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+		log := waitForGatewayLogAfter(t, st, lastLogID)
+		lastLogID = log.ID
+		assertCpaRuntimeLog(t, log, accountA, "cpa-a-key", fmt.Sprintf("idx-%d", accountA), fmt.Sprintf("auth-%d", accountA))
+	}
+	assertLatestUpstreamHits(t, &mu, hits, 10, "cpa-a-key", fmt.Sprintf("idx-%d", accountA), fmt.Sprintf("auth-%d", accountA), "openai-cpa-a")
+
+	if err := st.MarkAccountServingFailure(accountA, "forced cooldown", time.Now().UTC().Add(5*time.Minute)); err != nil {
+		t.Fatalf("MarkAccountServingFailure: %v", err)
+	}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"automatic"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("automatic request expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	log := waitForGatewayLogAfter(t, st, lastLogID)
+	assertCpaRuntimeLog(t, log, accountB, "cpa-b-key", fmt.Sprintf("idx-%d", accountB), fmt.Sprintf("auth-%d", accountB))
+	assertLatestUpstreamHits(t, &mu, hits, 1, "cpa-b-key", fmt.Sprintf("idx-%d", accountB), fmt.Sprintf("auth-%d", accountB), "openai-cpa-b")
+
+	accA, err := st.GetAccount(accountA)
+	if err != nil {
+		t.Fatalf("GetAccount A: %v", err)
+	}
+	if accA.ServingStatus != "cooldown" || accA.LastError != "forced cooldown" {
+		t.Fatalf("automatic request must not clear cooldown on skipped account A, got %+v", accA)
+	}
+	accB, err := st.GetAccount(accountB)
+	if err != nil {
+		t.Fatalf("GetAccount B: %v", err)
+	}
+	if accB.ServingStatus != "healthy" || accB.LastSuccessAt == "" {
+		t.Fatalf("automatic request should record serving success only on account B, got %+v", accB)
+	}
+	accC, err := st.GetAccount(accountC)
+	if err != nil {
+		t.Fatalf("GetAccount C: %v", err)
+	}
+	if accC.LastSuccessAt != "" || accC.FailureCount != 0 {
+		t.Fatalf("automatic request must not touch unused account C accounting, got %+v", accC)
+	}
+}
+
+func TestGatewayCpaProviderPinningUnsupportedFailsClosedAfterBinding(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	upstreamHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "unsupported-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = unsupportedRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("expected fail closed before CPA provider, got %d upstream hits", upstreamHits)
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if log.AccountID != accountID || log.RuntimeBindingStatus != "unsupported" || log.RuntimeBindingReason != "provider_pinning_unsupported" || log.RuntimeAuthIndex == "" {
+		t.Fatalf("expected unsupported provider pinning log with resolved binding, got %+v", log)
+	}
+}
+
+func TestGatewayCpaBindingUnavailableFailsClosed(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	upstreamHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "codex", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{err: fmt.Errorf("auth index missing")}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "runtime_auth_binding_unavailable") {
+		t.Fatalf("expected runtime binding error body, got %s", rr.Body.String())
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("expected fail closed before CPA provider, got %d upstream hits", upstreamHits)
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if log.AccountID != accountID || log.RuntimeBindingStatus == "" || log.RuntimeBindingReason == "" {
+		t.Fatalf("expected failed binding log for account %d, got %+v", accountID, log)
+	}
+}
+
+func TestGatewayCpaRetryExhaustedPreservesRuntimeBindingLog(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"temporary upstream failure"}}`))
+	}))
+	defer server.Close()
+
+	if err := st.SetSetting("max_retry_attempts", "2"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "retry-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 after retry exhaustion, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	log := waitForLatestGatewayLog(t, st)
+	if log.AccountID != accountID || log.RuntimeBindingStatus != "confirmed" || log.RuntimeAuthIndex == "" || log.RuntimeAuthID == "" {
+		t.Fatalf("expected retry exhaustion log to preserve confirmed binding for account %d, got %+v", accountID, log)
+	}
+}
+
+func TestGatewayCpaSuccessDoesNotClearQuotaState(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"usage": map[string]any{"input_tokens": 1}})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "suspect-cpa", "codex", "gpt-5-codex")
+	if err := st.UpdateAccountCpaCredentialStatus(accountID, "auth_suspect", "quota_probe_failed", "quota probe failed", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCpaCredentialStatus: %v", err)
+	}
+	if err := st.UpdateAccountCodexQuotaStatus(accountID, "error", "HTTP 403", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+	}
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	waitForGatewayTest(t, func() bool {
+		acc, err := st.GetAccount(accountID)
+		return err == nil && acc != nil &&
+			acc.ServingStatus == "healthy" &&
+			acc.CpaCredentialStatus == "ok" &&
+			acc.CpaQuotaStatus == "error" &&
+			acc.CpaQuotaLastError == "HTTP 403" &&
+			acc.CpaSubscriptionStatus == "active"
+	})
+}
+
+func TestGatewayCpaServiceAuthFailureDoesNotMarkAccountNeedsLogin(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "bad-service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "svc-auth-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaCredentialStatus == "needs_login" {
+		t.Fatalf("service auth failure must not mark account needs_login: %+v", acc)
+	}
 }
 
 func TestChatStreamWithoutDoneLogsFailure(t *testing.T) {
@@ -415,6 +833,7 @@ func TestCpaStreamRetryableStatusUpdatesHealthAndPreservesMessage(t *testing.T) 
 	}
 	badAccountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "bad-cpa", "bad", "gpt-5-codex")
 	goodAccountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "good-cpa", "good", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
 	cache.Invalidate()
 
 	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","stream":true,"input":"hi"}`)
@@ -512,11 +931,15 @@ func addOpenAICompatGatewayAccount(t *testing.T, st *store.Store, cache *store.R
 func addCpaGatewayAccount(t *testing.T, st *store.Store, poolID, serviceID int64, label, provider, model string) int64 {
 	t.Helper()
 	accountID, err := st.CreateAccount(&store.Account{
-		Label:        label,
-		SourceKind:   "cpa",
-		CpaServiceID: &serviceID,
-		CpaProvider:  provider,
-		Enabled:      true,
+		Label:                 label,
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           provider,
+		CpaAccountKey:         label + "-key",
+		CpaOpenaiID:           "openai-" + label,
+		CpaCredentialStatus:   "ok",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
@@ -528,6 +951,63 @@ func addCpaGatewayAccount(t *testing.T, st *store.Store, poolID, serviceID int64
 		t.Fatalf("RefreshAccountModels: %v", err)
 	}
 	return accountID
+}
+
+type staticRuntimeBinder struct {
+	err error
+}
+
+func (b staticRuntimeBinder) ProviderPinningSupported() bool {
+	return true
+}
+
+func (b staticRuntimeBinder) ResolveRuntimeBinding(_ context.Context, acc store.Account, _ bool, _ bool) (*health.RuntimeBinding, error) {
+	if b.err != nil {
+		return nil, b.err
+	}
+	return &health.RuntimeBinding{
+		AccountID:     acc.ID,
+		AccountKey:    acc.CpaAccountKey,
+		AuthID:        fmt.Sprintf("auth-%d", acc.ID),
+		AuthIndex:     fmt.Sprintf("idx-%d", acc.ID),
+		OpenAIID:      acc.CpaOpenaiID,
+		Provider:      acc.CpaProvider,
+		BindingStatus: "confirmed",
+	}, nil
+}
+
+type fixedRuntimeBinder struct {
+	authID    string
+	authIndex string
+}
+
+type unsupportedRuntimeBinder struct{}
+
+func (b unsupportedRuntimeBinder) ResolveRuntimeBinding(_ context.Context, acc store.Account, _ bool, _ bool) (*health.RuntimeBinding, error) {
+	return &health.RuntimeBinding{
+		AccountID:     acc.ID,
+		AccountKey:    acc.CpaAccountKey,
+		AuthID:        fmt.Sprintf("auth-%d", acc.ID),
+		AuthIndex:     fmt.Sprintf("idx-%d", acc.ID),
+		Provider:      acc.CpaProvider,
+		BindingStatus: "confirmed",
+	}, nil
+}
+
+func (b fixedRuntimeBinder) ProviderPinningSupported() bool {
+	return true
+}
+
+func (b fixedRuntimeBinder) ResolveRuntimeBinding(_ context.Context, acc store.Account, _ bool, _ bool) (*health.RuntimeBinding, error) {
+	return &health.RuntimeBinding{
+		AccountID:     acc.ID,
+		AccountKey:    acc.CpaAccountKey,
+		AuthID:        b.authID,
+		AuthIndex:     b.authIndex,
+		OpenAIID:      acc.CpaOpenaiID,
+		Provider:      acc.CpaProvider,
+		BindingStatus: "confirmed",
+	}, nil
 }
 
 func assertLatestLogStatus(t *testing.T, st *store.Store, expected int) {
@@ -578,5 +1058,39 @@ func waitForGatewayTest(t *testing.T, condition func() bool) {
 	}
 	if !condition() {
 		t.Fatalf("condition not met before timeout")
+	}
+}
+
+func assertCpaRuntimeLog(t *testing.T, log store.RequestLog, accountID int64, accountKey, authIndex, authID string) {
+	t.Helper()
+	if log.AccountID != accountID ||
+		log.SourceKind != "cpa" ||
+		!log.Success ||
+		log.RuntimeBindingStatus != "confirmed" ||
+		log.RuntimeBindingReason != "" ||
+		log.RuntimeAccountKey != accountKey ||
+		log.RuntimeAuthIndex != authIndex ||
+		log.RuntimeAuthID != authID {
+		t.Fatalf("unexpected CPA runtime accounting log for account %d: %+v", accountID, log)
+	}
+}
+
+func assertLatestUpstreamHits(t *testing.T, mu *sync.Mutex, hits []cpaUpstreamHit, count int, accountKey, authIndex, authID, openAIID string) {
+	t.Helper()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(hits) < count {
+		t.Fatalf("expected at least %d upstream hits, got %d", count, len(hits))
+	}
+	for _, hit := range hits[len(hits)-count:] {
+		if hit.AccountKey != accountKey ||
+			hit.RuntimeAuthIndex != authIndex ||
+			hit.RuntimeAuthID != authID ||
+			hit.PinnedAuthIndex != authIndex ||
+			hit.PinnedAuthID != authID ||
+			hit.LegacyAuthIndex != authIndex ||
+			hit.OpenAIID != openAIID {
+			t.Fatalf("unexpected CPA runtime pinning headers: %+v", hit)
+		}
 	}
 }

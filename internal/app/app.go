@@ -30,16 +30,17 @@ type LoggingConfig struct {
 }
 
 type Config struct {
-	Port             int           `yaml:"port"`
-	DataDir          string        `yaml:"data_dir"`
-	CpaAuthDir       string        `yaml:"cpa_auth_dir"`
-	CpaBaseURL       string        `yaml:"cpa_base_url"`
-	CpaAPIKey        string        `yaml:"cpa_api_key"`
-	CpaManagementKey string        `yaml:"cpa_management_key"`
-	CpaReloadSignal  string        `yaml:"cpa_reload_signal"`
-	EmbeddedCpa      bool          `yaml:"embedded_cpa"`
-	GatewayTmpDir    string        `yaml:"gateway_tmp_dir"`
-	Logging          LoggingConfig `yaml:"logging"`
+	Port                        int           `yaml:"port"`
+	DataDir                     string        `yaml:"data_dir"`
+	CpaAuthDir                  string        `yaml:"cpa_auth_dir"`
+	CpaBaseURL                  string        `yaml:"cpa_base_url"`
+	CpaAPIKey                   string        `yaml:"cpa_api_key"`
+	CpaManagementKey            string        `yaml:"cpa_management_key"`
+	CpaReloadSignal             string        `yaml:"cpa_reload_signal"`
+	EmbeddedCpa                 bool          `yaml:"embedded_cpa"`
+	CpaProviderPinningSupported bool          `yaml:"cpa_provider_pinning_supported"`
+	GatewayTmpDir               string        `yaml:"gateway_tmp_dir"`
+	Logging                     LoggingConfig `yaml:"logging"`
 }
 
 func (cfg Config) Validate() error {
@@ -89,6 +90,9 @@ func LoadConfig() Config {
 	}
 	if v := os.Getenv("LUNE_EMBEDDED_CPA"); v != "" {
 		cfg.EmbeddedCpa = v != "0"
+	}
+	if v := os.Getenv("LUNE_CPA_PROVIDER_PINNING_SUPPORTED"); v != "" {
+		cfg.CpaProviderPinningSupported = v == "1" || strings.EqualFold(v, "true")
 	}
 	if v := os.Getenv("LUNE_GATEWAY_TMP_DIR"); v != "" {
 		cfg.GatewayTmpDir = v
@@ -193,6 +197,11 @@ func (a *App) Run() error {
 	// create health checker (needed by admin handler for model discovery)
 	hc := health.NewChecker(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, notifier)
 	hc.SetCpaReloadSignalPath(a.cfg.CpaReloadSignal)
+	hc.SetProviderPinningSupported(a.cfg.CpaProviderPinningSupported)
+	if err := a.store.SetSetting("cpa_provider_pinning_supported", boolSetting(a.cfg.CpaProviderPinningSupported)); err != nil {
+		slog.Warn("persist CPA provider pinning capability", "err", err)
+	}
+	a.cache.Invalidate()
 
 	srv := httpserver.New(a.store, a.cache, a.cfg.CpaAuthDir, a.cfg.CpaManagementKey, a.cfg.GatewayTmpDir, hc, notifier)
 
@@ -334,6 +343,13 @@ func maskToken(token string) string {
 		return token[:8] + "..." + token[len(token)-4:]
 	}
 	return token
+}
+
+func boolSetting(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 func Check(cfg Config) error {

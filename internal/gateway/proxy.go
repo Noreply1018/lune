@@ -28,9 +28,17 @@ var hopByHopHeaders = map[string]bool{
 const maxBufferedStreamErrorBody = 1 << 20
 
 type UpstreamTarget struct {
-	BaseURL   string
-	APIKey    string
-	AccountID int64
+	BaseURL        string
+	APIKey         string
+	AccountID      int64
+	RuntimeBinding *RuntimeBinding
+}
+
+type RuntimeBinding struct {
+	AccountKey string
+	AuthID     string
+	AuthIndex  string
+	OpenAIID   string
 }
 
 type ProxyResult struct {
@@ -86,6 +94,23 @@ func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, path
 		}
 	}
 	upstreamReq.Header.Set("Authorization", "Bearer "+target.APIKey)
+	if target.RuntimeBinding != nil {
+		if target.RuntimeBinding.AccountKey != "" {
+			upstreamReq.Header.Set("X-Lune-CPA-Account-Key", target.RuntimeBinding.AccountKey)
+		}
+		if target.RuntimeBinding.AuthID != "" {
+			upstreamReq.Header.Set("X-Lune-Runtime-Auth-Id", target.RuntimeBinding.AuthID)
+			upstreamReq.Header.Set("X-CLIProxyAPI-Pinned-Auth-Id", target.RuntimeBinding.AuthID)
+		}
+		if target.RuntimeBinding.AuthIndex != "" {
+			upstreamReq.Header.Set("X-Lune-Runtime-Auth-Index", target.RuntimeBinding.AuthIndex)
+			upstreamReq.Header.Set("X-CLIProxyAPI-Pinned-Auth-Index", target.RuntimeBinding.AuthIndex)
+			upstreamReq.Header.Set("X-CPA-Auth-Index", target.RuntimeBinding.AuthIndex)
+		}
+		if target.RuntimeBinding.OpenAIID != "" {
+			upstreamReq.Header.Set("ChatGPT-Account-Id", target.RuntimeBinding.OpenAIID)
+		}
+	}
 	upstreamReq.Header.Set("Host", upstreamReq.URL.Host)
 
 	client := &http.Client{Timeout: timeout}

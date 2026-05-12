@@ -1456,9 +1456,16 @@ func (h *Handler) getCpaService(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) decorateCpaRuntime(svc *store.CpaService) {
-	svc.RuntimeMode = "embedded"
+	if os.Getenv("LUNE_EMBEDDED_CPA") == "0" {
+		svc.RuntimeMode = "external"
+	} else {
+		svc.RuntimeMode = "embedded"
+	}
 	svc.AuthDir = h.cpaAuthDir
-	svc.CurrentVersion = os.Getenv("LUNE_EMBEDDED_CPA_VERSION")
+	if svc.RuntimeMode == "embedded" {
+		svc.CurrentVersion = os.Getenv("LUNE_EMBEDDED_CPA_VERSION")
+	}
+	svc.ProviderPinningSupported = h.cache.GetSetting("cpa_provider_pinning_supported") == "1"
 }
 
 func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
@@ -1508,6 +1515,7 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 		}
 		h.cache.Invalidate()
 		svc.ID = existing.ID
+		h.decorateCpaRuntime(svc)
 		svc.APIKeyMasked = maskKey(svc.APIKey)
 		svc.APIKeySet = svc.APIKey != ""
 		svc.APIKey = ""
@@ -1531,6 +1539,7 @@ func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {
 		}
 		h.cache.Invalidate()
 		svc.ID = id
+		h.decorateCpaRuntime(svc)
 		svc.APIKeyMasked = maskKey(svc.APIKey)
 		svc.APIKeySet = svc.APIKey != ""
 		svc.APIKey = ""
@@ -1820,8 +1829,9 @@ func (h *Handler) fillAccountResponse(a *store.Account) {
 		svc := h.cache.GetCpaService(*a.CpaServiceID)
 		if svc != nil {
 			a.Runtime = &store.AccountRuntime{
-				BaseURL:  strings.TrimRight(svc.BaseURL, "/") + "/api/provider/" + a.CpaProvider + "/v1",
-				AuthMode: "cpa",
+				BaseURL:                  strings.TrimRight(svc.BaseURL, "/") + "/api/provider/" + a.CpaProvider + "/v1",
+				AuthMode:                 "cpa",
+				ProviderPinningSupported: h.cache.GetSetting("cpa_provider_pinning_supported") == "1",
 			}
 		}
 	} else {
@@ -2164,7 +2174,7 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 		lastRefreshAt = f.LastRefresh
 	}
 	credentialStatus, credentialReason, credentialLastError, credentialCheckedAt := cpaCredentialStateFromAuthFile(f)
-	subscriptionExpiresAt, subscriptionFetchedAt := cpaSubscriptionStateFromAuthFile(f)
+	subscriptionExpiresAt, subscriptionFetchedAt, subscriptionStatus := cpaSubscriptionStateFromAuthFile(f)
 
 	account := &store.Account{
 		Label:                    label,
@@ -2184,6 +2194,7 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 		CpaCredentialCheckedAt:   credentialCheckedAt,
 		CpaSubscriptionExpiresAt: subscriptionExpiresAt,
 		CpaSubscriptionFetchedAt: subscriptionFetchedAt,
+		CpaSubscriptionStatus:    subscriptionStatus,
 		Enabled:                  enabled,
 		Notes:                    notes,
 	}
@@ -2243,15 +2254,19 @@ func cpaCredentialStateFromAuthFile(f *cpa.CpaAuthFile) (status, reason, lastErr
 	return "ok", "", "", checkedAt
 }
 
-func cpaSubscriptionStateFromAuthFile(f *cpa.CpaAuthFile) (expiresAt, fetchedAt string) {
+func cpaSubscriptionStateFromAuthFile(f *cpa.CpaAuthFile) (expiresAt, fetchedAt, status string) {
 	if strings.ToLower(f.Type) != "codex" {
-		return "", ""
+		return "", "", ""
 	}
 	expiresAt = cpa.SubscriptionActiveUntilFromTokens(f.IDToken, f.AccessToken)
 	if expiresAt == "" {
-		return "", ""
+		return "", "", ""
 	}
-	return expiresAt, time.Now().UTC().Format("2006-01-02 15:04:05")
+	status = "expired"
+	if t, err := time.Parse(time.RFC3339, expiresAt); err == nil && t.After(time.Now().UTC()) {
+		status = "active"
+	}
+	return expiresAt, time.Now().UTC().Format("2006-01-02 15:04:05"), status
 }
 
 // --- CPA Import ---

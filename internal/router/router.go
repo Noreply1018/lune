@@ -13,14 +13,24 @@ var (
 	ErrPoolDisabled      = errors.New("pool_disabled")
 	ErrNoHealthyAccount  = errors.New("no_healthy_account")
 	ErrModelNotOnAccount = errors.New("model_not_on_account")
+	ErrRuntimeBinding    = errors.New("runtime_auth_binding_unavailable")
 )
 
 type Router struct {
-	cache *store.RoutingCache
+	cache   *store.RoutingCache
+	options Options
+}
+
+type Options struct {
+	CpaRuntimeBindingSupported bool
 }
 
 func New(cache *store.RoutingCache) *Router {
 	return &Router{cache: cache}
+}
+
+func NewWithOptions(cache *store.RoutingCache, options Options) *Router {
+	return &Router{cache: cache, options: options}
 }
 
 type ResolvedRoute struct {
@@ -75,7 +85,10 @@ func (rt *Router) resolveToAccount(snap *store.CacheSnapshot, model string, pool
 	if !ok {
 		return nil, ErrNoRoute
 	}
-	if !accountRoutable(acc) {
+	if !rt.accountRoutable(acc) {
+		if rt.accountBlockedByRuntimeBinding(acc) {
+			return nil, ErrRuntimeBinding
+		}
 		return nil, ErrNoHealthyAccount
 	}
 	// When the account has a discovered model list, reject models that are not
@@ -116,48 +129,86 @@ func (rt *Router) resolveInPool(snap *store.CacheSnapshot, model string, poolID 
 	}
 
 	excludeSet := makeExcludeSet(exclude)
+	runtimeBindingBlocked := false
 
-	// Try accounts that have the model, in position order
-	for _, m := range members {
-		if !m.Enabled || excludeSet[m.AccountID] {
-			continue
+	for _, stage := range []struct {
+		requireModel bool
+		maxPenalty   int
+	}{
+		{requireModel: true, maxPenalty: 0},
+		{requireModel: true, maxPenalty: 999},
+		{requireModel: false, maxPenalty: 0},
+		{requireModel: false, maxPenalty: 999},
+	} {
+		resolved, blocked := rt.pickFromMembers(snap, members, model, poolID, excludeSet, stage.requireModel, stage.maxPenalty)
+		runtimeBindingBlocked = runtimeBindingBlocked || blocked
+		if resolved != nil {
+			return resolved, nil
 		}
-		acc, ok := snap.Accounts[m.AccountID]
-		if !ok || !accountRoutable(acc) {
-			continue
-		}
-		if !accountHasModel(snap, m.AccountID, model) {
-			continue
-		}
-		return &ResolvedRoute{
-			PoolID:      poolID,
-			TargetModel: model,
-			AccountID:   m.AccountID,
-			Account:     *acc,
-		}, nil
 	}
 
-	// Fallback within pool: try first healthy account regardless of model
-	for _, m := range members {
-		if !m.Enabled || excludeSet[m.AccountID] {
-			continue
-		}
-		acc, ok := snap.Accounts[m.AccountID]
-		if !ok || !accountRoutable(acc) {
-			continue
-		}
-		return &ResolvedRoute{
-			PoolID:      poolID,
-			TargetModel: model,
-			AccountID:   m.AccountID,
-			Account:     *acc,
-		}, nil
+	if runtimeBindingBlocked {
+		return nil, ErrRuntimeBinding
 	}
-
 	return nil, ErrNoHealthyAccount
 }
 
-func accountRoutable(acc *store.Account) bool {
+func (rt *Router) pickFromMembers(snap *store.CacheSnapshot, members []*store.PoolMember, model string, poolID int64, excludeSet map[int64]bool, requireModel bool, maxPenalty int) (*ResolvedRoute, bool) {
+	runtimeBindingBlocked := false
+	for _, m := range members {
+		if !m.Enabled || excludeSet[m.AccountID] {
+			continue
+		}
+		acc, ok := snap.Accounts[m.AccountID]
+		if !ok || !rt.accountRoutable(acc) {
+			if ok && rt.accountBlockedByRuntimeBinding(acc) {
+				runtimeBindingBlocked = true
+			}
+			continue
+		}
+		if accountRoutePenalty(acc) > maxPenalty {
+			continue
+		}
+		if requireModel && !accountHasModel(snap, m.AccountID, model) {
+			continue
+		}
+		return &ResolvedRoute{
+			PoolID:      poolID,
+			TargetModel: model,
+			AccountID:   m.AccountID,
+			Account:     *acc,
+		}, runtimeBindingBlocked
+	}
+	return nil, runtimeBindingBlocked
+}
+
+func (rt *Router) accountRoutable(acc *store.Account) bool {
+	if !rt.accountOtherwiseRoutable(acc) {
+		return false
+	}
+	if acc.SourceKind == "cpa" {
+		// The CPA HTTP provider endpoint currently cannot verify per-request
+		// auth pinning. Keep router selection aligned with the gateway's
+		// fail-closed runtime binding behavior instead of selecting an account
+		// that will be rejected just before forwarding.
+		if !rt.options.CpaRuntimeBindingSupported {
+			return false
+		}
+	}
+	return true
+}
+
+func (rt *Router) accountBlockedByRuntimeBinding(acc *store.Account) bool {
+	if acc == nil || acc.SourceKind != "cpa" || rt.options.CpaRuntimeBindingSupported {
+		return false
+	}
+	if !rt.accountOtherwiseRoutable(acc) {
+		return false
+	}
+	return true
+}
+
+func (rt *Router) accountOtherwiseRoutable(acc *store.Account) bool {
 	if acc == nil || !acc.Enabled {
 		return false
 	}
@@ -169,16 +220,36 @@ func accountRoutable(acc *store.Account) bool {
 			return false
 		}
 	}
+	if strings.EqualFold(acc.ServingStatus, "error") {
+		return false
+	}
 	if acc.SourceKind == "cpa" {
 		switch strings.ToLower(acc.CpaCredentialStatus) {
-		case "needs_login", "refresh_failed", "runtime_pending", "runtime_error", "auth_suspect":
+		case "needs_login", "refresh_failed", "runtime_pending", "runtime_error", "unknown", "":
 			return false
 		}
 		if strings.EqualFold(acc.CpaQuotaStatus, "blocked") {
 			return false
 		}
+		if strings.EqualFold(acc.CpaProvider, "codex") && !strings.EqualFold(acc.CpaSubscriptionStatus, "active") {
+			return false
+		}
 	}
 	return true
+}
+
+func accountRoutePenalty(acc *store.Account) int {
+	if acc == nil || acc.SourceKind != "cpa" {
+		return 0
+	}
+	penalty := 0
+	if strings.EqualFold(acc.CpaCredentialStatus, "auth_suspect") {
+		penalty++
+	}
+	if strings.EqualFold(acc.CpaQuotaStatus, "error") {
+		penalty++
+	}
+	return penalty
 }
 
 func parseRouteTime(value string) (time.Time, bool) {

@@ -1,5 +1,23 @@
 import type { Account, Pool, PoolDetailResponse } from "@/lib/types";
 
+export type RouteHealth = "unknown" | "healthy" | "degraded" | "error" | "disabled";
+
+export type RouteSummary = {
+  status: RouteHealth;
+  label: string;
+  reason: string;
+  impact: string;
+  actions: string[];
+};
+
+const ROUTE_LABELS: Record<RouteHealth, string> = {
+  unknown: "待检查",
+  healthy: "正常",
+  degraded: "降级",
+  error: "异常",
+  disabled: "已停用",
+};
+
 export type PoolSnapshot = {
   id: number;
   label: string;
@@ -140,24 +158,181 @@ export function derivePoolSnapshot(pool: Pool, detail?: PoolDetailResponse): Poo
   };
 }
 
+export function hasRuntimeBindingIssue(account: Account | null | undefined): boolean {
+  return (
+    account?.source_kind === "cpa" &&
+    isCpaOrDirectOtherwiseRoutable(account) &&
+    !account.runtime?.provider_pinning_supported
+  );
+}
+
 export function isAccountRoutable(account: Account): boolean {
+  if (!isCpaOrDirectOtherwiseRoutable(account)) return false;
+  if (account.source_kind === "cpa") {
+    if (hasRuntimeBindingIssue(account)) return false;
+  }
+  return true;
+}
+
+function isCpaOrDirectOtherwiseRoutable(account: Account): boolean {
   if (!account.enabled) return false;
   if (account.status !== "healthy" && account.status !== "degraded") return false;
   if (account.serving_status === "cooldown") {
     const until = account.cooldown_until ? new Date(account.cooldown_until).getTime() : Number.NaN;
     if (Number.isNaN(until) || until > Date.now()) return false;
   }
+  if (account.serving_status === "error") return false;
   if (account.source_kind === "cpa") {
-    if (
-      ["needs_login", "refresh_failed", "runtime_pending", "runtime_error", "auth_suspect"].includes(
-        account.cpa_credential_status || "",
-      )
-    ) {
-      return false;
-    }
-    if (account.cpa_quota_status === "blocked") return false;
+    return isCpaOtherwiseRoutable(account);
   }
   return true;
+}
+
+function isCpaOtherwiseRoutable(account: Account): boolean {
+  if (account.source_kind !== "cpa") return false;
+  const provider = String(account.cpa_provider || "").toLowerCase();
+  if (
+    ["needs_login", "refresh_failed", "runtime_pending", "runtime_error", "unknown", ""].includes(
+      account.cpa_credential_status || "",
+    )
+  ) {
+    return false;
+  }
+  if (account.cpa_quota_status === "blocked") return false;
+  if (provider === "codex" && account.cpa_subscription_status !== "active") return false;
+  return true;
+}
+
+export function accountHasRoutePenalty(account: Account | null | undefined): boolean {
+  if (!account || account.source_kind !== "cpa") return false;
+  return (
+    account.cpa_credential_status === "auth_suspect" ||
+    account.cpa_quota_status === "error" ||
+    account.cpa_quota_status === "unknown"
+  );
+}
+
+export function getRouteHealth(
+  account: Account | null | undefined,
+  memberEnabled: boolean,
+  discoveryHealth?: string,
+): RouteHealth {
+  return getRouteSummary(account, memberEnabled, discoveryHealth).status;
+}
+
+export function getRouteSummary(
+  account: Account | null | undefined,
+  memberEnabled: boolean,
+  discoveryHealth?: string,
+): RouteSummary {
+  if (!account) {
+    return routeSummary("unknown", "账号数据缺失", "无法判断路由能力。", ["刷新页面"]);
+  }
+  if (!memberEnabled || !account.enabled) {
+    return routeSummary("disabled", "账号已停用", "普通路由不会选择这个账号。", ["启用账号或 Pool 成员"]);
+  }
+  if (hasRuntimeBindingIssue(account)) {
+    return routeSummary(
+      "error",
+      "Binding 未确认",
+      "请求量、额度归因和健康修复暂不可信，普通流量会在网关侧 fail closed。",
+      ["检查 CPA runtime", "查看 Activity 中的 Runtime Binding", "等待 provider pinning 支持后再接流量"],
+    );
+  }
+
+  const health = discoveryHealth ?? getAccountHealth(account);
+  if (account.status === "unknown" || health === "unknown") {
+    return routeSummary("unknown", "状态待检查", "缺少足够的健康检查结果，普通路由暂不选择。", ["刷新账号状态", "运行自检"]);
+  }
+
+  if (account.source_kind === "cpa") {
+    const credentialStatus = String(account.cpa_credential_status || "unknown");
+    switch (credentialStatus) {
+      case "needs_login":
+        return routeSummary("error", "需要重登", "已确认上游凭据失效，普通路由会跳过。", ["重新登录", "刷新账号状态"]);
+      case "refresh_failed":
+        return routeSummary("error", "凭据刷新失败", "系统刷新登录态失败，普通路由会跳过。", ["重新登录", "检查 CPA runtime"]);
+      case "runtime_error":
+        return routeSummary("error", "CPA Runtime 异常", "运行环境不可用或配置异常，普通路由会跳过。", ["检查 CPA runtime", "查看服务日志"]);
+      case "runtime_pending":
+        return routeSummary("error", "凭据同步中", "auth file 与 runtime 索引仍在同步，普通路由暂不选择。", ["稍后刷新状态"]);
+      case "unknown":
+      case "":
+        return routeSummary("error", "凭据状态未知", "缺少可信凭据状态，普通路由会跳过。", ["刷新账号状态", "检查 CPA runtime"]);
+      default:
+        break;
+    }
+
+    const provider = String(account.cpa_provider || "").toLowerCase();
+    const subscriptionStatus = account.cpa_subscription_status || "unknown";
+    if (provider === "codex" && subscriptionStatus !== "active") {
+      const reason =
+        subscriptionStatus === "expired"
+          ? "订阅已过期"
+          : subscriptionStatus === "free"
+            ? "订阅不可用"
+            : subscriptionStatus === "pending"
+              ? "订阅刷新中"
+              : subscriptionStatus === "error"
+                ? "订阅获取失败"
+                : "订阅未知";
+      const action = subscriptionStatus === "pending" ? "稍后刷新订阅" : "刷新订阅";
+      return routeSummary("error", reason, "订阅状态未确认可用，普通路由会跳过。", [action, "检查订阅信息"]);
+    }
+
+    if (account.cpa_quota_status === "blocked") {
+      return routeSummary("error", "额度已用尽", "额度接口明确拒绝继续使用，普通路由会跳过。", ["刷新额度", "更换账号"]);
+    }
+  }
+
+  if (account.serving_status === "cooldown") {
+    return routeSummary("error", "服务冷却中", "最近真实请求失败，冷却结束前普通路由会跳过。", ["等待冷却结束", "运行自检"]);
+  }
+  if (account.serving_status === "error") {
+    return routeSummary("error", "服务异常", "真实模型请求持续失败，普通路由会跳过。", ["运行自检", "查看最近错误"]);
+  }
+  if (!isAccountRoutable(account)) {
+    return routeSummary("error", "不可路由", "当前组合状态不满足普通路由条件。", ["刷新账号状态", "查看诊断"]);
+  }
+
+  if (account.source_kind === "cpa") {
+    if (account.cpa_quota_status === "error") {
+      return routeSummary(
+        "degraded",
+        "额度查询失败",
+        "最近模型调用可用性未被单独否定，但额度接口暂不可用，路由会降权。",
+        ["刷新额度", "查看 Activity"],
+      );
+    }
+    if (account.cpa_quota_status === "unknown") {
+      return routeSummary("degraded", "额度未知", "没有可用额度快照，账号可路由但会降权。", ["刷新额度"]);
+    }
+    if (account.cpa_credential_status === "auth_suspect") {
+      return routeSummary(
+        "degraded",
+        "鉴权待确认",
+        "辅助接口疑似鉴权异常，但真实模型调用尚未确认失败，路由会降权。",
+        ["运行直测", "查看 Activity"],
+      );
+    }
+  }
+
+  return routeSummary("healthy", "可接流量", "账号满足普通路由条件。", ["保持监控"]);
+}
+
+function routeSummary(
+  status: RouteHealth,
+  reason: string,
+  impact: string,
+  actions: string[],
+): RouteSummary {
+  return {
+    status,
+    label: ROUTE_LABELS[status],
+    reason,
+    impact,
+    actions,
+  };
 }
 
 export function getAccountHealth(
@@ -225,9 +400,14 @@ export function getCpaCredentialMeta(account: Account): {
   if (account.source_kind !== "cpa") return null;
   const status = account.cpa_credential_status || "unknown";
   if (
-    !["needs_login", "refresh_failed", "auth_suspect", "runtime_pending", "runtime_error"].includes(
-      status,
-    )
+    ![
+      "needs_login",
+      "refresh_failed",
+      "auth_suspect",
+      "runtime_pending",
+      "runtime_error",
+      "unknown",
+    ].includes(status)
   )
     return null;
   const reason = account.cpa_credential_reason || "";
@@ -240,6 +420,8 @@ export function getCpaCredentialMeta(account: Account): {
         ? "CPA Runtime 异常"
         : status === "auth_suspect"
           ? "鉴权待确认"
+          : status === "unknown"
+            ? "凭据状态未知"
           : status === "refresh_failed"
             ? "凭据刷新失败"
             : "需要重新登录",
@@ -258,7 +440,7 @@ export function getCpaQuotaErrorMeta(account: Account): {
   const status = account.cpa_quota_status || "";
   if (status === "blocked") {
     return {
-      label: "额度不可用",
+      label: "额度已用尽",
       detail: account.cpa_quota_last_error || "额度已耗尽或上游拒绝使用",
       tone: "danger",
     };

@@ -38,6 +38,13 @@ export interface Account {
   cpa_subscription_expires_at?: string | null;
   cpa_subscription_fetched_at?: string | null;
   cpa_subscription_last_error?: string;
+  cpa_subscription_status?:
+    | "unknown"
+    | "active"
+    | "expired"
+    | "free"
+    | "pending"
+    | "error";
   codex_quota_json?: string;
   codex_quota_fetched_at?: string;
   cpa_quota_status?: "unknown" | "ok" | "blocked" | "pending" | "error";
@@ -55,6 +62,7 @@ export interface Account {
   runtime: {
     base_url: string;
     auth_mode: string;
+    provider_pinning_supported?: boolean;
   } | null;
 }
 
@@ -123,6 +131,11 @@ export interface RequestLog {
   error_message: string | null;
   source_kind: string;
   attempt_count: number;
+  runtime_auth_index: string;
+  runtime_auth_id: string;
+  runtime_account_key: string;
+  runtime_binding_status: string;
+  runtime_binding_reason: string;
   created_at: string;
 }
 
@@ -320,6 +333,7 @@ export interface CpaService {
   current_version?: string;
   latest_version?: string;
   update_available?: boolean;
+  provider_pinning_supported: boolean;
 }
 
 export interface CpaServiceTestResult {

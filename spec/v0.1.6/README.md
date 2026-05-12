@@ -1,19 +1,17 @@
 # v0.1.6 规格整理
 
-状态：draft
+状态：核心路由、runtime binding、可信记账与内置 CPA 构建闭环已实现并通过本轮验证；部分运维验收和诊断增强仍待后续。
 
-本目录把旧版单文件 `spec/v0.1.6.md` 拆成多份主题文档。拆分目标是把历史审计、已完成事项、待解决问题和新增设计约束放到各自位置，避免后续实现时被杂糅的上下文误导。除明确按本次新增规则收束的状态机语义外，旧文件中的主题和验收要求应完整迁移。
+本目录按“问题闭环”组织 v0.1.6 规格。每份文档围绕一个真实问题展开，统一描述问题、改进策略、UI 表现、日志与诊断、测试与验收、已完成事项和待解决事项，避免后端、UI、测试、运维规则分散在不同文件中后相互遗漏。
 
 ## 文档结构
 
-- `01-status-routing.md`：账号状态机、模型调用可信度、quota/subscription/serving 路由规则。
-- `02-cpa-credential-lifecycle.md`：CPA 登录、删除、重登、auth file、runtime reload、重复账号治理。
-- `03-cpa-runtime-binding.md`：CPA provider 级转发导致的 runtime credential 归属错位，以及 per-request credential pinning 要求。
-- `04-streaming-activity.md`：流式完成判定、Activity 失败记账、上游错误细节保留、Activity flow。
-- `05-lightweight-runtime.md`：2C2G/2C4G VPS、低资源 profile、SQLite、健康检查、请求/响应内存控制、原生 systemd 部署。
-- `06-ui-behavior.md`：UI 展示、Active Pool 卡片修复、状态文案、Activity 归因提示。
-- `07-ops-observability.md`：Docker/Compose、healthcheck、日志降噪、审计日志、诊断页。
-- `08-acceptance-tests.md`：跨主题验收标准和测试清单。
+- `01-cpa-runtime-identity-binding.md`：CPA 账号身份与 runtime credential 绑定错位。
+- `02-account-status-routing-trust.md`：账号状态互相污染导致错误路由和错误 UI。
+- `03-streaming-activity-accounting.md`：Streaming 失败与 Activity 记账不准确。
+- `04-cpa-credential-lifecycle.md`：CPA 凭据生命周期、重复账号、删除与重登。
+- `05-ops-observability-diagnostics.md`：部署、日志、health、诊断能力不足。
+- `99-acceptance-matrix.md`：跨问题验收矩阵和最终核对清单。
 
 ## 总体原则
 
@@ -23,12 +21,32 @@
 4. CPA 多账号场景必须先解决 runtime credential 归属。否则“模型调用成功”可能来自另一个 CPA auth file，反而会污染被选账号的状态。
 5. UI 默认解释真实问题，不用红色“请重登”覆盖所有异常。只有真实凭据失效或已确认认证失败时，才显示需要重新登录。
 
-## 历史内容归档方式
+## 版本边界
 
-旧文件中已经完成的 v0.1.6 工作会保留为“已完成/已验证”条目；生产审计记录会按问题根源归入对应主题。每个主题文档都尽量明确：
+v0.1.6 成功后按新容器和新数据目录运行，不承担旧容器中的数据、字段或语义迁移。规格中不再要求兼容旧 `cpa_credential_status`、旧 request log schema、旧 auth metadata 或历史 SQLite 数据；如需保留历史实例，应继续运行旧容器或手工导出需要的信息。
 
-- 问题根源
-- 解决的问题
-- 设计规则
-- 验收标准
-- 仍待决定的问题
+因此，本目录中的状态、字段和验收要求都按新 v0.1.6 runtime 的最终形态描述。实现时不需要增加旧数据迁移、旧字段兼容读取、旧语义转换或 migration wizard。
+
+## 本轮完成摘要
+
+本轮 v0.1.6 已完成并验证以下闭环：
+
+- CPA 普通模型请求不再只按 provider 转发；Lune 会先解析目标账号对应的 runtime auth binding，再把 auth id/auth index 等 pinning 信息传给内置 CPA。
+- CPA runtime 不支持 pinning、binding 未就绪或强制账号无法确认 runtime credential 时，普通流量 fail closed，避免 CPA 默认 round-robin 污染账号归因。
+- `request_logs` 增加 runtime identity 字段，Activity/usage 的账号级可信统计只使用已确认 CPA binding 的请求。
+- 账号状态、路由和 UI 口径补齐：Codex subscription 非 active 阻断；`auth_suspect` 可路由但降权；Pool 统计和前端状态大小写处理与后端一致。
+- 内置 CPA 从外部固定镜像切换为固定 upstream commit、Lune provider pinning patch 和本地构建，版本标识为 `v7.0.2-lune.1`。
+- embedded CPA 子进程退出时不再被静默忽略；entrypoint 会让容器失败，便于 Docker/health 发现问题。
+- 已执行 `go test ./...`、`npm run build`、`sh -n docker/entrypoint.sh`、`git diff --check`、Docker build 和新容器 smoke test；旧版 `lune-0.1.5` 容器未被改动。
+
+## 单篇文档模板
+
+每个问题文档尽量保持同一结构：
+
+- `问题`：现象、影响、根因和必要生产审计证据。
+- `改进策略`：后端状态、路由、runtime、数据或部署行为。
+- `UI 表现`：卡片、badge、详情抽屉、Activity、诊断页等用户可见结果。
+- `日志与诊断`：request log、安全审计日志、health/readiness、诊断字段。
+- `测试与验收`：单测、集成、UI、容器或手工验收。
+- `已完成事项`：历史已完成内容。
+- `待解决事项`：仍需实现或产品决策的内容。

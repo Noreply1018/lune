@@ -64,8 +64,32 @@ function getRequestTokens(log: RequestLog) {
   return (log.input_tokens ?? 0) + (log.output_tokens ?? 0);
 }
 
+function hasTrustedTokenAccounting(log: RequestLog) {
+  return log.source_kind !== "cpa" || log.runtime_binding_status === "confirmed";
+}
+
+function tokenSummary(log: RequestLog) {
+  if (!hasTrustedTokenAccounting(log)) return "未确认";
+  const totalTokens = getRequestTokens(log);
+  return totalTokens > 0 ? compact(totalTokens) : DASH;
+}
+
+function tokenDetail(log: RequestLog) {
+  if (!hasTrustedTokenAccounting(log)) return "Runtime binding 未确认";
+  return `输入 ${compact(log.input_tokens ?? 0)} / 输出 ${compact(log.output_tokens ?? 0)}`;
+}
+
 function getRequestSummary(log: RequestLog) {
   return `chat/completions · ${log.stream ? "stream" : "non-stream"}`;
+}
+
+function runtimeBindingLabel(log: RequestLog) {
+  if (log.source_kind !== "cpa") return null;
+  if (log.runtime_binding_status === "confirmed") {
+    return log.runtime_auth_index || log.runtime_auth_id || log.runtime_account_key || "confirmed";
+  }
+  if (log.runtime_binding_status === "failed") return "binding failed";
+  return "binding unknown";
 }
 
 function within(log: RequestLog, hoursAgo: number): boolean {
@@ -1681,6 +1705,15 @@ export default function ActivityPage() {
   const logs30d = usage?.logs ?? [];
   const logs24h = useMemo(() => logs30d.filter((l) => within(l, 24)), [logs30d]);
   const logs7d = useMemo(() => logs30d.filter((l) => within(l, 24 * 7)), [logs30d]);
+  const preciseAccountLogs24h = useMemo(
+    () =>
+      logs24h.filter(
+        (log) =>
+          log.source_kind !== "cpa" ||
+          log.runtime_binding_status === "confirmed",
+      ),
+    [logs24h],
+  );
 
   const modelOptions = useMemo(() => {
     const values = new Set<string>();
@@ -1893,8 +1926,8 @@ export default function ActivityPage() {
 
       <SankeyDiagram
         title="Pool → Account → Model 流向"
-        description="过去 24 小时 request log 最终记录的路由路径：从 Pool 到实际账号，再到最终模型。"
-        logs={logs24h}
+        description="过去 24 小时已确认账号归属的 request log：从 Pool 到实际账号，再到最终模型。"
+        logs={preciseAccountLogs24h}
         poolMap={poolMap}
       />
 
@@ -2048,11 +2081,10 @@ export default function ActivityPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-moon-200/50 bg-white/66">
-              {pagedLogs.length ? (
-                pagedLogs.map((item) => {
-                  const expanded = expandedRowId === item.id;
-                  const totalTokens = getRequestTokens(item);
-                  const highlighted = highlightedRequestId === item.request_id;
+	              {pagedLogs.length ? (
+	                pagedLogs.map((item) => {
+	                  const expanded = expandedRowId === item.id;
+	                  const highlighted = highlightedRequestId === item.request_id;
                   return (
                     <Fragment key={item.id}>
                       <tr
@@ -2090,6 +2122,18 @@ export default function ActivityPage() {
                             </p>
                             <p className="text-xs text-moon-400">
                               {item.source_kind || "gateway"}
+                              {runtimeBindingLabel(item) ? (
+                                <span
+                                  className={cn(
+                                    "ml-2 rounded-full px-2 py-0.5 text-[10px]",
+                                    item.runtime_binding_status === "confirmed"
+                                      ? "bg-status-green/10 text-status-green"
+                                      : "bg-status-yellow/12 text-status-yellow",
+                                  )}
+                                >
+                                  {runtimeBindingLabel(item)}
+                                </span>
+                              ) : null}
                               {item.attempt_count > 1 ? (
                                 <span className="ml-2 rounded-full bg-lunar-100/80 px-2 py-0.5 text-[10px] text-lunar-700">
                                   重试 ×{item.attempt_count}
@@ -2119,9 +2163,9 @@ export default function ActivityPage() {
                         <td className="px-4 py-3 text-moon-500">
                           {item.latency_ms > 0 ? latency(item.latency_ms) : DASH}
                         </td>
-                        <td className="px-4 py-3 text-moon-500">
-                          {totalTokens > 0 ? compact(totalTokens) : DASH}
-                        </td>
+	                        <td className="px-4 py-3 text-moon-500">
+	                          {tokenSummary(item)}
+	                        </td>
                         <td className="px-4 py-3 text-moon-400 font-mono text-[12px]">
                           {item.request_id}
                         </td>
@@ -2181,6 +2225,27 @@ export default function ActivityPage() {
                               </div>
                               <div className="space-y-1">
                                 <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">
+                                  Runtime Binding
+                                </p>
+                                <p className="text-sm text-moon-700">
+                                  {item.source_kind === "cpa"
+                                    ? item.runtime_binding_status || "unknown"
+                                    : DASH}
+                                </p>
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">
+                                  Runtime Credential
+                                </p>
+                                <p className="break-all text-sm text-moon-700">
+                                  {item.runtime_auth_index ||
+                                    item.runtime_auth_id ||
+                                    item.runtime_account_key ||
+                                    DASH}
+                                </p>
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">
                                   Status Code
                                 </p>
                                 <p className="text-sm text-moon-700">
@@ -2199,10 +2264,9 @@ export default function ActivityPage() {
                                 <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">
                                   Tokens
                                 </p>
-                                <p className="text-sm text-moon-700">
-                                  输入 {compact(item.input_tokens ?? 0)} / 输出{" "}
-                                  {compact(item.output_tokens ?? 0)}
-                                </p>
+	                                <p className="text-sm text-moon-700">
+	                                  {tokenDetail(item)}
+	                                </p>
                               </div>
                               <div className="space-y-1">
                                 <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">
@@ -2226,6 +2290,16 @@ export default function ActivityPage() {
                                 </p>
                                 <p className="mt-1 text-sm text-status-red">
                                   {item.error_message}
+                                </p>
+                              </div>
+                            ) : null}
+                            {item.runtime_binding_reason ? (
+                              <div className="mt-4 rounded-[1.1rem] border border-status-yellow/15 bg-yellow-50/75 px-4 py-3">
+                                <p className="text-[11px] uppercase tracking-[0.16em] text-status-yellow/75">
+                                  Runtime Binding Reason
+                                </p>
+                                <p className="mt-1 text-sm text-status-yellow">
+                                  {item.runtime_binding_reason}
                                 </p>
                               </div>
                             ) : null}

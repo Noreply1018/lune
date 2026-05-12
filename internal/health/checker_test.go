@@ -36,6 +36,19 @@ func newTestStore(t *testing.T) *store.Store {
 	return st
 }
 
+func TestProviderPinningSupportedDefaultsFalse(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	checker := NewChecker(st, cache, "", "", nil)
+	if checker.ProviderPinningSupported() {
+		t.Fatal("external CPA runtime must not enable provider pinning by default")
+	}
+	checker.SetProviderPinningSupported(true)
+	if !checker.ProviderPinningSupported() {
+		t.Fatal("expected explicit provider pinning support override")
+	}
+}
+
 func TestCheckCpaServiceRetriesStartupConnectionFailures(t *testing.T) {
 	t.Parallel()
 
@@ -487,6 +500,94 @@ func TestCodexQuotaUnauthorizedDoesNotMarkCredentialNeedsLogin(t *testing.T) {
 	}
 	if acc.CpaQuotaStatus != "error" || acc.CpaQuotaLastError != "HTTP 401" {
 		t.Fatalf("expected quota error state, got status=%q err=%q", acc.CpaQuotaStatus, acc.CpaQuotaLastError)
+	}
+}
+
+func TestCodexQuotaSuccessDoesNotClearCredentialState(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct_123",
+		Email:     "user@example.com",
+		Type:      "codex",
+	}, "codex-user@example.com-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			_ = json.NewEncoder(w).Encode(map[string]any{"files": []map[string]any{{
+				"id":         "codex-user@example.com-plus.json",
+				"auth_index": "idx_1",
+				"provider":   "codex",
+				"email":      "user@example.com",
+				"id_token": map[string]any{
+					"chatgpt_account_id": "acct_123",
+				},
+			}}})
+		case "/v0/management/api-call":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status_code": 200,
+				"body":        `{"period":"day","used":1}`,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       server.URL,
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:                  "Codex",
+		SourceKind:             "cpa",
+		CpaServiceID:           &serviceID,
+		CpaProvider:            "codex",
+		CpaAccountKey:          "codex-user@example.com-plus",
+		CpaOpenaiID:            "acct_123",
+		CpaCredentialStatus:    "auth_suspect",
+		CpaCredentialReason:    "prior_upstream_401",
+		CpaCredentialLastError: "previous credential suspicion",
+		CpaSubscriptionStatus:  "active",
+		CpaQuotaStatus:         "ok",
+		Enabled:                true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, authDir, "", nil)
+	checker.client = server.Client()
+	result, err := checker.RefreshAccount(context.Background(), *acc, RefreshOptions{Quota: true, WaitAuthIndex: true})
+	if err != nil || result == nil || !result.QuotaRefreshed {
+		t.Fatalf("expected quota refresh success, result=%+v err=%v", result, err)
+	}
+	acc, err = st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account after refresh: %v", err)
+	}
+	if acc.CpaCredentialStatus != "auth_suspect" || acc.CpaCredentialReason != "prior_upstream_401" {
+		t.Fatalf("quota success must not clear credential state, got status=%q reason=%q", acc.CpaCredentialStatus, acc.CpaCredentialReason)
+	}
+	if acc.CodexQuotaJSON == "" {
+		t.Fatalf("expected quota JSON to be persisted")
 	}
 }
 

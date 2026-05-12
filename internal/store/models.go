@@ -27,6 +27,7 @@ type Account struct {
 	CpaSubscriptionExpiresAt string `json:"cpa_subscription_expires_at,omitempty"`
 	CpaSubscriptionFetchedAt string `json:"cpa_subscription_fetched_at,omitempty"`
 	CpaSubscriptionLastError string `json:"cpa_subscription_last_error,omitempty"`
+	CpaSubscriptionStatus    string `json:"cpa_subscription_status,omitempty"`
 
 	// codex quota snapshot (updated by health loop)
 	CodexQuotaJSON      string `json:"codex_quota_json,omitempty"`
@@ -66,8 +67,9 @@ type Account struct {
 }
 
 type AccountRuntime struct {
-	BaseURL  string `json:"base_url"`
-	AuthMode string `json:"auth_mode"`
+	BaseURL                  string `json:"base_url"`
+	AuthMode                 string `json:"auth_mode"`
+	ProviderPinningSupported bool   `json:"provider_pinning_supported"`
 }
 
 type Pool struct {
@@ -112,25 +114,30 @@ type AccessToken struct {
 }
 
 type RequestLog struct {
-	ID              int64  `json:"id"`
-	RequestID       string `json:"request_id"`
-	AccessTokenName string `json:"access_token_name"`
-	ModelRequested  string `json:"model_requested"`
-	ModelActual     string `json:"model_actual"`
-	PoolID          int64  `json:"pool_id"`
-	AccountID       int64  `json:"account_id"`
-	AccountLabel    string `json:"account_label"`
-	StatusCode      int    `json:"status_code"`
-	LatencyMs       int64  `json:"latency_ms"`
-	InputTokens     int64  `json:"input_tokens"`
-	OutputTokens    int64  `json:"output_tokens"`
-	Stream          bool   `json:"stream"`
-	RequestIP       string `json:"request_ip"`
-	Success         bool   `json:"success"`
-	ErrorMessage    string `json:"error_message"`
-	SourceKind      string `json:"source_kind"`
-	AttemptCount    int    `json:"attempt_count"`
-	CreatedAt       string `json:"created_at"`
+	ID                   int64  `json:"id"`
+	RequestID            string `json:"request_id"`
+	AccessTokenName      string `json:"access_token_name"`
+	ModelRequested       string `json:"model_requested"`
+	ModelActual          string `json:"model_actual"`
+	PoolID               int64  `json:"pool_id"`
+	AccountID            int64  `json:"account_id"`
+	AccountLabel         string `json:"account_label"`
+	StatusCode           int    `json:"status_code"`
+	LatencyMs            int64  `json:"latency_ms"`
+	InputTokens          int64  `json:"input_tokens"`
+	OutputTokens         int64  `json:"output_tokens"`
+	Stream               bool   `json:"stream"`
+	RequestIP            string `json:"request_ip"`
+	Success              bool   `json:"success"`
+	ErrorMessage         string `json:"error_message"`
+	SourceKind           string `json:"source_kind"`
+	AttemptCount         int    `json:"attempt_count"`
+	RuntimeAuthIndex     string `json:"runtime_auth_index"`
+	RuntimeAuthID        string `json:"runtime_auth_id"`
+	RuntimeAccountKey    string `json:"runtime_account_key"`
+	RuntimeBindingStatus string `json:"runtime_binding_status"`
+	RuntimeBindingReason string `json:"runtime_binding_reason"`
+	CreatedAt            string `json:"created_at"`
 }
 
 type AccountModel struct {
@@ -141,24 +148,25 @@ type AccountModel struct {
 }
 
 type CpaService struct {
-	ID              int64   `json:"id"`
-	Label           string  `json:"label"`
-	BaseURL         string  `json:"base_url"`
-	APIKey          string  `json:"api_key,omitempty"`
-	ManagementKey   string  `json:"management_key,omitempty"`
-	APIKeySet       bool    `json:"api_key_set"`
-	APIKeyMasked    string  `json:"api_key_masked"`
-	Enabled         bool    `json:"enabled"`
-	Status          string  `json:"status"`
-	LastCheckedAt   *string `json:"last_checked_at"`
-	LastError       string  `json:"last_error"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
-	RuntimeMode     string  `json:"runtime_mode,omitempty"`
-	AuthDir         string  `json:"auth_dir,omitempty"`
-	CurrentVersion  string  `json:"current_version,omitempty"`
-	LatestVersion   string  `json:"latest_version,omitempty"`
-	UpdateAvailable bool    `json:"update_available,omitempty"`
+	ID                       int64   `json:"id"`
+	Label                    string  `json:"label"`
+	BaseURL                  string  `json:"base_url"`
+	APIKey                   string  `json:"api_key,omitempty"`
+	ManagementKey            string  `json:"management_key,omitempty"`
+	APIKeySet                bool    `json:"api_key_set"`
+	APIKeyMasked             string  `json:"api_key_masked"`
+	Enabled                  bool    `json:"enabled"`
+	Status                   string  `json:"status"`
+	LastCheckedAt            *string `json:"last_checked_at"`
+	LastError                string  `json:"last_error"`
+	CreatedAt                string  `json:"created_at"`
+	UpdatedAt                string  `json:"updated_at"`
+	RuntimeMode              string  `json:"runtime_mode,omitempty"`
+	AuthDir                  string  `json:"auth_dir,omitempty"`
+	CurrentVersion           string  `json:"current_version,omitempty"`
+	LatestVersion            string  `json:"latest_version,omitempty"`
+	UpdateAvailable          bool    `json:"update_available,omitempty"`
+	ProviderPinningSupported bool    `json:"provider_pinning_supported"`
 }
 
 type UsageStats struct {

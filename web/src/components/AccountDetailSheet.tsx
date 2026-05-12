@@ -31,13 +31,16 @@ import {
   getCpaSubscriptionErrorMeta,
   getExpiryMeta,
   parseQuotaDisplay,
+  getRouteSummary,
+  hasRuntimeBindingIssue,
+  type RouteSummary,
 } from "@/lib/lune";
 import type { Account, LatencyBucket, PoolMember } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Tone = "default" | "success" | "warning" | "danger";
 
-type TabKey = "overview" | "playground" | "debug";
+type TabKey = "overview" | "playground" | "diagnostics";
 
 const PRESET_MESSAGES = [
   { label: "你好", value: "你好，请用一句话回复我。" },
@@ -97,6 +100,7 @@ export default function AccountDetailSheet({
   const quota = parseQuotaDisplay(account.quota_display ?? "");
   const codexQuota = parseCodexQuota(account);
   const models = ensureArray(account.models);
+  const routeSummary = getRouteSummary(account, member.enabled, health);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -121,7 +125,7 @@ export default function AccountDetailSheet({
               当前账号的运行细节、直测与底层字段，分三页查看。
             </SheetDescription>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-moon-500">
-              <StatusBadge status={health === "unknown" ? "degraded" : health} />
+              <StatusBadge status={routeSummary.status} />
               <span className="rounded-full bg-moon-100/85 px-2.5 py-1">
                 {isCodexCpa ? `Codex${account.cpa_plan_type ? ` · ${account.cpa_plan_type}` : ""}` : quota}
               </span>
@@ -177,7 +181,7 @@ export default function AccountDetailSheet({
                 <TabsIndicator />
                 <TabsTab value="overview">Overview</TabsTab>
                 <TabsTab value="playground">Playground</TabsTab>
-                <TabsTab value="debug">Debug</TabsTab>
+                <TabsTab value="diagnostics">诊断</TabsTab>
               </TabsList>
             </div>
 
@@ -191,6 +195,7 @@ export default function AccountDetailSheet({
                   quota={quota}
                   account={account}
                   codexQuota={codexQuota}
+                  routeSummary={routeSummary}
                 />
               </TabsPanel>
               <TabsPanel value="playground">
@@ -202,25 +207,14 @@ export default function AccountDetailSheet({
                   resolveToken={resolveToken}
                 />
               </TabsPanel>
-              <TabsPanel value="debug">
-                <DebugPanel
+              <TabsPanel value="diagnostics">
+                <DiagnosticPanel
+                  account={account}
                   accountId={account.id}
                   baseUrl={account.runtime?.base_url || account.base_url || "--"}
-                  subscriptionExpiry={isCodexCpa ? account.cpa_subscription_expires_at ?? null : null}
-                  subscriptionLastError={isCodexCpa ? account.cpa_subscription_last_error ?? "" : ""}
-                  credentialExpiry={account.cpa_expired_at ?? null}
-                  credentialStatus={
-                    account.source_kind === "cpa" ? account.cpa_credential_status ?? "unknown" : null
-                  }
-                  credentialReason={account.source_kind === "cpa" ? account.cpa_credential_reason ?? "" : ""}
-                  credentialLastError={
-                    account.source_kind === "cpa" ? account.cpa_credential_last_error ?? "" : ""
-                  }
-                  credentialCheckedAt={
-                    account.source_kind === "cpa" ? account.cpa_credential_checked_at ?? null : null
-                  }
-                  lastCheckedAt={account.last_checked_at ?? null}
-                  lastError={account.last_error ?? null}
+                  routeSummary={routeSummary}
+                  discoveryHealth={health}
+                  isCodexCpa={isCodexCpa}
                 />
               </TabsPanel>
             </div>
@@ -239,6 +233,7 @@ function OverviewPanel({
   quota,
   account,
   codexQuota,
+  routeSummary,
 }: {
   accountId: number;
   poolId?: number;
@@ -247,6 +242,7 @@ function OverviewPanel({
   quota: string;
   account: Account;
   codexQuota: CodexQuota | null;
+  routeSummary: RouteSummary;
 }) {
   const [latencyState, setLatencyState] = useState<
     { status: "loading" } | { status: "ready"; p50: number | null; p95: number | null } | { status: "empty" } | { status: "error" }
@@ -314,6 +310,8 @@ function OverviewPanel({
 
   return (
     <div className="space-y-6">
+      <RouteSummaryPanel summary={routeSummary} compact />
+
       <div className="grid gap-3 sm:grid-cols-3">
         <Meter label="今日请求" value={compact(stats.requests)} hint={`${stats.requests} 次`} />
         <Meter label="成功率" value={successLabel} hint={`24h 窗口`} tone={successTone} />
@@ -661,72 +659,330 @@ function PlaygroundPanel({
   );
 }
 
-function DebugPanel({
+function DiagnosticPanel({
+  account,
   accountId,
   baseUrl,
-  subscriptionExpiry,
-  subscriptionLastError,
-  credentialExpiry,
-  credentialStatus,
-  credentialReason,
-  credentialLastError,
-  credentialCheckedAt,
-  lastCheckedAt,
-  lastError,
+  routeSummary,
+  discoveryHealth,
+  isCodexCpa,
 }: {
+  account: Account;
   accountId: number;
   baseUrl: string;
-  subscriptionExpiry: string | null;
-  subscriptionLastError: string;
-  credentialExpiry: string | null;
-  credentialStatus: string | null;
-  credentialReason: string;
-  credentialLastError: string;
-  credentialCheckedAt: string | null;
-  lastCheckedAt: string | null;
-  lastError: string | null;
+  routeSummary: RouteSummary;
+  discoveryHealth: string;
+  isCodexCpa: boolean;
+}) {
+  const cpaCredentialStatus =
+    account.source_kind === "cpa" ? account.cpa_credential_status ?? "unknown" : null;
+  const dimensions = buildDiagnosticDimensions(account, discoveryHealth, isCodexCpa);
+
+  return (
+    <div className="space-y-5 text-sm">
+      <RouteSummaryPanel summary={routeSummary} />
+
+      {dimensions.map((dimension) => (
+        <DiagnosticSection key={dimension.title} title={dimension.title}>
+          <DiagnosticRow label="当前状态" value={dimension.status} tone={dimension.tone} />
+          <DiagnosticRow label="最近检查" value={dimension.checkedAt} />
+          <DiagnosticRow
+            label="原因 / 最近错误"
+            value={dimension.reason}
+            tone={dimension.tone === "danger" ? "danger" : "default"}
+            breakAll
+          />
+          <DiagnosticRow label="建议操作" value={dimension.action} />
+        </DiagnosticSection>
+      ))}
+
+      <details className="rounded-[1.15rem] border border-moon-200/55 bg-white/50 px-4 py-3">
+        <summary className="cursor-pointer text-[11px] uppercase tracking-[0.18em] text-moon-400">
+          高级信息
+        </summary>
+        <div className="mt-4 space-y-3">
+          <DebugRow label="Account ID" value={String(accountId)} copyable />
+          <DebugRow label="Runtime Base URL" value={baseUrl} copyable breakAll />
+          <DebugRow label="Discovery Health" value={discoveryHealth} />
+          <DebugRow label="Route Badge" value={routeSummary.status} />
+          <DebugRow label="Serving Status" value={account.serving_status || "healthy"} />
+          <DebugRow label="Failure Count" value={String(account.failure_count ?? 0)} />
+          <DebugRow label="Cooldown Until" value={account.cooldown_until || "--"} />
+          <DebugRow label="Last Checked" value={relativeTime(account.last_checked_at ?? null) || "--"} />
+          <DebugRow label="Last Success" value={relativeTime(account.last_success_at ?? null) || "--"} />
+          <DebugRow label="Last Failure" value={relativeTime(account.last_failure_at ?? null) || "--"} />
+          <DebugRow
+            label="Last Error"
+            value={account.last_error || "--"}
+            tone={account.last_error ? "danger" : "default"}
+            breakAll
+          />
+          {account.source_kind === "cpa" ? (
+            <>
+              <DebugRow label="CPA Account Key" value={account.cpa_account_key || "--"} copyable breakAll />
+              <DebugRow label="Provider" value={account.cpa_provider || "--"} />
+              <DebugRow label="Raw Credential Status" value={cpaCredentialStatus || "--"} />
+              <DebugRow label="Raw Credential Reason" value={account.cpa_credential_reason || "--"} />
+              <DebugRow label="Raw Quota Status" value={account.cpa_quota_status || "unknown"} />
+              <DebugRow label="Raw Subscription Status" value={account.cpa_subscription_status || "unknown"} />
+            </>
+          ) : null}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function RouteSummaryPanel({
+  summary,
+  compact = false,
+}: {
+  summary: RouteSummary;
+  compact?: boolean;
 }) {
   return (
-    <div className="space-y-4 text-sm">
-      <DebugRow label="Account ID" value={String(accountId)} copyable />
-      <DebugRow label="Runtime Base URL" value={baseUrl} copyable breakAll />
-      {subscriptionExpiry ? (
-        <DebugRow
-          label="ChatGPT Subscription Expires"
-          value={`${subscriptionExpiry} · ${relativeTime(subscriptionExpiry)}`}
-        />
+    <section className="rounded-[1.15rem] border border-moon-200/55 bg-white/62 px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1.5">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Route</p>
+          <p className="text-base font-semibold tracking-[-0.01em] text-moon-800">
+            {summary.label} · {summary.reason}
+          </p>
+          <p className="text-sm leading-6 text-moon-500">{summary.impact}</p>
+        </div>
+        <StatusBadge status={summary.status} />
+      </div>
+      {!compact && summary.actions.length > 0 ? (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {summary.actions.map((action) => (
+            <span
+              key={action}
+              className="rounded-full bg-moon-100/75 px-2.5 py-1 text-[11px] text-moon-500"
+            >
+              {action}
+            </span>
+          ))}
+        </div>
       ) : null}
-      {subscriptionLastError ? (
-        <DebugRow
-          label="ChatGPT Subscription Error"
-          value={subscriptionLastError}
-          tone="danger"
-          breakAll
-        />
-      ) : null}
-      {credentialExpiry ? (
-        <DebugRow
-          label="CPA Token Expires"
-          value={`${credentialExpiry} · ${relativeTime(credentialExpiry)}`}
-        />
-      ) : null}
-      {credentialStatus ? (
-        <>
-          <DebugRow label="CPA Credential Status" value={credentialStatus} />
-          {credentialReason ? <DebugRow label="CPA Credential Reason" value={credentialReason} /> : null}
-          {credentialLastError ? (
-            <DebugRow label="CPA Credential Error" value={credentialLastError} tone="danger" />
-          ) : null}
-          <DebugRow label="CPA Credential Checked" value={relativeTime(credentialCheckedAt) || "--"} />
-        </>
-      ) : null}
-      <DebugRow label="Last Checked" value={relativeTime(lastCheckedAt) || "--"} />
-      <DebugRow
-        label="Last Error"
-        value={lastError || "--"}
-        tone={lastError ? "danger" : "default"}
-        breakAll
-      />
+    </section>
+  );
+}
+
+type DiagnosticDimension = {
+  title: string;
+  status: string;
+  checkedAt: string;
+  reason: string;
+  action: string;
+  tone?: "default" | "warning" | "danger";
+};
+
+function buildDiagnosticDimensions(
+  account: Account,
+  discoveryHealth: string,
+  isCodexCpa: boolean,
+): DiagnosticDimension[] {
+  return [
+    runtimeBindingDimension(account),
+    credentialDimension(account),
+    ...(isCodexCpa ? [subscriptionDimension(account)] : []),
+    quotaDimension(account),
+    servingDimension(account, discoveryHealth),
+  ];
+}
+
+function runtimeBindingDimension(account: Account): DiagnosticDimension {
+  if (account.source_kind !== "cpa") {
+    return {
+      title: "Runtime Binding",
+      status: "直连 Bearer",
+      checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
+      reason: "直连账号不经过 CPA runtime auth file 绑定。",
+      action: "保持当前 API key 配置",
+    };
+  }
+  if (hasRuntimeBindingIssue(account)) {
+    return {
+      title: "Runtime Binding",
+      status: "未确认",
+      checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
+      reason: "CPA HTTP provider 当前无法验证 per-request auth pinning。",
+      action: "检查 CPA runtime，并在 provider pinning 支持后再接普通流量",
+      tone: "danger",
+    };
+  }
+  return {
+    title: "Runtime Binding",
+    status: "已确认",
+    checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
+    reason: "Lune 可确认请求使用目标 CPA auth file。",
+    action: "保持监控",
+  };
+}
+
+function credentialDimension(account: Account): DiagnosticDimension {
+  if (account.source_kind !== "cpa") {
+    return {
+      title: "凭据",
+      status: account.api_key_set ? "API key 已配置" : "API key 缺失",
+      checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
+      reason: account.api_key_set ? "直连凭据由用户提供。" : "没有可用 API key。",
+      action: account.api_key_set ? "保持监控" : "补充 API key",
+      tone: account.api_key_set ? "default" : "danger",
+    };
+  }
+  const meta = getCpaCredentialMeta(account);
+  const status = account.cpa_credential_status || "unknown";
+  const healthy = status === "ok" || status === "auth_suspect";
+  return {
+    title: "凭据",
+    status: meta?.label || (status === "ok" ? "凭据正常" : status),
+    checkedAt: relativeTime(account.cpa_credential_checked_at ?? null) || "--",
+    reason: meta?.detail || account.cpa_credential_reason || "没有记录到凭据异常。",
+    action:
+      status === "needs_login" || status === "refresh_failed"
+        ? "重新登录"
+        : status === "runtime_error"
+          ? "检查 CPA runtime"
+          : status === "runtime_pending"
+            ? "稍后刷新状态"
+            : status === "auth_suspect"
+              ? "运行直测确认"
+              : "保持监控",
+    tone: healthy ? (status === "auth_suspect" ? "warning" : "default") : "danger",
+  };
+}
+
+function subscriptionDimension(account: Account): DiagnosticDimension {
+  const status = account.cpa_subscription_status || "unknown";
+  const active = status === "active";
+  return {
+    title: "订阅",
+    status: subscriptionStatusLabel(status),
+    checkedAt: relativeTime(account.cpa_subscription_fetched_at ?? null) || "--",
+    reason: account.cpa_subscription_last_error || account.cpa_subscription_expires_at || "订阅快照可用。",
+    action: active ? "保持监控" : status === "pending" ? "稍后刷新订阅" : "刷新订阅",
+    tone: active ? "default" : status === "pending" || status === "error" || status === "unknown" ? "warning" : "danger",
+  };
+}
+
+function quotaDimension(account: Account): DiagnosticDimension {
+  if (account.source_kind !== "cpa") {
+    return {
+      title: "额度",
+      status: parseQuotaDisplay(account.quota_display ?? ""),
+      checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
+      reason: "直连账号使用用户维护的额度展示。",
+      action: "需要时更新账号备注或额度展示",
+    };
+  }
+  const meta = getCpaQuotaErrorMeta(account);
+  const status = account.cpa_quota_status || "unknown";
+  return {
+    title: "额度",
+    status: meta?.label || quotaStatusLabel(status),
+    checkedAt: relativeTime(account.cpa_quota_checked_at ?? null) || "--",
+    reason:
+      meta?.detail ||
+      (account.codex_quota_json ? "已保存最近一次额度快照。" : "没有可用额度快照。"),
+    action: status === "blocked" ? "更换账号或等待额度恢复" : "刷新额度",
+    tone: status === "blocked" ? "danger" : status === "error" || status === "unknown" ? "warning" : "default",
+  };
+}
+
+function servingDimension(account: Account, discoveryHealth: string): DiagnosticDimension {
+  const status = account.serving_status || "healthy";
+  return {
+    title: "服务能力",
+    status: servingStatusLabel(status),
+    checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
+    reason: account.last_error || `模型发现状态：${discoveryHealth}`,
+    action: status === "healthy" ? "保持监控" : status === "cooldown" ? "等待冷却结束或运行自检" : "运行自检并查看最近错误",
+    tone: status === "error" ? "danger" : status === "cooldown" ? "warning" : "default",
+  };
+}
+
+function subscriptionStatusLabel(status: string): string {
+  switch (status) {
+    case "active":
+      return "订阅有效";
+    case "expired":
+      return "已过期";
+    case "free":
+      return "Free";
+    case "pending":
+      return "订阅刷新中";
+    case "error":
+      return "订阅获取失败";
+    default:
+      return "订阅未知";
+  }
+}
+
+function quotaStatusLabel(status: string): string {
+  switch (status) {
+    case "ok":
+      return "额度可用";
+    case "blocked":
+      return "额度已用尽";
+    case "pending":
+      return "额度刷新中";
+    case "error":
+      return "额度查询失败";
+    default:
+      return "额度未知";
+  }
+}
+
+function servingStatusLabel(status: string): string {
+  switch (status) {
+    case "cooldown":
+      return "服务冷却中";
+    case "error":
+      return "服务异常";
+    case "unknown":
+      return "服务状态未知";
+    default:
+      return "服务正常";
+  }
+}
+
+function DiagnosticSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-[1.15rem] border border-moon-200/55 bg-white/60 px-4 py-4">
+      <p className="mb-3 text-[11px] uppercase tracking-[0.18em] text-moon-400">{title}</p>
+      <div className="space-y-3">{children}</div>
+    </section>
+  );
+}
+
+function DiagnosticRow({
+  label,
+  value,
+  tone = "default",
+  breakAll,
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "warning" | "danger";
+  breakAll?: boolean;
+}) {
+  return (
+    <div className="grid gap-1.5 border-b border-moon-200/45 pb-3 last:border-b-0 sm:grid-cols-[7rem_1fr] sm:gap-4">
+      <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">{label}</p>
+      <p
+        className={cn(
+          "text-sm leading-6",
+          tone === "danger"
+            ? "text-status-red"
+            : tone === "warning"
+              ? "text-status-yellow"
+              : "text-moon-700",
+          breakAll ? "break-all" : "",
+        )}
+      >
+        {value || "--"}
+      </p>
     </div>
   );
 }

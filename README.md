@@ -186,6 +186,7 @@ cp .env.example .env
 | `LUNE_CPA_MANAGEMENT_KEY` | Lune 访问 CPA 管理 API 的密钥 | `lune-cpa-management-dev` |
 | `CPA_API_KEY` | CPA 服务 API Key | `sk-cpa-default` |
 | `LUNE_EMBEDDED_CPA` | 是否启动镜像内置 CPA：`1` / `0` | `1` |
+| `LUNE_CPA_PROVIDER_PINNING_SUPPORTED` | CPA provider endpoint 是否支持逐请求凭据 pinning；内置补丁 CPA 自动设为 `1`，外部 CPA 默认 `0` | Docker: `1` |
 | `LUNE_GATEWAY_TMP_DIR` | 大请求重放临时目录 | Docker: `/app/data/tmp` |
 
 ### 访问安全
@@ -196,7 +197,7 @@ cp .env.example .env
 
 ## Docker 与 CPA 服务
 
-CPA 是 Lune 默认镜像内置的运行时能力。镜像内的 `CLIProxyAPI` 会随 Lune 一起启动，版本由 Lune release 固定；如需新版 CPA，升级 Lune 镜像即可。
+CPA 是 Lune 默认镜像内置的运行时能力。镜像内的 `CLIProxyAPI` 会随 Lune 一起启动，版本由 Lune release 固定；如需新版 CPA，升级 Lune 镜像即可。内置 CPA 使用 Lune 补丁构建以支持逐请求凭据 pinning；外部 CPA 未声明支持时，CPA 账号流量会 fail closed，避免账号统计和额度归因误绑。
 
 在 Docker Compose 场景下：
 

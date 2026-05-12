@@ -638,3 +638,58 @@ CREATE TABLE request_logs (
 
 	requireTableColumn(t, st.DB(), "request_logs", "pool_id")
 }
+
+func TestMigrateV17AddsRuntimeBindingLogColumns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-v16-runtime-binding.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '16');
+CREATE TABLE request_logs (
+    id INTEGER PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    access_token_name TEXT NOT NULL DEFAULT '',
+    model_requested TEXT NOT NULL DEFAULT '',
+    model_actual TEXT NOT NULL DEFAULT '',
+    pool_id INTEGER,
+    account_id INTEGER,
+    status_code INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    stream INTEGER NOT NULL DEFAULT 0,
+    request_ip TEXT NOT NULL DEFAULT '',
+    success INTEGER NOT NULL DEFAULT 1,
+    error_message TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE accounts (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'openai_compat'
+);
+`); err != nil {
+		t.Fatalf("seed v16 schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("open store with migration: %v", err)
+	}
+	defer st.Close()
+
+	for _, col := range []string{"runtime_auth_index", "runtime_auth_id", "runtime_account_key", "runtime_binding_status", "runtime_binding_reason"} {
+		requireTableColumn(t, st.DB(), "request_logs", col)
+	}
+	requireTableColumn(t, st.DB(), "accounts", "cpa_subscription_status")
+}

@@ -112,3 +112,19 @@ func TestServingFailureDoesNotOverwriteDiscoveryStatus(t *testing.T) {
 		t.Fatalf("expected serving cooldown, got %q", acc.ServingStatus)
 	}
 }
+
+func TestSubscriptionMetadataPendingKeepsFreshSuccessSnapshotActive(t *testing.T) {
+	future := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	if got := deriveCpaSubscriptionStatus(future, "subscription metadata pending"); got != "active" {
+		t.Fatalf("expected fresh pending snapshot to remain active, got %q", got)
+	}
+
+	past := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	if got := deriveCpaSubscriptionStatus(past, "subscription metadata pending"); got != "expired" {
+		t.Fatalf("expected expired pending snapshot to remain expired, got %q", got)
+	}
+
+	if got := deriveCpaSubscriptionStatus("", "subscription metadata pending"); got != "pending" {
+		t.Fatalf("expected missing snapshot to be pending, got %q", got)
+	}
+}

@@ -151,3 +151,254 @@ func TestRoutingAllowsAccountAfterServingCooldownExpires(t *testing.T) {
 		t.Fatalf("expected account %d, got %d", accountID, resolved.AccountID)
 	}
 }
+
+func TestRoutingSkipsAccountInServingError(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:         "serving-error",
+		SourceKind:    "openai_compat",
+		BaseURL:       "http://example.invalid/v1",
+		APIKey:        "sk-test",
+		Provider:      "openai",
+		ServingStatus: "error",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("AddPoolMember: %v", err)
+	}
+	if err := st.RefreshAccountModels(accountID, []string{"gpt-test"}); err != nil {
+		t.Fatalf("RefreshAccountModels: %v", err)
+	}
+
+	rt := New(store.NewRoutingCache(st))
+	if _, err := rt.Resolve("gpt-test", &poolID, nil); !errors.Is(err, ErrNoHealthyAccount) {
+		t.Fatalf("expected serving error account to be skipped, got %v", err)
+	}
+}
+
+func TestRoutingCpaAccountsFailClosedUntilRuntimeBindingSupported(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	suspectID := createRouterCpaAccount(t, st, poolID, serviceID, "suspect", "auth_suspect")
+	okID := createRouterCpaAccount(t, st, poolID, serviceID, "ok", "ok")
+
+	rt := New(store.NewRoutingCache(st))
+	if _, err := rt.Resolve("gpt-test", &poolID, nil); !errors.Is(err, ErrRuntimeBinding) {
+		t.Fatalf("expected CPA accounts to fail closed before runtime binding support, got %v", err)
+	}
+	if _, err := rt.Resolve("gpt-test", &poolID, &okID); !errors.Is(err, ErrRuntimeBinding) {
+		t.Fatalf("expected forced ok CPA account to fail closed, got %v", err)
+	}
+	if _, err := rt.Resolve("gpt-test", &poolID, &suspectID); !errors.Is(err, ErrRuntimeBinding) {
+		t.Fatalf("expected forced auth_suspect CPA account to fail closed, got %v", err)
+	}
+
+	if err := st.UpdateAccountCpaCredentialStatus(okID, "needs_login", "auth_failed", "bad", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCpaCredentialStatus: %v", err)
+	}
+	rt = New(store.NewRoutingCache(st))
+	if _, err := rt.Resolve("gpt-test", &poolID, nil); !errors.Is(err, ErrRuntimeBinding) {
+		t.Fatalf("expected CPA fallback to remain closed, got %v", err)
+	}
+}
+
+func TestRoutingCpaRuntimeBindingDoesNotMaskSpecificBlockingState(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	needsLoginID := createRouterCpaAccount(t, st, poolID, serviceID, "needs-login", "needs_login")
+	expiredID := createRouterCpaAccount(t, st, poolID, serviceID, "expired", "ok")
+	if err := st.UpdateAccountCpaSubscriptionStatus(expiredID, "expired", "expired", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCpaSubscriptionStatus: %v", err)
+	}
+	blockedID := createRouterCpaAccount(t, st, poolID, serviceID, "blocked", "ok")
+	if err := st.UpdateAccountCodexQuotaStatus(blockedID, "blocked", "limit reached", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+	}
+
+	rt := New(store.NewRoutingCache(st))
+	for _, accountID := range []int64{needsLoginID, expiredID, blockedID} {
+		if _, err := rt.Resolve("gpt-test", &poolID, &accountID); !errors.Is(err, ErrNoHealthyAccount) {
+			t.Fatalf("expected specific CPA blocker to remain no_healthy_account for forced account %d, got %v", accountID, err)
+		}
+	}
+	if _, err := rt.Resolve("gpt-test", &poolID, nil); !errors.Is(err, ErrNoHealthyAccount) {
+		t.Fatalf("expected all specifically blocked CPA accounts to remain no_healthy_account, got %v", err)
+	}
+}
+
+func TestRoutingCpaAuthSuspectIsRoutableButDeprioritizedWhenBindingSupported(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	suspectID := createRouterCpaAccount(t, st, poolID, serviceID, "suspect", "auth_suspect")
+	okID := createRouterCpaAccount(t, st, poolID, serviceID, "ok", "ok")
+
+	rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+	resolved, err := rt.Resolve("gpt-test", &poolID, nil)
+	if err != nil {
+		t.Fatalf("expected route, got %v", err)
+	}
+	if resolved.AccountID != okID {
+		t.Fatalf("expected ok account %d to outrank auth_suspect account %d, got %d", okID, suspectID, resolved.AccountID)
+	}
+
+	if err := st.UpdateAccountCpaCredentialStatus(okID, "needs_login", "auth_failed", "bad", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCpaCredentialStatus: %v", err)
+	}
+	rt = NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+	resolved, err = rt.Resolve("gpt-test", &poolID, nil)
+	if err != nil {
+		t.Fatalf("expected auth_suspect fallback route, got %v", err)
+	}
+	if resolved.AccountID != suspectID {
+		t.Fatalf("expected auth_suspect account %d when no ok account remains, got %d", suspectID, resolved.AccountID)
+	}
+}
+
+func TestRoutingCpaSubscriptionStatusBlocksNormalAndForcedRoutes(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	for _, status := range []string{"expired", "free", "pending", "error", "unknown"} {
+		accountID := createRouterCpaAccount(t, st, poolID, serviceID, "sub-"+status, "ok")
+		if err := st.UpdateAccountCpaSubscriptionStatus(accountID, status, status, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			t.Fatalf("UpdateAccountCpaSubscriptionStatus: %v", err)
+		}
+		rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+		if _, err := rt.Resolve("gpt-test", &poolID, &accountID); !errors.Is(err, ErrNoHealthyAccount) {
+			t.Fatalf("subscription status %s should block forced route, got %v", status, err)
+		}
+	}
+
+	rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+	if _, err := rt.Resolve("gpt-test", &poolID, nil); !errors.Is(err, ErrNoHealthyAccount) {
+		t.Fatalf("expected normal route to skip all blocked subscription states, got %v", err)
+	}
+}
+
+func TestRoutingAllowsNonCodexCpaWithoutSubscriptionStatus(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:               "claude-cpa",
+		SourceKind:          "cpa",
+		CpaServiceID:        &serviceID,
+		CpaProvider:         "claude",
+		CpaAccountKey:       "claude-key",
+		CpaCredentialStatus: "ok",
+		CpaQuotaStatus:      "ok",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("AddPoolMember: %v", err)
+	}
+	if err := st.RefreshAccountModels(accountID, []string{"claude-test"}); err != nil {
+		t.Fatalf("RefreshAccountModels: %v", err)
+	}
+
+	rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+	resolved, err := rt.Resolve("claude-test", &poolID, nil)
+	if err != nil {
+		t.Fatalf("expected non-Codex CPA account to route without subscription status, got %v", err)
+	}
+	if resolved.AccountID != accountID {
+		t.Fatalf("expected account %d, got %d", accountID, resolved.AccountID)
+	}
+}
+
+func createRouterCpaAccount(t *testing.T, st *store.Store, poolID, serviceID int64, label, credentialStatus string) int64 {
+	t.Helper()
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:                 label,
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         label + "-key",
+		CpaCredentialStatus:   credentialStatus,
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("AddPoolMember: %v", err)
+	}
+	if err := st.RefreshAccountModels(accountID, []string{"gpt-test"}); err != nil {
+		t.Fatalf("RefreshAccountModels: %v", err)
+	}
+	return accountID
+}

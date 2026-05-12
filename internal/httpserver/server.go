@@ -70,8 +70,8 @@ func (s *Server) routes() {
 	})
 
 	// gateway
-	rt := router.New(s.cache)
-	gw := gateway.NewHandler(rt, s.cache, s.store, s.gatewayTmpDir)
+	rt := router.NewWithOptions(s.cache, router.Options{CpaRuntimeBindingSupported: s.healthChecker != nil && s.healthChecker.ProviderPinningSupported()})
+	gw := gateway.NewHandler(rt, s.cache, s.store, s.gatewayTmpDir, s.healthChecker)
 	gwAuth := auth.GatewayAuth(gw, s.cache)
 
 	// GET /v1/models — no auth required

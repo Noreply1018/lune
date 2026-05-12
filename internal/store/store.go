@@ -20,7 +20,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 16
+const v3SchemaVersion = 17
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     cpa_subscription_expires_at TEXT NOT NULL DEFAULT '',
     cpa_subscription_fetched_at TEXT NOT NULL DEFAULT '',
     cpa_subscription_last_error TEXT NOT NULL DEFAULT '',
+    cpa_subscription_status TEXT NOT NULL DEFAULT 'unknown',
     codex_quota_json    TEXT NOT NULL DEFAULT '',
     codex_quota_fetched_at TEXT NOT NULL DEFAULT '',
     cpa_quota_status TEXT NOT NULL DEFAULT 'unknown',
@@ -146,6 +147,11 @@ CREATE TABLE IF NOT EXISTS request_logs (
     error_message     TEXT NOT NULL DEFAULT '',
     source_kind       TEXT NOT NULL DEFAULT '',
     attempt_count     INTEGER NOT NULL DEFAULT 1,
+    runtime_auth_index TEXT NOT NULL DEFAULT '',
+    runtime_auth_id TEXT NOT NULL DEFAULT '',
+    runtime_account_key TEXT NOT NULL DEFAULT '',
+    runtime_binding_status TEXT NOT NULL DEFAULT '',
+    runtime_binding_reason TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -261,6 +267,12 @@ func (s *Store) migrateV3(dbPath string) error {
 		if err := s.migrateRequestLogPoolColumn(); err != nil {
 			return fmt.Errorf("repair request log pool column: %w", err)
 		}
+		if err := s.migrateRuntimeBindingLogColumns(); err != nil {
+			return fmt.Errorf("repair runtime binding log columns: %w", err)
+		}
+		if err := s.migrateCpaSubscriptionStatusColumn(); err != nil {
+			return fmt.Errorf("repair CPA subscription status column: %w", err)
+		}
 		if err := s.ensureCpaAccountUniqueIndex(); err != nil {
 			return fmt.Errorf("repair CPA account unique index: %w", err)
 		}
@@ -315,6 +327,14 @@ func (s *Store) migrateV3(dbPath string) error {
 		if ver < 16 {
 			if err := s.migrateCpaRoutingColumns(); err != nil {
 				return fmt.Errorf("migrate CPA routing columns: %w", err)
+			}
+		}
+		if ver < 17 {
+			if err := s.migrateRuntimeBindingLogColumns(); err != nil {
+				return fmt.Errorf("migrate runtime binding log columns: %w", err)
+			}
+			if err := s.migrateCpaSubscriptionStatusColumn(); err != nil {
+				return fmt.Errorf("migrate CPA subscription status column: %w", err)
 			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
@@ -645,6 +665,87 @@ func (s *Store) migrateCpaSubscriptionColumns() error {
 	}
 	s.schemaMu.Lock()
 	delete(s.schemaCache, "accounts")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migrateCpaSubscriptionStatusColumn() error {
+	exists, err := s.tableExists("accounts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if err := s.migrateCpaSubscriptionColumns(); err != nil {
+		return err
+	}
+	has, err := s.hasColumn("accounts", "cpa_subscription_status")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := s.db.Exec(`ALTER TABLE accounts ADD COLUMN cpa_subscription_status TEXT NOT NULL DEFAULT 'unknown'`); err != nil {
+			return fmt.Errorf("add column cpa_subscription_status: %w", err)
+		}
+	}
+	if _, err := s.db.Exec(`
+		UPDATE accounts
+		SET cpa_subscription_status = CASE
+			WHEN cpa_subscription_last_error != '' THEN
+				CASE
+					WHEN lower(cpa_subscription_last_error) = 'subscription metadata pending'
+						THEN CASE
+							WHEN cpa_subscription_expires_at != '' AND datetime(cpa_subscription_expires_at) > datetime('now') THEN 'active'
+							WHEN cpa_subscription_expires_at != '' AND datetime(cpa_subscription_expires_at) <= datetime('now') THEN 'expired'
+							ELSE 'pending'
+						END
+					ELSE 'error'
+				END
+			WHEN cpa_subscription_expires_at = '' THEN 'unknown'
+			WHEN datetime(cpa_subscription_expires_at) > datetime('now') THEN 'active'
+			ELSE 'expired'
+		END
+		WHERE source_kind = 'cpa'
+		  AND (cpa_subscription_status = '' OR cpa_subscription_status = 'unknown')
+	`); err != nil {
+		return fmt.Errorf("backfill cpa_subscription_status: %w", err)
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "accounts")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migrateRuntimeBindingLogColumns() error {
+	exists, err := s.tableExists("request_logs")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	adds := []struct{ col, ddl string }{
+		{"runtime_auth_index", `ALTER TABLE request_logs ADD COLUMN runtime_auth_index TEXT NOT NULL DEFAULT ''`},
+		{"runtime_auth_id", `ALTER TABLE request_logs ADD COLUMN runtime_auth_id TEXT NOT NULL DEFAULT ''`},
+		{"runtime_account_key", `ALTER TABLE request_logs ADD COLUMN runtime_account_key TEXT NOT NULL DEFAULT ''`},
+		{"runtime_binding_status", `ALTER TABLE request_logs ADD COLUMN runtime_binding_status TEXT NOT NULL DEFAULT ''`},
+		{"runtime_binding_reason", `ALTER TABLE request_logs ADD COLUMN runtime_binding_reason TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, a := range adds {
+		has, err := s.hasColumn("request_logs", a.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.col, err)
+		}
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "request_logs")
 	s.schemaMu.Unlock()
 	return nil
 }

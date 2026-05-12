@@ -8,11 +8,11 @@ yaml_quote() {
 }
 
 stop_children() {
+  if [ -n "${MONITOR_SLEEP_PID:-}" ]; then
+    kill "$MONITOR_SLEEP_PID" 2>/dev/null || true
+  fi
   if [ -n "${LUNE_PID:-}" ]; then
     kill "$LUNE_PID" 2>/dev/null || true
-  fi
-  if [ -n "${CPA_RELOAD_WATCH_PID:-}" ]; then
-    kill "$CPA_RELOAD_WATCH_PID" 2>/dev/null || true
   fi
   if [ -n "${CPA_PID:-}" ]; then
     kill "$CPA_PID" 2>/dev/null || true
@@ -32,6 +32,7 @@ run_embedded_cpa() {
   export LUNE_CPA_MANAGEMENT_KEY
   export LUNE_CPA_API_KEY
   export LUNE_CPA_BASE_URL
+  export LUNE_CPA_PROVIDER_PINNING_SUPPORTED=1
 
   mkdir -p "$LUNE_CPA_AUTH_DIR" /CLIProxyAPI
 
@@ -62,12 +63,25 @@ restart_embedded_cpa() {
   run_embedded_cpa
 }
 
-watch_cpa_reload_signal() {
+monitor_lune_and_cpa() {
   : "${LUNE_CPA_RELOAD_SIGNAL:=${LUNE_DATA_DIR}/tmp/cpa-reload.signal}"
   export LUNE_CPA_RELOAD_SIGNAL
   rm -f "$LUNE_CPA_RELOAD_SIGNAL"
   last_seen=""
   while :; do
+    if ! kill -0 "$LUNE_PID" 2>/dev/null; then
+      wait "$LUNE_PID" 2>/dev/null
+      return "$?"
+    fi
+
+    if [ -n "${CPA_PID:-}" ] && ! kill -0 "$CPA_PID" 2>/dev/null; then
+      wait "$CPA_PID" 2>/dev/null || true
+      printf '%s\n' "[entrypoint] embedded CPA exited; stopping Lune"
+      kill "$LUNE_PID" 2>/dev/null || true
+      wait "$LUNE_PID" 2>/dev/null || true
+      return 1
+    fi
+
     if [ -f "$LUNE_CPA_RELOAD_SIGNAL" ]; then
       seen="$(cat "$LUNE_CPA_RELOAD_SIGNAL" 2>/dev/null || true)"
       if [ -n "$seen" ] && [ "$seen" != "$last_seen" ]; then
@@ -76,7 +90,10 @@ watch_cpa_reload_signal() {
         restart_embedded_cpa
       fi
     fi
-    sleep 1
+    sleep 1 &
+    MONITOR_SLEEP_PID="$!"
+    wait "$MONITOR_SLEEP_PID" 2>/dev/null || true
+    MONITOR_SLEEP_PID=""
   done
 }
 
@@ -94,8 +111,9 @@ case "$cmd" in
 
     if [ "$LUNE_EMBEDDED_CPA" != "0" ]; then
       run_embedded_cpa
-      watch_cpa_reload_signal &
-      CPA_RELOAD_WATCH_PID="$!"
+    else
+      : "${LUNE_CPA_PROVIDER_PINNING_SUPPORTED:=0}"
+      export LUNE_CPA_PROVIDER_PINNING_SUPPORTED
     fi
 
     trap stop_children INT TERM
@@ -104,7 +122,11 @@ case "$cmd" in
     LUNE_PID="$!"
 
     set +e
-    wait "$LUNE_PID"
+    if [ -n "${CPA_PID:-}" ]; then
+      monitor_lune_and_cpa
+    else
+      wait "$LUNE_PID"
+    fi
     status="$?"
     set -e
     stop_children

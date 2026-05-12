@@ -1,0 +1,188 @@
+diff --git a/internal/api/modules/amp/routes.go b/internal/api/modules/amp/routes.go
+index 84023d1..ea8c670 100644
+--- a/internal/api/modules/amp/routes.go
++++ b/internal/api/modules/amp/routes.go
+@@ -37,6 +37,39 @@ func clientAPIKeyMiddleware() gin.HandlerFunc {
+ 	}
+ }
+ 
++func providerPinnedAuthMiddleware(baseHandler *handlers.BaseAPIHandler) gin.HandlerFunc {
++	return func(c *gin.Context) {
++		authID := strings.TrimSpace(c.GetHeader("X-CLIProxyAPI-Pinned-Auth-Id"))
++		if authID == "" {
++			authID = pinnedAuthIDByIndex(baseHandler, c.GetHeader("X-CLIProxyAPI-Pinned-Auth-Index"))
++		}
++		if authID == "" {
++			authID = pinnedAuthIDByIndex(baseHandler, c.GetHeader("X-CPA-Auth-Index"))
++		}
++		if authID != "" {
++			c.Request = c.Request.WithContext(handlers.WithPinnedAuthID(c.Request.Context(), authID))
++		}
++		c.Next()
++	}
++}
++
++func pinnedAuthIDByIndex(baseHandler *handlers.BaseAPIHandler, authIndex string) string {
++	authIndex = strings.TrimSpace(authIndex)
++	if authIndex == "" || baseHandler == nil || baseHandler.AuthManager == nil {
++		return ""
++	}
++	for _, auth := range baseHandler.AuthManager.List() {
++		if auth == nil {
++			continue
++		}
++		auth.EnsureIndex()
++		if strings.EqualFold(strings.TrimSpace(auth.Index), authIndex) {
++			return strings.TrimSpace(auth.ID)
++		}
++	}
++	return ""
++}
++
+ // getClientAPIKeyFromContext retrieves the client API key from request context.
+ // Returns empty string if not present.
+ func getClientAPIKeyFromContext(ctx context.Context) string {
+@@ -284,6 +317,7 @@ func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *han
+ 	}
+ 	// Inject client API key into request context for per-client upstream routing
+ 	ampProviders.Use(clientAPIKeyMiddleware())
++	ampProviders.Use(providerPinnedAuthMiddleware(baseHandler))
+ 
+ 	provider := ampProviders.Group("/:provider")
+ 
+diff --git a/internal/api/modules/amp/routes_test.go b/internal/api/modules/amp/routes_test.go
+index a500f81..7dea15c 100644
+--- a/internal/api/modules/amp/routes_test.go
++++ b/internal/api/modules/amp/routes_test.go
+@@ -1,14 +1,63 @@
+ package amp
+ 
+ import (
++	"context"
++	"io"
+ 	"net/http"
+ 	"net/http/httptest"
++	"sync"
+ 	"testing"
+ 
+ 	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+ 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+ )
+ 
++type providerPinnedAuthCaptureExecutor struct {
++	mu      sync.Mutex
++	authIDs []string
++}
++
++func (e *providerPinnedAuthCaptureExecutor) Identifier() string { return "codex" }
++
++func (e *providerPinnedAuthCaptureExecutor) Execute(_ context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
++	authID := ""
++	if auth != nil {
++		authID = auth.ID
++	}
++	e.mu.Lock()
++	e.authIDs = append(e.authIDs, authID)
++	e.mu.Unlock()
++	return coreexecutor.Response{Payload: []byte(`{"id":"ok"}`)}, nil
++}
++
++func (e *providerPinnedAuthCaptureExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
++	return nil, &coreauth.Error{Code: "not_implemented", Message: "ExecuteStream not implemented"}
++}
++
++func (e *providerPinnedAuthCaptureExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
++	return auth, nil
++}
++
++func (e *providerPinnedAuthCaptureExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
++	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
++}
++
++func (e *providerPinnedAuthCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
++	return nil, &coreauth.Error{Code: "not_implemented", Message: "HttpRequest not implemented"}
++}
++
++func (e *providerPinnedAuthCaptureExecutor) AuthIDs() []string {
++	e.mu.Lock()
++	defer e.mu.Unlock()
++	out := make([]string, len(e.authIDs))
++	copy(out, e.authIDs)
++	return out
++}
++
+ func TestRegisterManagementRoutes(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	r := gin.New()
+@@ -138,6 +187,67 @@ func TestRegisterProviderAliases_AllProvidersRegistered(t *testing.T) {
+ 	}
+ }
+ 
++func TestRegisterProviderAliases_PinnedAuthIndexHeaderSelectsAuth(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	r := gin.New()
++
++	executor := &providerPinnedAuthCaptureExecutor{}
++	manager := coreauth.NewManager(nil, nil, nil)
++	manager.RegisterExecutor(executor)
++
++	modelName := "provider-pin-test-model"
++	authA := &coreauth.Auth{ID: "auth-a", Provider: "codex", Status: coreauth.StatusActive}
++	authB := &coreauth.Auth{ID: "auth-b", Provider: "codex", Status: coreauth.StatusActive}
++	reg := registry.GetGlobalRegistry()
++	reg.RegisterClient(authA.ID, "codex", []*registry.ModelInfo{{ID: modelName}})
++	reg.RegisterClient(authB.ID, "codex", []*registry.ModelInfo{{ID: modelName}})
++	t.Cleanup(func() {
++		reg.UnregisterClient(authA.ID)
++		reg.UnregisterClient(authB.ID)
++	})
++	if _, err := manager.Register(context.Background(), authA); err != nil {
++		t.Fatalf("register auth-a: %v", err)
++	}
++	if _, err := manager.Register(context.Background(), authB); err != nil {
++		t.Fatalf("register auth-b: %v", err)
++	}
++	authBIndex := authB.EnsureIndex()
++	if authBIndex == "" {
++		t.Fatal("expected auth-b index")
++	}
++
++	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++	r.POST("/probe", providerPinnedAuthMiddleware(base), func(c *gin.Context) {
++		rawJSON, err := io.ReadAll(c.Request.Body)
++		if err != nil {
++			c.String(http.StatusInternalServerError, err.Error())
++			return
++		}
++		resp, _, errMsg := base.ExecuteWithAuthManager(c.Request.Context(), "openai", modelName, rawJSON, "")
++		if errMsg != nil {
++			c.String(errMsg.StatusCode, errMsg.Error.Error())
++			return
++		}
++		c.Data(http.StatusOK, "application/json", resp)
++	})
++
++	req := httptest.NewRequest(http.MethodPost, "/probe", nil)
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("X-CLIProxyAPI-Pinned-Auth-Index", authBIndex)
++	w := httptest.NewRecorder()
++
++	r.ServeHTTP(w, req)
++	if w.Code != http.StatusOK {
++		body, _ := io.ReadAll(w.Body)
++		t.Fatalf("status = %d, body = %s", w.Code, string(body))
++	}
++
++	got := executor.AuthIDs()
++	if len(got) != 1 || got[0] != "auth-b" {
++		t.Fatalf("executor auth IDs = %v, want [auth-b]", got)
++	}
++}
++
+ func TestRegisterProviderAliases_DynamicModelsHandler(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	r := gin.New()

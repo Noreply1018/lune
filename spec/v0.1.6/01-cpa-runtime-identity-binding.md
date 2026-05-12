@@ -1,0 +1,130 @@
+# 01. CPA 账号身份与 Runtime Credential 绑定错位
+
+## 问题
+
+2026-05-11 的生产审计发现，Lune 前端几乎所有请求量都显示在 Pool 第一位 Codex CPA 账号上，但后续其他 Codex 账号的远端额度持续减少。
+
+证据：
+
+- `request_logs.account_id=1` 占绝大多数请求。
+- account `id=2/3/4/5` 的请求日志很少。
+- 后续账号的 `codex_quota_json` 显示额度真实消耗。
+- 多数日志 `attempt_count=1`，说明主要不是 Lune 跨账号重试导致的错记。
+
+根因是 v0.1.5 普通 CPA 网关链路存在两层独立调度：
+
+```text
+client
+  -> Lune router 选择 accounts.id
+  -> Lune 记录 request_logs.account_id
+  -> /api/provider/codex/v1
+  -> CPA runtime 自行选择 Codex auth file
+```
+
+Lune 转发到 CPA 时只使用 provider 级地址：
+
+```text
+{cpa_base_url}/api/provider/{cpa_provider}/v1
+```
+
+多个 Codex CPA account 的 `cpa_provider` 都是 `codex`，所以请求 URL 完全相同。转发请求没有携带 `cpa_account_key`、CPA `auth_index`、email、OpenAI account id 或任何能 pin 到某个 auth file 的字段。CPA provider endpoint 在未绑定且未覆盖策略时，会落到自身默认 selector，在可用 Codex auth file 中选择凭据。这不是 Lune 的 Pool 顺序，也不是 Lune 的 `account_id`。
+
+## 改进策略
+
+普通 CPA 网关请求必须绑定到 Lune account 对应的 CPA runtime credential。只有确认了实际执行的 CPA auth file，模型调用结果才能用于更新该账号的状态、请求量和额度归因。
+
+核心规则：
+
+> 已确认 runtime credential 归属的模型调用，才是最高可信信号。
+
+`resolveCpaRuntime` 获取到的 runtime auth metadata 不能只服务于 quota/subscription 刷新；普通模型转发也必须使用同一份已校验 metadata。转发目标至少应携带：
+
+- Lune account id。
+- `cpa_account_key`。
+- runtime auth id 或 `auth_index`。
+- OpenAI account id 或其他可审计 runtime 身份。
+- binding freshness/version。
+
+当 CPA runtime 不支持 credential pinning，或 auth metadata 未就绪时：
+
+- 该 CPA account 不可接普通流量。
+- 强制路由也必须失败，不能静默使用 provider 级 round-robin。
+- 错误 reason 应明确为 `runtime_auth_binding_unavailable` 或等价值。
+- 管理员诊断可以走独立入口，但必须标记为 `diagnostic=true`，且不得更新普通路由健康。
+
+如果当前 CPA provider endpoint 不支持公开 pinning 参数，应优先推动或适配 CPA 的 pinned auth 能力。可选方向：
+
+- CPA provider endpoint 支持 per-request auth index 或 auth id。
+- Lune 通过 CPA management api-call 或等价接口执行 pinned 请求。
+- Lune 对 embedded CPA 写入明确 routing 配置，但这只能解决策略一致性，不能替代 per-account pinning。
+
+不允许用“provider 名相同但期待 CPA 默认选择正确账号”的方式实现多账号路由。
+
+## UI 表现
+
+Activity / Pool 详情页必须区分：
+
+- Lune routed account：router 选择的 account row。
+- CPA actual credential：runtime 实际使用的 auth file。
+
+展示规则：
+
+- runtime credential 归属确认时，账号请求量可作为精确统计。
+- 未确认时，应显示“实际 CPA 凭据未确认”或等价提示。
+- Flow 图 `Pool -> Account -> Model` 应说明它基于 request log final route；在 runtime binding 完成前，CPA actual credential 仍可能未知。
+- 账号卡片主问题 chip 应支持 `Binding 未确认`，颜色使用紫色，表达绑定、归因或统计可信度问题。
+- 账号详情抽屉的 `诊断` tab 展示 Runtime Binding 维度：当前状态、runtime auth index、最近检查时间、最近错误或 normalized reason、建议操作。
+
+`Binding 未确认` 的含义：Lune 选择了某个 CPA account，但还不能确认 CPA runtime 实际会使用该账号对应 auth file。此时请求量、额度归因和健康修复都不应当作精确账号事实。
+
+## 日志与诊断
+
+`request_logs` 应区分：
+
+- `account_id`：Lune router 选择的账号行。
+- `runtime_auth_id` / `runtime_auth_index`：CPA 实际执行的凭据。
+
+如果 CPA 没有回传实际凭据，应写 `unknown` 或空值，并在 Activity 中显示归属不确定，不能把请求量当作精确账号统计。
+
+CPA provider 转发路径应记录安全截断后的诊断信息：
+
+- request id。
+- Lune account id。
+- `cpa_account_key`。
+- runtime auth index。
+- CPA selected auth id。
+- 模型。
+- 状态码。
+- normalized error。
+
+不得记录 token、完整 prompt、完整 request body 或完整 auth file。
+
+## 测试与验收
+
+- 在同一个 CPA runtime 中导入 3 个 Codex auth file 后，固定选择第一个 Lune CPA account，连续发起 10 次普通模型请求时，CPA actual credential 必须全部等于该账号对应凭据。
+- 强制路由 `X-Lune-Account-Id` 指向某个 CPA account 时，CPA actual credential 必须等于该 account 对应凭据；否则请求 fail closed。
+- 普通 Pool 自动路由选择第 N 个 CPA account 时，`request_logs.account_id` 与 `runtime_auth_id/runtime_auth_index` 能够一一对应。
+- 当 CPA runtime 不支持 credential pinning 或 auth metadata 未就绪时，该账号不可接普通流量，错误 reason 明确。
+- Activity 页面账号请求量基于已确认 runtime credential 归属；无法确认时显示不确定状态。
+- 单元测试覆盖：CPA target 构建必须携带 runtime credential binding；缺失 binding 时 fail closed；日志同时保存 Lune account id 与 runtime auth id。
+- 集成测试覆盖：模拟 CPA round-robin runtime，验证 Lune pinning 后不会被 CPA 默认 round-robin 打散。
+
+## 已完成事项
+
+- v0.1.5 问题证据已归档到本问题。
+- Activity Flow 已升级为 `Pool -> Account -> Model`，但在 runtime binding 完成前只能表示 Lune routed account。
+- 普通 CPA 网关请求已接入 Lune account 对应的 CPA runtime credential binding。
+- 强制路由和自动路由都会在转发前解析 runtime binding；缺失 binding、runtime 不支持 pinning 或账号不可确认时 fail closed。
+- CPA 转发会携带 `X-Lune-CPA-Account-Key`、`X-Lune-Runtime-Auth-Id`、`X-CLIProxyAPI-Pinned-Auth-Id`、`X-Lune-Runtime-Auth-Index`、`X-CLIProxyAPI-Pinned-Auth-Index`、`X-CPA-Auth-Index`、`ChatGPT-Account-Id` 等 pinning/诊断 headers。
+- `request_logs` 已增加 runtime auth id / runtime auth index / runtime account key 等 runtime identity 字段。
+- 状态写入只信任 confirmed runtime binding；未确认 runtime credential 的 CPA 请求不会把某个 Lune account 标记为生成健康。
+- Activity/usage 的账号级可信统计已改为只统计 confirmed CPA binding 请求。
+- 内置 CPA 已通过 Lune patch 支持 per-request provider pinning，并在 embedded 模式设置 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED=1`。
+- 已补充单元测试覆盖强制/自动路由 binding、缺失 binding fail closed、状态写入只信任 confirmed binding、runtime identity 日志写入。
+- 已通过 Docker 容器 smoke test 验证新镜像健康接口和 API 空状态可用。
+
+## 待解决事项
+
+- 更理想的长期方案是推动 CLIProxyAPI upstream 正式支持外部 per-request auth pinning，减少 Lune 本地 patch 维护成本。
+- 如未来支持 external CPA advanced mode，需要定义非 embedded CPA 如何声明 pinning 能力，以及能力不足时的用户可见诊断。
+- CPA provider 转发路径的安全诊断日志还可以继续补充 selected auth 回传字段和更系统的 normalized reason。

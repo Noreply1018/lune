@@ -96,7 +96,9 @@ jobs:
             LUNE_VERSION=${{ steps.build_meta.outputs.version }}
             LUNE_COMMIT=${{ github.sha }}
             LUNE_BUILD_DATE=${{ steps.build_meta.outputs.date }}
-            CPA_VERSION=v6.9.41
+            CPA_VERSION=v7.0.2
+            CPA_COMMIT=1fca942b9c2c5bbdf78334eb4744a098983a05e9
+            CPA_PATCH_VERSION=v7.0.2-lune.1
           tags: |
             ${{ steps.meta_ghcr.outputs.tags }}
             ${{ steps.meta_dockerhub.outputs.tags }}

@@ -231,3 +231,174 @@ func TestGetOverviewCountsOnlyEnabledAccounts(t *testing.T) {
 		t.Fatalf("expected only enabled healthy accounts to count, got %d", overview.AccountsHealthy)
 	}
 }
+
+func TestUsageSummaryCountsOnlyConfirmedCpaBindingsAsTrustedUsage(t *testing.T) {
+	st := newTestStore(t)
+
+	if err := st.InsertLog(&RequestLog{
+		RequestID:            "confirmed-cpa",
+		AccessTokenName:      "pool-token",
+		ModelRequested:       "gpt-test",
+		ModelActual:          "gpt-test",
+		AccountID:            10,
+		StatusCode:           200,
+		Success:              true,
+		SourceKind:           "cpa",
+		InputTokens:          3,
+		OutputTokens:         4,
+		RuntimeBindingStatus: "confirmed",
+		RuntimeAuthIndex:     "idx-10",
+		RuntimeAuthID:        "auth-10",
+		RuntimeAccountKey:    "codex-a",
+	}); err != nil {
+		t.Fatalf("insert confirmed cpa log: %v", err)
+	}
+	if err := st.InsertLog(&RequestLog{
+		RequestID:            "unconfirmed-cpa",
+		AccessTokenName:      "pool-token",
+		ModelRequested:       "gpt-test",
+		ModelActual:          "gpt-test",
+		AccountID:            11,
+		StatusCode:           503,
+		Success:              false,
+		SourceKind:           "cpa",
+		InputTokens:          30,
+		OutputTokens:         40,
+		RuntimeBindingStatus: "runtime_error",
+		RuntimeBindingReason: "runtime_auth_binding_unavailable",
+	}); err != nil {
+		t.Fatalf("insert unconfirmed cpa log: %v", err)
+	}
+	if err := st.InsertLog(&RequestLog{
+		RequestID:       "direct",
+		AccessTokenName: "direct-token",
+		ModelRequested:  "gpt-test",
+		ModelActual:     "gpt-test",
+		AccountID:       12,
+		StatusCode:      200,
+		Success:         true,
+		SourceKind:      "openai_compat",
+		InputTokens:     5,
+		OutputTokens:    6,
+	}); err != nil {
+		t.Fatalf("insert direct log: %v", err)
+	}
+
+	stats, err := st.GetUsageSummary(UsageFilter{})
+	if err != nil {
+		t.Fatalf("GetUsageSummary: %v", err)
+	}
+	if stats.TotalRequests != 2 {
+		t.Fatalf("expected trusted total requests to exclude unconfirmed CPA logs, got %d", stats.TotalRequests)
+	}
+	if stats.TotalInputTokens != 8 || stats.TotalOutputTokens != 10 {
+		t.Fatalf("expected trusted token totals to exclude unconfirmed CPA usage, got input=%d output=%d", stats.TotalInputTokens, stats.TotalOutputTokens)
+	}
+	if len(stats.ByAccount) != 2 {
+		t.Fatalf("expected only confirmed CPA plus direct account stats, got %+v", stats.ByAccount)
+	}
+	seen := map[int64]bool{}
+	for _, row := range stats.ByAccount {
+		seen[row.AccountID] = true
+	}
+	if !seen[10] || !seen[12] || seen[11] {
+		t.Fatalf("unexpected by-account rows: %+v", stats.ByAccount)
+	}
+	if len(stats.ByToken) != 2 {
+		t.Fatalf("expected unconfirmed CPA token usage to be excluded, got %+v", stats.ByToken)
+	}
+	for _, row := range stats.ByToken {
+		if row.TokenName == "pool-token" && (row.InputTokens != 3 || row.OutputTokens != 4 || row.Requests != 1) {
+			t.Fatalf("pool-token should include only confirmed CPA usage, got %+v", row)
+		}
+	}
+}
+
+func TestGetPoolStatsCountsOnlyConfirmedCpaBindingsAsTrustedUsage(t *testing.T) {
+	st := newTestStore(t)
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	if err := st.InsertLog(&RequestLog{
+		RequestID:            "confirmed-pool",
+		AccessTokenName:      "pool-token",
+		ModelRequested:       "gpt-test",
+		ModelActual:          "gpt-test",
+		PoolID:               poolID,
+		AccountID:            20,
+		StatusCode:           200,
+		Success:              true,
+		SourceKind:           "cpa",
+		InputTokens:          7,
+		OutputTokens:         8,
+		RuntimeBindingStatus: "confirmed",
+		RuntimeAuthIndex:     "idx-20",
+		RuntimeAuthID:        "auth-20",
+		RuntimeAccountKey:    "codex-b",
+	}); err != nil {
+		t.Fatalf("insert confirmed pool cpa log: %v", err)
+	}
+	if err := st.InsertLog(&RequestLog{
+		RequestID:            "unconfirmed-pool",
+		AccessTokenName:      "pool-token",
+		ModelRequested:       "gpt-test",
+		ModelActual:          "gpt-test",
+		PoolID:               poolID,
+		AccountID:            21,
+		StatusCode:           503,
+		Success:              false,
+		SourceKind:           "cpa",
+		InputTokens:          70,
+		OutputTokens:         80,
+		RuntimeBindingStatus: "runtime_error",
+		RuntimeBindingReason: "runtime_auth_binding_unavailable",
+	}); err != nil {
+		t.Fatalf("insert unconfirmed pool cpa log: %v", err)
+	}
+	if err := st.InsertLog(&RequestLog{
+		RequestID:       "direct-pool",
+		AccessTokenName: "direct-token",
+		ModelRequested:  "gpt-test",
+		ModelActual:     "gpt-test",
+		PoolID:          poolID,
+		AccountID:       22,
+		StatusCode:      200,
+		Success:         true,
+		SourceKind:      "openai_compat",
+		InputTokens:     5,
+		OutputTokens:    6,
+	}); err != nil {
+		t.Fatalf("insert direct pool log: %v", err)
+	}
+
+	stats, err := st.GetPoolStats(poolID, "24h")
+	if err != nil {
+		t.Fatalf("GetPoolStats: %v", err)
+	}
+	if stats.TotalRequests != 2 {
+		t.Fatalf("expected trusted pool total requests to exclude unconfirmed CPA logs, got %d", stats.TotalRequests)
+	}
+	if stats.TotalInputTokens != 12 || stats.TotalOutputTokens != 14 {
+		t.Fatalf("expected trusted pool token totals to exclude unconfirmed CPA usage, got input=%d output=%d", stats.TotalInputTokens, stats.TotalOutputTokens)
+	}
+	if len(stats.ByAccount) != 2 {
+		t.Fatalf("expected only confirmed CPA plus direct pool stats, got %+v", stats.ByAccount)
+	}
+	seen := map[int64]bool{}
+	for _, row := range stats.ByAccount {
+		seen[row.AccountID] = true
+	}
+	if !seen[20] || !seen[22] || seen[21] {
+		t.Fatalf("unexpected by-account rows: %+v", stats.ByAccount)
+	}
+	if len(stats.ByToken) != 2 {
+		t.Fatalf("expected unconfirmed CPA pool token usage to be excluded, got %+v", stats.ByToken)
+	}
+	for _, row := range stats.ByToken {
+		if row.TokenName == "pool-token" && (row.InputTokens != 7 || row.OutputTokens != 8 || row.Requests != 1) {
+			t.Fatalf("pool-token should include only confirmed CPA usage, got %+v", row)
+		}
+	}
+}
