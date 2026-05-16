@@ -268,6 +268,8 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
 		req.APIKey = existing.APIKey
 		req.Provider = existing.Provider
 		req.QuotaDisplay = existing.QuotaDisplay
+	} else if req.APIKey == "" {
+		req.APIKey = existing.APIKey
 	}
 
 	if err := h.store.UpdateAccount(id, &req); err != nil {

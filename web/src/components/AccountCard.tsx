@@ -107,6 +107,10 @@ function getMainIssueChip(
     return quotaError;
   }
   if (account.serving_status === "cooldown") {
+    const quotaEvidence = account.cpa_provider?.toLowerCase() === "codex" ? getCpaQuotaErrorMeta(account) : null;
+    if (quotaEvidence?.tone === "warning") {
+      return quotaEvidence;
+    }
     return {
       label: "服务冷却中",
       detail: account.last_error || account.cooldown_until || "",

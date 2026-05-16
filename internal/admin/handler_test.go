@@ -390,6 +390,51 @@ func TestFinalizeLoginSameCpaKeyUpdatesExistingAccount(t *testing.T) {
 	}
 }
 
+func TestUpdateAccountPreservesExistingApiKeyWhenEmpty(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
+
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:      "Direct",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://api.example.com/v1",
+		APIKey:     "sk-old",
+		Enabled:    true,
+		Status:     "healthy",
+		QuotaDisplay: "n/a",
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+
+	body := strings.NewReader(`{
+		"label":"Direct",
+		"source_kind":"openai_compat",
+		"base_url":"https://api.example.com/v1",
+		"api_key":"",
+		"provider":"",
+		"enabled":true,
+		"notes":"",
+		"quota_display":"n/a"
+	}`)
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/admin/api/accounts/%d", accountID), body)
+	req.SetPathValue("id", fmt.Sprintf("%d", accountID))
+	rec := httptest.NewRecorder()
+	handler.updateAccount(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.APIKey != "sk-old" {
+		t.Fatalf("expected api key to be preserved, got %q", acc.APIKey)
+	}
+}
+
 func TestDeleteCpaAccountRemovesAuthFileAndSignalsReload(t *testing.T) {
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)

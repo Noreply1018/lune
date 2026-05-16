@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Clock3, Copy, Loader2, SendHorizonal } from "lucide-react";
+import { Check, Clock3, Copy, Loader2, RotateCcw, Save, SendHorizonal } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -8,6 +8,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { toast } from "@/components/Feedback";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsIndicator, TabsPanel, TabsTab } from "@/components/ui/tabs";
 import {
   Select,
@@ -61,6 +63,7 @@ export default function AccountDetailSheet({
   priorityIndex,
   poolId,
   resolveToken,
+  onAccountUpdated,
   onOpenChange,
 }: {
   member: PoolMember | null;
@@ -68,6 +71,7 @@ export default function AccountDetailSheet({
   priorityIndex?: number;
   poolId?: number;
   resolveToken: () => Promise<string>;
+  onAccountUpdated?: () => void;
   onOpenChange: (open: boolean) => void;
 }) {
   const account = member?.account ?? null;
@@ -181,7 +185,7 @@ export default function AccountDetailSheet({
                 <TabsIndicator />
                 <TabsTab value="overview">Overview</TabsTab>
                 <TabsTab value="playground">Playground</TabsTab>
-                <TabsTab value="diagnostics">诊断</TabsTab>
+                <TabsTab value="diagnostics">Diagnostics</TabsTab>
               </TabsList>
             </div>
 
@@ -196,6 +200,7 @@ export default function AccountDetailSheet({
                   account={account}
                   codexQuota={codexQuota}
                   routeSummary={routeSummary}
+                  onAccountUpdated={onAccountUpdated}
                 />
               </TabsPanel>
               <TabsPanel value="playground">
@@ -234,6 +239,7 @@ function OverviewPanel({
   account,
   codexQuota,
   routeSummary,
+  onAccountUpdated,
 }: {
   accountId: number;
   poolId?: number;
@@ -243,6 +249,7 @@ function OverviewPanel({
   account: Account;
   codexQuota: CodexQuota | null;
   routeSummary: RouteSummary;
+  onAccountUpdated?: () => void;
 }) {
   const [latencyState, setLatencyState] = useState<
     { status: "loading" } | { status: "ready"; p50: number | null; p95: number | null } | { status: "empty" } | { status: "error" }
@@ -311,6 +318,10 @@ function OverviewPanel({
   return (
     <div className="space-y-6">
       <RouteSummaryPanel summary={routeSummary} compact />
+
+      {account.source_kind === "openai_compat" ? (
+        <DirectConnectionSection account={account} onAccountUpdated={onAccountUpdated} />
+      ) : null}
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Meter label="今日请求" value={compact(stats.requests)} hint={`${stats.requests} 次`} />
@@ -393,6 +404,129 @@ function OverviewPanel({
 
       <ProbeConfigSection accountId={account.id} account={account} availableModels={models} />
     </div>
+  );
+}
+
+function DirectConnectionSection({
+  account,
+  onAccountUpdated,
+}: {
+  account: Account;
+  onAccountUpdated?: () => void;
+}) {
+  const [baseUrl, setBaseUrl] = useState(account.base_url ?? "");
+  const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setBaseUrl(account.base_url ?? "");
+    setApiKey("");
+    setError(null);
+  }, [account.id, account.base_url, account.api_key_masked]);
+
+  const trimmedBaseUrl = baseUrl.trim();
+  const trimmedApiKey = apiKey.trim();
+  const changed = trimmedBaseUrl !== (account.base_url ?? "").trim() || trimmedApiKey.length > 0;
+  const canSave = changed && trimmedBaseUrl.length > 0 && !saving;
+
+  function reset() {
+    setBaseUrl(account.base_url ?? "");
+    setApiKey("");
+    setError(null);
+  }
+
+  async function save() {
+    if (!canSave) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = {
+        label: account.label,
+        source_kind: account.source_kind,
+        base_url: trimmedBaseUrl,
+        api_key: trimmedApiKey,
+        provider: account.provider,
+        enabled: account.enabled,
+        notes: account.notes,
+        quota_display: account.quota_display,
+      };
+      await api.put(`/accounts/${account.id}`, payload);
+      toast("连接信息已保存");
+      setApiKey("");
+      onAccountUpdated?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "连接信息保存失败";
+      setError(message);
+      toast(message, "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="space-y-4 rounded-[1.15rem] border border-moon-200/55 bg-white/62 px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1.5">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Connection</p>
+          <p className="text-sm leading-6 text-moon-500">
+            调整直连账号的 API 地址和 token。留空 token 会保留当前凭据。
+          </p>
+        </div>
+        <span className="rounded-full bg-moon-100/75 px-2.5 py-1 text-[11px] text-moon-500">
+          {account.api_key_set ? account.api_key_masked : "Token missing"}
+        </span>
+      </div>
+
+      <div className="grid gap-4">
+        <label className="space-y-2">
+          <span className="text-[11px] uppercase tracking-[0.18em] text-moon-400">API Base URL</span>
+          <Input
+            value={baseUrl}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            disabled={saving}
+            placeholder="https://api.openai.com/v1"
+            className="h-10 bg-white/76 text-sm"
+          />
+        </label>
+        <label className="space-y-2">
+          <span className="text-[11px] uppercase tracking-[0.18em] text-moon-400">API Token</span>
+          <Input
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            disabled={saving}
+            type="password"
+            placeholder="Paste a new token only when replacing it"
+            className="h-10 bg-white/76 text-sm"
+            autoComplete="off"
+          />
+        </label>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-[11px] text-moon-400">
+          保存后会刷新账号数据；可用模型和健康状态可继续用刷新或自检确认。
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={reset}
+            disabled={!changed || saving}
+            className="rounded-full bg-white/50"
+          >
+            <RotateCcw className="size-3.5" />
+            重置
+          </Button>
+          <Button type="button" size="sm" onClick={save} disabled={!canSave}>
+            {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+            保存
+          </Button>
+        </div>
+      </div>
+      {error ? <p className="text-xs text-status-red">{error}</p> : null}
+    </section>
   );
 }
 
@@ -928,7 +1062,7 @@ function quotaStatusLabel(status: string): string {
     case "pending":
       return "额度刷新中";
     case "error":
-      return "额度查询失败";
+      return "模型请求被限流";
     default:
       return "额度未知";
   }

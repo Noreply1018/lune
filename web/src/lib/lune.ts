@@ -283,6 +283,14 @@ export function getRouteSummary(
     if (account.cpa_quota_status === "blocked") {
       return routeSummary("error", "额度已用尽", "额度接口明确拒绝继续使用，普通路由会跳过。", ["刷新额度", "更换账号"]);
     }
+    if (account.cpa_quota_status === "error" && account.cpa_quota_last_error) {
+      return routeSummary(
+        account.serving_status === "cooldown" ? "error" : "degraded",
+        "模型请求被限流",
+        "最近真实模型请求返回了 HTTP 429；额度快照和真实请求证据需要分开判断。",
+        ["刷新额度", "查看 Activity", "等待冷却结束"],
+      );
+    }
   }
 
   if (account.serving_status === "cooldown") {
@@ -447,8 +455,8 @@ export function getCpaQuotaErrorMeta(account: Account): {
   }
   if (status === "error") {
     return {
-      label: "额度查询失败",
-      detail: account.cpa_quota_last_error || "最近一次额度查询失败",
+      label: "模型请求被限流",
+      detail: account.cpa_quota_last_error || "最近一次真实模型请求返回了 HTTP 429",
       tone: "warning",
     };
   }

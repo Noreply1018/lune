@@ -580,6 +580,162 @@ func TestGatewayCpaSuccessDoesNotClearQuotaState(t *testing.T) {
 	})
 }
 
+func TestGatewayCodexCpa429RecordsQuotaEvidenceAndCooldown(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	if err := st.SetSetting("max_retry_attempts", "1"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit reached for this quota window"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "limited-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.ServingStatus != "cooldown" {
+		t.Fatalf("expected serving cooldown, got %+v", acc)
+	}
+	if acc.CpaQuotaStatus != "blocked" {
+		t.Fatalf("expected quota blocked evidence, got %+v", acc)
+	}
+	if !strings.Contains(acc.CpaQuotaLastError, "HTTP 429 from model request") || !strings.Contains(acc.CpaQuotaLastError, "rate limit reached") {
+		t.Fatalf("expected safe quota evidence message, got %q", acc.CpaQuotaLastError)
+	}
+}
+
+func TestGatewayCodexCpaBare429RecordsWarningQuotaEvidence(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	if err := st.SetSetting("max_retry_attempts", "1"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "bare-limited-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaQuotaStatus != "error" || acc.CpaQuotaLastError != "HTTP 429 from model request" {
+		t.Fatalf("expected warning quota evidence, got %+v", acc)
+	}
+}
+
+func TestGatewayNonCodex429DoesNotRecordCodexQuotaEvidence(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	if err := st.SetSetting("max_retry_attempts", "1"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit reached"}}`))
+	}))
+	defer server.Close()
+
+	accountID := addOpenAICompatGatewayAccount(t, st, cache, *token.PoolID, "direct-limited", server.URL+"/v1", "gpt-test")
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-test","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.ServingStatus != "cooldown" {
+		t.Fatalf("expected serving cooldown, got %+v", acc)
+	}
+	if acc.CpaQuotaStatus != "unknown" || acc.CpaQuotaLastError != "" {
+		t.Fatalf("direct 429 must not write Codex quota fields, got %+v", acc)
+	}
+}
+
+func TestGatewayDiagnostic429DoesNotRecordQuotaEvidenceOrServingCooldown(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"quota limit reached"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "diag-limited-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Request = req.Request.WithContext(ContextWithDiagnostic(req.Request.Context()))
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.ServingStatus != "healthy" || acc.CpaQuotaStatus != "unknown" || acc.CpaQuotaLastError != "" {
+		t.Fatalf("diagnostic 429 must not mutate ordinary route health or quota evidence, got %+v", acc)
+	}
+}
+
 func TestGatewayCpaServiceAuthFailureDoesNotMarkAccountNeedsLogin(t *testing.T) {
 	st, cache, handler, token := newHandlerTestStore(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

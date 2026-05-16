@@ -634,6 +634,7 @@ export default function PoolDetailPage() {
         priorityIndex={detailPriorityIndex}
         poolId={poolId}
         resolveToken={getTokenForConnect}
+        onAccountUpdated={load}
         onOpenChange={(open) => {
           if (!open) setDetailMemberId(null);
         }}

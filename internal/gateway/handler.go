@@ -281,6 +281,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if IsRetryableStatus(result.StatusCode) {
 			errMsg := upstreamErrorMessage(result, fmt.Sprintf("HTTP %d", result.StatusCode))
+			if result.StatusCode == http.StatusTooManyRequests && !diagnostic {
+				h.recordCodexQuotaRateLimitEvidence(resolved.Account, result.Body, errMsg)
+			}
 			if result.HealthImpact && !diagnostic {
 				h.recordServingFailure(resolved.AccountID, errMsg)
 			}
@@ -521,6 +524,22 @@ func (h *Handler) recordServingFailure(accountID int64, lastError string) {
 	h.cache.Invalidate()
 }
 
+func (h *Handler) recordCodexQuotaRateLimitEvidence(account store.Account, body []byte, errMsg string) {
+	if account.SourceKind != "cpa" || !strings.EqualFold(account.CpaProvider, "codex") {
+		return
+	}
+	status := "error"
+	if bodyHasQuotaLimitSignal(body) || textHasQuotaLimitSignal(errMsg) {
+		status = "blocked"
+	}
+	msg := "HTTP 429 from model request"
+	if strings.TrimSpace(errMsg) != "" && !strings.EqualFold(strings.TrimSpace(errMsg), "HTTP 429") {
+		msg = "HTTP 429 from model request: " + truncateStreamError(errMsg, 240)
+	}
+	_ = h.store.UpdateAccountCodexQuotaStatus(account.ID, status, msg, time.Now().UTC().Format(time.RFC3339))
+	h.cache.Invalidate()
+}
+
 func (h *Handler) updateCpaCredential(accountID int64, status, reason, lastError string) {
 	go func() {
 		_ = h.store.UpdateAccountCpaCredentialStatus(accountID, status, reason, lastError, time.Now().UTC().Format(time.RFC3339))
@@ -558,6 +577,26 @@ func isCpaAccountUpstreamAuthFailure(statusCode int, body []byte) bool {
 		strings.Contains(text, "upstream authentication") ||
 		strings.Contains(text, "chatgpt") ||
 		strings.Contains(text, "codex credential")
+}
+
+func bodyHasQuotaLimitSignal(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	if msg := extractUpstreamErrorMessage(body); msg != "" && textHasQuotaLimitSignal(msg) {
+		return true
+	}
+	return textHasQuotaLimitSignal(string(body))
+}
+
+func textHasQuotaLimitSignal(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "quota") ||
+		strings.Contains(text, "rate limit") ||
+		strings.Contains(text, "ratelimit") ||
+		strings.Contains(text, "usage limit") ||
+		strings.Contains(text, "limit reached") ||
+		strings.Contains(text, "too many requests")
 }
 
 func gatewayCredentialReason(body []byte) string {
