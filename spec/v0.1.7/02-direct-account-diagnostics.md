@@ -78,4 +78,4 @@
 ## 后续非阻塞项
 
 - v0.1.7 当前不新增独立于 `Playground` 的连接测试入口；账号级直测仍使用 `Playground`。
-- 如后续希望在 `Connection` 区块补充轻量 `GET /models` 连接测试，需要明确它只验证 base URL 与 token 能否列模型，不等同于聊天补全可用。
+- `Connection` 区块补充轻量 `GET /models` 连接测试已移入 `spec/draft/10-v0.1.7-deferred-followups.md`，不进入 v0.1.7 阻塞范围。

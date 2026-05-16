@@ -15,6 +15,7 @@
 - `07-account-state-diagnostics-followups.md`：账号状态写入审计、quota 精细缓存和诊断时间线。
 - `08-streaming-observability-followups.md`：Streaming reader-based forwarder、normalized error token、timeout 和 Activity 展示增强。
 - `09-cpa-lifecycle-ui-audit-followups.md`：CPA 重复账号清理 UI 与登录/reload/metadata sync/quota refresh 安全审计增强。
+- `10-v0.1.7-deferred-followups.md`：从 v0.1.7 明确移出的直连自动健康刷新、轻量连接测试、完整 runtime diagnostics、更细 quota state、auth JSON 批量/目录导入等后续项。
 
 ## 迁移说明
 

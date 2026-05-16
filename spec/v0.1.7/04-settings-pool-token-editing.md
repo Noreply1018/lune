@@ -80,4 +80,4 @@
 
 ## 后续非阻塞项
 
-- 若后续希望替换成功后自动收起 reveal 状态，可进一步明确 reveal 状态清理规则；该项不构成 v0.1.7 阻塞。
+- 替换成功后自动收起 reveal 状态已移入 `spec/draft/10-v0.1.7-deferred-followups.md`，不进入 v0.1.7 阻塞范围。

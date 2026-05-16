@@ -112,7 +112,7 @@ v0.1.7 应补齐真实请求限流到账号状态的归类能力，同时保留 
 1. 网关识别 CPA Codex 账号真实请求的 `429`。
 2. 如果 upstream error body 或状态码能判定为 quota / rate-limit，应更新 quota 维度，而不是只写 serving cooldown。
 3. 新增安全的 quota last evidence 字段，或复用 `cpa_quota_last_error` 写入摘要，例如 `HTTP 429 from model request`。
-4. 对 Codex CPA 的真实 `429`，可将 `cpa_quota_status` 写为 `blocked`，或新增更精确状态如 `limited`。如果新增状态，需要同步类型定义、路由条件、UI 文案和迁移默认值。
+4. 对 Codex CPA 的真实 `429`，复用现有 `blocked` / `error` 等状态并写入 quota / rate-limit evidence；v0.1.7 不新增 `limited` 等更细状态。
 5. `serving_status` 可以继续进入 cooldown，用于短期避让，但 UI 主问题应优先解释 quota / rate-limit 证据。
 6. `wham/usage` 的 `used_percent=100` 应至少触发 warning / exhausted-window 展示；是否直接 blocking 需要谨慎，因为样本中 `allowed=true` 且 `limit_reached=false`。
 
@@ -120,7 +120,7 @@ v0.1.7 应补齐真实请求限流到账号状态的归类能力，同时保留 
 
 - 模型请求 `429` 不直接等同于永久 quota blocked，但对 Codex CPA 写入 quota evidence。
 - 若 error body 明确包含 quota、rate limit、usage limit、limit reached 等语义，再置为 `blocked`。
-- 若只有裸 `HTTP 429`，置为 `error` 或新增 `limited`，并在 UI 中显示“模型请求被限流”，普通路由短期仍由 serving cooldown 避让。
+- 若只有裸 `HTTP 429`，写入 quota / rate-limit evidence，并在 UI 中显示“模型请求被限流”；普通路由短期仍由 serving cooldown 避让。
 
 ## UI 表现
 
@@ -134,7 +134,7 @@ v0.1.7 应补齐真实请求限流到账号状态的归类能力，同时保留 
 1. runtime binding fail closed。
 2. credential 明确不可用。
 3. subscription 非 active。
-4. quota blocked / quota limited / real request 429 quota evidence。
+4. quota blocked / real request 429 quota evidence。
 5. serving cooldown / serving error。
 6. quota error / quota unknown 降权。
 7. auth suspect 降权。
@@ -199,7 +199,7 @@ Routing impact: cooldown until 2026-05-16 07:53:51
 | 编号 | 场景 | 准备 | 操作 | 期望 |
 | --- | --- | --- | --- | --- |
 | CT-429-01 | Codex CPA 模型请求返回裸 `429` | 新容器 + fake Codex CPA + mock upstream | 使用 Pool token 发普通 `/v1/chat/completions` | 账号进入短期 cooldown；quota evidence 记录 `HTTP 429 from model request`，UI 不只显示 generic 健康 |
-| CT-429-02 | Codex CPA 模型请求返回明确 quota 文案的 `429` | 新容器 + mock upstream body 包含 `quota` / `rate limit` / `limit reached` | 发普通请求 | `cpa_quota_status` 或新增 quota state 反映 blocked/limited；卡片主问题显示限流/额度 |
+| CT-429-02 | Codex CPA 模型请求返回明确 quota 文案的 `429` | 新容器 + mock upstream body 包含 `quota` / `rate limit` / `limit reached` | 发普通请求 | `cpa_quota_status` 反映 `blocked` 或等价现有阻断状态；卡片主问题显示限流/额度 |
 | CT-429-03 | 非 Codex 账号返回 `429` | openai_compat fake upstream | 发普通请求 | 只触发 serving cooldown，不写 Codex quota 字段 |
 | CT-429-04 | Diagnostic / Playground 强制账号返回 `429` | `X-Lune-Account-Id` 强制路由 | 使用 Playground 或 diagnostic request 触发直测 | request log 保留诊断证据；直测失败不污染普通 serving cooldown 或 quota evidence |
 | CT-429-05 | `wham/usage` 快照 ok 但模型请求 429 | quota mock 返回 ok，模型 mock 返回 `429` | 刷新额度后再发模型请求 | Quota snapshot 与 real request evidence 分层保存，`wham/usage` 成功快照不覆盖模型请求 429 evidence |
@@ -217,8 +217,8 @@ Routing impact: cooldown until 2026-05-16 07:53:51
 
 ## 后续非阻塞项
 
-- 如后续需要更接近真实 Codex runtime 的端到端 429 验收，可补充专用 fake CPA 容器场景，但不应消耗真实账号额度。
-- 如果未来新增更细的 quota state（例如 `limited`），需要同步类型、路由条件和 UI 文案；v0.1.7 当前保守复用 `blocked` / `error`。
+- 更接近真实 Codex runtime 的专用 fake CPA 容器端到端场景已移入 `spec/draft/10-v0.1.7-deferred-followups.md`；v0.1.7 仍必须完成可重复的 mock upstream / fake CPA 验收矩阵。
+- 新增更细 quota state（例如 `limited`）已移入 `spec/draft/10-v0.1.7-deferred-followups.md`；v0.1.7 当前保守复用 `blocked` / `error` 并记录 evidence。
 
 ## 后续非阻塞说明
 

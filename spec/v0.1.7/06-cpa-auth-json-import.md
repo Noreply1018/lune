@@ -224,5 +224,5 @@ Runtime sync: confirmed / pending / error
 
 ## 后续非阻塞项
 
-- 后续可考虑支持批量导入多个 auth JSON，但必须先完成单文件导入的安全边界和回滚语义。
-- 后续可考虑提供“从旧 Lune 数据目录扫描导入”的高级运维工具，但不应进入普通 Add Account 首屏。
+- 批量导入多个 auth JSON 已移入 `spec/draft/10-v0.1.7-deferred-followups.md`，不进入 v0.1.7 阻塞范围。
+- “从旧 Lune 数据目录扫描导入”的高级运维工具已移入 `spec/draft/10-v0.1.7-deferred-followups.md`，不进入 v0.1.7 阻塞范围。
