@@ -24,6 +24,7 @@
 
 - `UI-01` 和 `UI-02` 同容器验证：打开直连账号详情抽屉，确认 tab 语言统一、`Connection` 仅在 `Overview`，`Diagnostics` 不再混入 CPA 专属结构。
 - `UI-03` 同容器验证：保存时留空 token 不会清掉旧 token，填入新 token 才替换。
+- `UI-06` 同容器验证：Settings 页面可编辑 pool token，且替换后 masked 展示立即刷新。
 - `UI-04` 和 `UI-05` 同容器验证：直连账号诊断页更适合直连场景，且高级信息收敛后仍能辅助排障。
 
 ## 需要统一验证的点
@@ -35,6 +36,7 @@
 | UI-03 | token 表达语义 | 交互测试 | 默认不展示完整 token；空 token 表示保留旧值，不误导为丢失 |
 | UI-04 | 直连账号诊断页 | 页面人工检查或组件测试 | 对 `openai_compat` 账号不显示 `Runtime Binding`、`Subscription`、`Quota` 作为主诊断维度；主诊断区只出现 `Connection`、`Credential`、`Route`、`Serving`、`Models` |
 | UI-05 | 高级信息收敛 | 页面人工检查 | `Advanced` 区域仅保留 `Account ID`、`Runtime Base URL`、`Last Error`、`Last Checked At`、`Source Kind` 等直连排障字段，不展示完整 token 或 request body |
+| UI-06 | Pool token 编辑 | 页面交互测试 | Settings 页面提供显式 token 替换入口；默认不回填完整 token；空值保留旧 token；保存后 masked 值刷新 |
 | OPS-01 | 0.1.6 embedded CPA pinning 运行态审计 | 真实运行容器只读审计 + 临时发布镜像容器复核 | 区分 `docker inspect` 静态环境、PID1 shell 环境和 `lune` / embedded CPA 子进程有效环境；确认 embedded 模式下 Lune effective pinning capability；测试容器用完删除 |
 | OPS-02 | CPA 路由阻断原因展示 | API / 诊断页验收 | 对固定 fixture 的 CPA 账号，接口或页面必须分别展示 `provider_pinning_unsupported`、`runtime_auth_binding_unavailable`、`no_healthy_account`、`model_not_on_account`、subscription 非 active、账号 `status=error` 六类不同阻断原因之一，且不能统一折叠成同一个“账号不可用” |
 
@@ -43,6 +45,7 @@
 - tab 语言统一，详情抽屉不再混用中文和英文 tab 名。
 - 直连账号可以在详情抽屉里直接改 API 地址和 token。
 - token 默认不回填完整明文，但 UI 不会让用户误判为凭据丢失。
+- Settings 页面可以显式替换 pool token，且不会把完整 token 暴露到界面或日志里。
 - 直连账号的诊断页与 CPA 账号诊断页结构不同，且更贴近直连场景。
 - 直连账号相关保存和诊断行为不会泄露完整 token。
 - 容器诊断不能只依据 `docker inspect` 或 PID1 环境判断 pinning 是否启用；必须以 Lune 进程加载后的 effective 配置为准。
