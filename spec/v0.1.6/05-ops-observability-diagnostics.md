@@ -33,7 +33,7 @@ v0.1.6 在生产排障时需要快速回答：
 
 v0.1.6 生产 Docker Compose 应：
 
-- 固定镜像 tag 或 digest，避免 `latest` 导致排障不可复现。
+- 默认使用已发布的 `latest` 镜像以匹配 README 和 Docker Hub 快速启动示例；需要可复现排障或变更冻结时，通过 `LUNE_IMAGE_TAG=0.1.6` 或 digest 显式固定版本。
 - 增加 `restart: unless-stopped`。
 - 增加 `healthcheck`。
 - 增加 `stop_grace_period: 15s` 或更高。
@@ -218,7 +218,7 @@ Activity 仍应能展示错误趋势，但不应因为同一账号同一错误�
 
 本节对应 `99-acceptance-matrix.md` 中的 `CT-08` 到 `CT-14`。除 `CT-01` 的真实多账号 Codex 上游验证外，本节运维、诊断和日志类容器测试默认使用 fake account、mock upstream、mock CPA management/provider 或 seed 测试数据，不需要真实 Codex 账号。
 
-`CT-08` 到 `CT-14` 都必须用新 v0.1.6 镜像启动临时容器或待发布 Compose，使用全新数据目录，不得复用或影响上一版本正在运行的容器，结束后必须删除测试容器和测试数据。
+`CT-08` 到 `CT-14` 都必须用新 v0.1.6 镜像启动临时容器或发布 Compose，使用全新数据目录，不得复用或影响上一版本正在运行的容器，结束后必须删除测试容器和测试数据。
 
 - Docker 部署默认有 healthcheck、日志轮转、合理停止宽限期，并且运行配置与文档一致。状态：已完成，见 `docker-compose.yml` / `docker-compose.prod.yml` 和 compose config 校验。
 - Dockerfile 和 release workflow 固定内置 CPA 为 `v7.0.2-lune.1`，构建出的容器实际运行版本与 `LUNE_EMBEDDED_CPA_VERSION` 一致。状态：已完成，诊断页现同时展示来自镜像环境的 image pinned version 与从实际 `CLIProxyAPI version` 读取的 running version。
@@ -233,7 +233,7 @@ Activity 仍应能展示错误趋势，但不应因为同一账号同一错误�
 
 - `CT-08`：用 fake CPA management/provider 验证 management auth-files metadata、provider endpoint pinned headers 和 reload signal；真实 provider 上游消费不在本项完成，由 `CT-01` 覆盖。
 - `CT-09`：注入 CPA 子进程退出或 management API 不可用，确认容器失败或 `/readyz` 返回 not ready，并返回 CPA 不可用原因；本轮 `/readyz` 已补 CPA runtime 失效时的 503 路径，并通过 disabled CPA service 容器验证。
-- `CT-10`：用待发布 Compose 启动容器，检查镜像 tag/digest、healthcheck、restart、stop grace period、端口绑定、volume 和 Docker json-file log rotation。
+- `CT-10`：用发布 Compose 启动容器，检查镜像 tag/digest、healthcheck、restart、stop grace period、端口绑定、volume 和 Docker json-file log rotation。
 - `CT-11`：mock upstream 返回超长错误、伪 token、伪 auth header、伪 prompt/body，确认 `request_logs.error_message` 最多 4KB 且敏感信息被移除；Activity/Usage API 只展示安全截断摘要。
 - `CT-12`：连续制造同一账号同一错误 1,000 次，确认 SQLite/request log 不线性写入 1,000 条等价错误，stdout 不刷屏；`failed/dropped` 通知按窗口去重由单测覆盖。
 - `CT-13`：seed 大量 Activity/Usage 数据，确认 API 强制 `page_size` / `limit` 上限，常用过滤字段具备索引或可接受查询计划，前端默认分页和时间窗口不拖垮实例；本轮 6000 条 fake request log 容器复测已确认 `page_size=500` 被压到 `200`，account/source/token/model 常用过滤条件走新增索引或 SQLite multi-index plan。

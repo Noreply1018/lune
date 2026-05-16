@@ -1,6 +1,6 @@
 services:
   lune:
-    image: ${LUNE_IMAGE:-ghcr.io/noreply1018/lune}:${LUNE_IMAGE_TAG:-v0.1.6}
+    image: ${LUNE_IMAGE:-ghcr.io/noreply1018/lune}:${LUNE_IMAGE_TAG:-latest}
     container_name: lune
     restart: unless-stopped
     stop_grace_period: 30s

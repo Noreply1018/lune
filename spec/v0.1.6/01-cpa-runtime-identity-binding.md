@@ -107,11 +107,11 @@ CPA provider 转发路径应记录安全截断后的诊断信息：
 - Activity 页面账号请求量基于已确认 runtime credential 归属；无法确认时显示不确定状态。
 - 单元测试覆盖：CPA target 构建必须携带 runtime credential binding；缺失 binding 时 fail closed；日志同时保存 Lune account id 与 runtime auth id。
 - 集成测试覆盖：模拟 CPA round-robin runtime，验证 Lune pinning 后不会被 CPA 默认 round-robin 打散。
-- 真实多账号 Codex 上游消费验证是正式 v0.1.6 发布阻断项；发布前必须用同一 CPA runtime 中的多个真实 Codex auth file 验证 Lune 选择账号与 pinned runtime auth 稳定一致。
+- 真实多账号 Codex 上游消费验证是正式 v0.1.6 发布验收项；本轮已用同一 CPA runtime 中的多个真实 Codex auth file 验证 Lune 选择账号与 pinned runtime auth 稳定一致。
 
 容器验收分层：
 
-- `CT-01` 使用真实 Codex CPA 账号，必须由用户亲自导入至少 3 个真实账号后执行，是正式 v0.1.6 发布阻断项。
+- `CT-01` 使用真实 Codex CPA 账号，必须由用户亲自导入至少 3 个真实账号后执行；本轮已完成并通过。
 - `CT-02` 使用 fake CPA management/provider 模拟 pinning 能力、metadata 缺失和默认 round-robin，不需要真实账号，用于覆盖 fail-closed 和可信 usage 负向路径。
 
 执行要求：
@@ -133,3 +133,4 @@ CPA provider 转发路径应记录安全截断后的诊断信息：
 - 内置 CPA 已通过 Lune patch 支持 per-request provider pinning，并在 embedded 模式设置 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED=1`。
 - 已补充单元测试覆盖强制/自动路由 binding、缺失 binding fail closed、状态写入只信任 confirmed binding、runtime identity 日志写入。
 - 已通过 Docker 容器 smoke test 验证新镜像健康接口和 API 空状态可用。
+- 已通过 `CT-01` 真实多账号 Codex 上游消费验证：3 个真实 CPA 账号强制路由均返回 `200` 且 request log 的 account/runtime binding 对应稳定；自动路由使用 selected account 的 confirmed pinned auth；其中 1 个账号连续 10 次普通请求保持同一 pinned runtime auth。

@@ -9,7 +9,7 @@
 ## 本轮验证状态
 
 - 已通过：`go test ./...`、`npm --prefix web run build`、`sh -n docker/entrypoint.sh`、`git diff --check`、`docker compose -f docker-compose.yml config`、`docker compose -f docker-compose.prod.yml config`。
-- 已通过：Docker build `lune:v0.1.6-fake-ct7`。
+- 已通过：发布前 Docker build `lune:v0.1.6-release-check`。
 - 已通过：新容器 `lune-v016-fake-ct` 在 `127.0.0.1:11129` 完成 health、readyz、diagnostic request、usage exclusion smoke test。
 - 已通过：新容器 `lune-v016-fake-ct2` 在 `127.0.0.1:11130` 完成 error sanitization / repeat folding / stdout suppression smoke test。
 - 已通过：新容器 `lune-v016-final-smoke` 在 `127.0.0.1:11131` 完成 health 与 data-retention(DB/WAL/SHM) 字段 smoke test。
@@ -20,16 +20,18 @@
 - 已通过：新容器 `lune-v016-ct07b` 在 `127.0.0.1:11144` 使用 fake cpa-auth 和 seed 数据补齐 `CT-07`：从 Pool 移除只删除 membership，不删除账号和 auth file；删除 CPA 账号删除 DB row、Pool membership、磁盘 auth file 并写入 reload signal；历史 request log 保留删除前 `account_label_snapshot=CT07B CPA Account`；重新导入同一 account key 写入 `fake-access-v2` auth file，不与旧文件冲突。
 - 已通过：新容器 `lune-v016-ct8` 在 `127.0.0.1:11138` 完成 embedded CPA management `auth-files` metadata 可读、provider endpoint 携带 pinned auth headers 可访问、删除 fake CPA 账号后 auth file 删除并写入 `cpa-reload.signal`。
 - 已通过：新容器 `lune-v016-ct9` 在 `127.0.0.1:11137` 注入 embedded CPA 子进程退出；entrypoint 触发容器退出并自动删除测试容器。
-- 已通过：Compose 临时项目 `lunev016ct10` 使用专用容器 `lune-v016-ct10`、端口 `127.0.0.1:11139` 和专用卷 `lune-v016-ct10-data` 完成待发布 compose 实跑；healthcheck 进入 `healthy`，端口绑定、named volume、`json-file` 日志轮转、restart policy 和 `down --timeout 15` 停止清理均符合预期。
+- 已通过：Compose 临时项目 `lunev016ct10` 使用专用容器 `lune-v016-ct10`、端口 `127.0.0.1:11139` 和专用卷 `lune-v016-ct10-data` 完成发布 Compose 实跑；healthcheck 进入 `healthy`，端口绑定、named volume、`json-file` 日志轮转、restart policy 和 `down --timeout 15` 停止清理均符合预期。
 - 已通过：新容器 `lune-v016-ct111213` 在 `127.0.0.1:11140` 完成错误信息安全截断、重复错误折叠、stdout 降噪和 Usage 上限 smoke test；500 错误摘要被截断到 511 字节且敏感 token 被移除，约 1000 次 diagnostic 重复错误没有线性膨胀成 1000 条 request log，stdout 仅保留少量带 `suppressed_repeats` 的汇总行，`/admin/api/usage?page_size=500` 实际只返回 200 条记录。
 - 已通过：新容器 `lune-v016-ct13b` 在 `127.0.0.1:11141` 使用 6000 条 fake request log seed 数据完成 Usage 大数据量复测；`/admin/api/usage?range=all&page_size=500` 返回 `page_size=200`、`items=200`、`total=5838`，SQLite `EXPLAIN QUERY PLAN` 确认 account/source/token 过滤分别使用 `idx_request_logs_usage_account_created`、`idx_request_logs_usage_source_created`、`idx_request_logs_usage_token_created`，model 过滤使用 `idx_request_logs_usage_model_requested_created` 与 `idx_request_logs_usage_model_actual_created` 的 multi-index plan。
-- 已通过：新容器 `lune-v016-ct7-smoke` 在 `127.0.0.1:11145` 使用最终镜像 `lune:v0.1.6-fake-ct7` 完成 `/healthz` smoke test。
-- 已通过：新容器 `lune-v016-real-ct01` 在 `127.0.0.1:11146` 使用镜像 `lune:v0.1.6-fake-ct7`、隔离数据副本和 embedded CPA 完成 `CT-01` 真实多账号 Codex 上游消费验证；原始数据目录以只读方式复制到测试副本，复用其中已由用户导入的真实 CPA 账号和凭据，未记录 token、auth file 内容、完整凭据、真实邮箱或本机持久路径，旧容器 `lune-0.1.5` 未被改动。启动命令摘要：`docker run -d --name lune-v016-real-ct01 -p 127.0.0.1:11146:7788 -v <isolated-data-copy>:/app/data lune:v0.1.6-fake-ct7`；环境变量摘要：`LUNE_PORT=7788`、`LUNE_DATA_DIR=/app/data`、`LUNE_CPA_AUTH_DIR=/app/data/cpa-auth`、`LUNE_GATEWAY_TMP_DIR=/app/data/tmp`、`LUNE_CPA_BASE_URL=http://127.0.0.1:8317`、`LUNE_CPA_API_KEY=<redacted>`、`LUNE_CPA_MANAGEMENT_KEY=<redacted>`、`CPA_API_KEY=<redacted>`。强制账号路由 `X-Lune-Account-Id=1/2/3` 均返回 `200` 且响应头 `X-Lune-Account` 分别为 `1/2/3`；对应 request log `id=1649/1650/1651` 均为 `runtime_binding_status=confirmed`，`account_id` 与各自脱敏 `runtime_auth_index/runtime_auth_id/runtime_account_key` 稳定对应。自动路由 3 次均返回 `200`，选择账号 `3`，request log `id=1652/1653/1654` 均使用账号 `3` 的 confirmed pinned runtime auth。账号 `1` 连续 10 次强制普通请求均返回 `200`，request log `id=1655` 到 `1664` 全部保持同一脱敏 runtime auth index、同一脱敏 runtime auth id 和同一脱敏 account key，验证 pinned runtime auth 稳定。测试容器已执行 `docker rm -f lune-v016-real-ct01` 删除，测试数据副本和临时 Docker volume 均已删除。
+- 已通过：新容器 `lune-v016-ct7-smoke` 在 `127.0.0.1:11145` 使用发布前本地镜像 `lune:v0.1.6-release-check` 完成 `/healthz` smoke test。
+- 已通过：新容器 `lune-v016-real-ct01` 在 `127.0.0.1:11146` 使用发布前本地镜像 `lune:v0.1.6-release-check`、隔离数据副本和 embedded CPA 完成 `CT-01` 真实多账号 Codex 上游消费验证；原始数据目录以只读方式复制到测试副本，复用其中已由用户导入的真实 CPA 账号和凭据，未记录 token、auth file 内容、完整凭据、真实邮箱或本机持久路径，旧容器 `lune-0.1.5` 未被改动。启动命令摘要：`docker run -d --name lune-v016-real-ct01 -p 127.0.0.1:11146:7788 -v <isolated-data-copy>:/app/data lune:v0.1.6-release-check`；环境变量摘要：`LUNE_PORT=7788`、`LUNE_DATA_DIR=/app/data`、`LUNE_CPA_AUTH_DIR=/app/data/cpa-auth`、`LUNE_GATEWAY_TMP_DIR=/app/data/tmp`、`LUNE_CPA_BASE_URL=http://127.0.0.1:8317`、`LUNE_CPA_API_KEY=<redacted>`、`LUNE_CPA_MANAGEMENT_KEY=<redacted>`、`CPA_API_KEY=<redacted>`。强制账号路由 `X-Lune-Account-Id=1/2/3` 均返回 `200` 且响应头 `X-Lune-Account` 分别为 `1/2/3`；对应 request log `id=1649/1650/1651` 均为 `runtime_binding_status=confirmed`，`account_id` 与各自脱敏 `runtime_auth_index/runtime_auth_id/runtime_account_key` 稳定对应。自动路由 3 次均返回 `200`，选择账号 `3`，request log `id=1652/1653/1654` 均使用账号 `3` 的 confirmed pinned runtime auth。账号 `1` 连续 10 次强制普通请求均返回 `200`，request log `id=1655` 到 `1664` 全部保持同一脱敏 runtime auth index、同一脱敏 runtime auth id 和同一脱敏 account key，验证 pinned runtime auth 稳定。测试容器已执行 `docker rm -f lune-v016-real-ct01` 删除，测试数据副本和临时 Docker volume 均已删除。
+- 已通过：GitHub Actions Release workflow 在 `v0.1.6` tag 上成功完成，GHCR 和 Docker Hub 均已发布 `0.1.6`、`0.1`、`latest` 镜像标签。
+- 已通过：文档同步后重新展开 `docker-compose.prod.yml`，默认镜像为 `ghcr.io/noreply1018/lune:latest`；随后用已发布镜像 `ghcr.io/noreply1018/lune:latest@sha256:d62ee1c3a8ab922d44ddcdfe029364f5f831d0e6d4029a1651dba6ee0fbc15ee` 启动临时容器 `lune-v016-docsync-smoke`，端口 `127.0.0.1:11148`，独立卷 `lune-v016-docsync-smoke-data`，`/healthz` 返回 `{"status":"ok"}`。测试容器和测试卷已删除，旧容器 `lune-0.1.5` 未被改动。
 - 保护项：旧容器 `lune-0.1.5` 保持运行，未被本轮测试改动。
 
 ## 真实容器测试分层
 
-所有 v0.1.6 待解决项的最终验收都必须在新 v0.1.6 镜像启动的临时容器中完成。除明确标注“需要用户亲自导入真实账号”的项目外，默认使用 fake account、mock upstream、mock CPA management/provider 或直接 seed 测试数据库完成，不消耗真实 Codex 额度。测试容器必须使用全新数据目录，不复用或影响旧版本正在运行的容器，用完必须删除。
+所有 v0.1.6 交付项的最终验收都必须在新 v0.1.6 镜像启动的临时容器中完成。除明确标注“需要用户亲自导入真实账号”的项目外，默认使用 fake account、mock upstream、mock CPA management/provider 或直接 seed 测试数据库完成，不消耗真实 Codex 额度。测试容器必须使用全新数据目录，不复用或影响旧版本正在运行的容器，用完必须删除。
 
 验收记录必须保留：
 
@@ -51,7 +53,7 @@
 | CT-07 | CPA 删除、从 Pool 移除、重登与 reload | 新容器 + fake cpa-auth 文件 + fake/mock CPA management；如需真实 Device Code 重登另列手工记录 | 默认 fake account；真实 Device Code 重登可选且需要用户亲自操作 | 从 Pool 移除不删账号、不删 auth file；删除 CPA 账号删除 DB row、Pool membership 和磁盘 auth file；触发 reload signal；历史 Activity/usage/request log 保留；重新导入同 key 不与旧文件冲突 |
 | CT-08 | management API / provider endpoint / reload signal | 新容器 + fake CPA management/provider 或可控 embedded CPA 测试配置 | fake account 即可；真实 provider 上游消费由 CT-01 覆盖 | management auth-files metadata 可读；provider endpoint 可带 pinned auth headers；reload signal 后 CPA 子进程或 metadata 状态刷新；失败时 readiness 或 API 给出明确错误 |
 | CT-09 | CPA 子进程异常退出与 `/readyz` | 新容器，注入 CPA 子进程退出或阻断 management API | fake account 即可 | CPA 子进程异常退出会让容器失败或 `/readyz` not ready；readiness 响应包含 CPA 不可用原因；不会继续宣称可接普通 CPA 流量 |
-| CT-10 | Docker Compose 运行配置 | 用待发布 Compose 启动新容器 | 不需要账号 | 镜像 tag/digest 固定；healthcheck、restart、stop grace period、端口绑定、volume、json-file log rotation 与文档一致；停止容器时能正常退出并清理 |
+| CT-10 | Docker Compose 运行配置 | 用发布 Compose 启动新容器 | 不需要账号 | 镜像 tag/digest 固定；healthcheck、restart、stop grace period、端口绑定、volume、json-file log rotation 与文档一致；停止容器时能正常退出并清理 |
 | CT-11 | 错误信息安全截断 | 新容器 + mock upstream 返回超长错误、伪 token、伪 auth header、伪 prompt/body | fake account 即可 | `request_logs.error_message` 最大 4KB；敏感字段被移除；Activity/API 只展示安全截断摘要和 normalized reason |
 | CT-12 | 重复错误折叠、stdout 降噪、通知去重 | 新容器 + mock upstream 连续返回同一错误 1,000 次；通知去重用 store 单测覆盖 | fake account 即可 | SQLite/request log 或聚合表不线性写入 1,000 条等价错误；stdout 不被同类错误刷屏；`failed/dropped` 通知按窗口去重由 `internal/store/notifications_test.go` 覆盖 |
 | CT-13 | Activity/Usage API 上限和索引 | 新容器，seed 大量 request_logs/usage 数据 | fake account 即可 | API 强制 `page_size` / `limit` 上限；常用过滤条件走索引或可接受查询计划；前端默认时间窗口和分页不拖垮实例 |
