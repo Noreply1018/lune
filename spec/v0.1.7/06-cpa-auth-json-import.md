@@ -1,6 +1,6 @@
 # 06. Add Account 导入 CPA Auth JSON
 
-状态：release-blocker verification complete, final audit pending。功能实现、本地测试和 embedded CPA 容器主路径验收已经完成；最终 `gpt-5.5` subagent 严格审计通过前仍不能视为正式发布完成。
+状态：release-ready。功能实现、本地测试和 embedded CPA 容器主路径验收已经完成；最终 `gpt-5.5` subagent 严格审计已通过。
 
 来源：用户希望在 v0.1.7 的 Add Account 流程里增加一个选项，可以直接导入已有 Codex / CPA auth JSON 文件，用于从旧容器、旧数据目录或其他 CLI 登录环境迁移账号凭证。目标是避免用户手动进入容器复制 `/app/data/cpa-auth/*.json`，也避免误拷 `.login-sessions.json`、数据库文件或其他无关数据。
 

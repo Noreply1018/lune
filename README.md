@@ -29,7 +29,7 @@ Lune 是一个面向**个人使用**的 LLM API 网关：对下游暴露 OpenAI 
 - **账号池** — Priority-weighted 调度、自动重试、健康检查
 - **模型路由** — alias → pool → account → upstream，支持混合 pool
 - **CPA 服务管理** — Device Code 登录 OpenAI Codex、凭据热加载、远程账号批量导入、runtime binding、过期预警
-- **体验细节** — Provider 模板自动填充、一键测试连接、Pool 级 Codex CLI、内置 Playground
+- **体验细节** — Provider 模板自动填充、一键测试连接、Pool 级 Codex CLI、内置 Playground、直连诊断与凭据编辑
 - **观测** — 成本估算、延迟百分位追踪（p50/p95/p99）、账号级 Sparkline
 
 ![Pool Detail](./docs/screenshots/pool-detail.png)
@@ -199,7 +199,7 @@ cp .env.example .env
 
 ## Docker 与 CPA 服务
 
-CPA 是 Lune 默认镜像内置的运行时能力。镜像内的 `CLIProxyAPI` 会随 Lune 一起启动，版本由 Lune release 固定；如需新版 CPA，升级 Lune 镜像即可。当前 v0.1.6 内置 CPA 为 `v7.0.2-lune.1`，基于 `router-for-me/CLIProxyAPI@v7.0.2` 的固定 commit 加 Lune provider pinning patch 构建。外部 CPA 未声明支持逐请求 pinning 时，CPA 账号流量会 fail closed，避免账号统计和额度归因误绑。
+CPA 是 Lune 默认镜像内置的运行时能力。镜像内的 `CLIProxyAPI` 会随 Lune 一起启动，版本由 Lune release 固定；如需新版 CPA，升级 Lune 镜像即可。v0.1.7 使用的内置 CPA 为 `v7.0.2-lune.1`，基于 `router-for-me/CLIProxyAPI@v7.0.2` 的固定 commit 加 Lune provider pinning patch 构建。外部 CPA 未声明支持逐请求 pinning 时，CPA 账号流量会 fail closed，避免账号统计和额度归因误绑。
 
 在 Docker Compose 场景下：
 

@@ -1,6 +1,6 @@
 # 01. 账号详情抽屉 tab 与直连连接信息编辑
 
-状态：release-blocker verification complete, final audit pending。实现和验收已经纳入 v0.1.7 发布阻塞矩阵；最终 `gpt-5.5` subagent 严格审计通过前仍不能视为正式发布完成。
+状态：release-ready。实现和验收已经纳入 v0.1.7 发布阻塞矩阵；最终 `gpt-5.5` subagent 严格审计已通过。
 
 来源：来自账号详情抽屉的直接体验问题。当前详情抽屉的 tab 中夹杂中文 `诊断`，和前面的英文 tab 不一致；同时直连账号缺少一个合适的位置来编辑 API 地址与 token，导致连接变更必须依赖更重的入口或外部配置。
 

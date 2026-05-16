@@ -7,7 +7,7 @@ Lune is a personal-first LLM gateway with an OpenAI-compatible API, a built-in a
 - OpenAI-compatible gateway for `/v1/*` and `/openai/v1/*`
 - Pool-based routing across direct provider accounts and CPA services
 - CPA runtime binding for embedded CPA accounts, so selected CPA accounts are pinned to their matching auth files
-- Embedded admin UI for account, pool, Pool credential, and settings management
+- Embedded admin UI for account diagnostics, pool, Pool credential, and settings management
 - SQLite persistence in a single self-hosted container workflow
 - Prebuilt multi-arch images on both GHCR and Docker Hub
 
@@ -46,7 +46,7 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml --env-file .env up -d
 ```
 
-The Lune image includes the CPA runtime by default, so no separate CPA image or `cpa-config.yaml` is required. Current v0.1.6 images embed `CLIProxyAPI v7.0.2-lune.1`, a Lune-patched build that supports per-request auth pinning. External CPA services that do not declare pinning support are fail-closed for CPA account traffic to avoid account attribution mismatches.
+The Lune image includes the CPA runtime by default, so no separate CPA image or `cpa-config.yaml` is required. v0.1.7 images embed `CLIProxyAPI v7.0.2-lune.1`, a Lune-patched build that supports per-request auth pinning. External CPA services that do not declare pinning support are fail-closed for CPA account traffic to avoid account attribution mismatches.
 
 A single Docker volume mounted at `/app/data` stores SQLite data, CPA auth files, and gateway temporary replay files.
 

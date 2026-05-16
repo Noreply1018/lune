@@ -6,7 +6,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ## [0.1.7] - 2026-05-16
 
-状态：发布阻塞验证已完成，最终审计待通过。代码实现、测试矩阵和隔离容器 smoke 已完成；最终 `gpt-5.5` subagent 严格审计通过、提交和公开镜像发布尚未完成。
+状态：待正式发布。代码实现、测试矩阵、隔离容器 smoke、`gpt-5.5` subagent 严格审计和发布阻塞提交均已完成；公开镜像发布由 `v0.1.7` tag 触发。
 
 ### 账号详情与直连诊断
 
@@ -51,7 +51,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - 使用临时 external fake CPA 容器 `lune-v017-ct429-matrix`、端口 `127.0.0.1:17790`、隔离数据目录 `/tmp/lune-v017-ct429-matrix.gzWAsA` 完成文案型 `too many requests` / quota 文案 `429`、`wham/usage` ok snapshot 分层和 cooldown 过期后 quota evidence 阻断矩阵。
 - 使用临时 external fake CPA 容器 `lune-v017-ct429-bare`、端口 `127.0.0.1:17792`、隔离数据目录 `/tmp/lune-v017-ct429-bare.CVaCdR` 完成空 body 裸 `429` 分类矩阵，验证其写入 `cpa_quota_status=error` 和 `HTTP 429 from model request` evidence。
 - 测试容器和临时数据已删除。
-- 最终 `gpt-5.5` subagent 严格审计待通过；通过前不得提交发布阻塞改动。
+- 最终 `gpt-5.5` subagent 严格审计通过，发布阻塞改动已提交。
 
 ## [0.1.6] - 2026-05-16
 

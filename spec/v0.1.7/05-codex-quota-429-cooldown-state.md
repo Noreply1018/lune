@@ -1,6 +1,6 @@
 # 05. Codex 额度耗尽与 Serving 冷却状态归类
 
-状态：release-blocker verification complete, final audit pending。0.1.6 真实运行态只读审计、v0.1.7 实现和 fake CPA 容器矩阵已经完成；最终 `gpt-5.5` subagent 严格审计通过前仍不能视为正式发布完成。
+状态：release-ready。0.1.6 真实运行态只读审计、v0.1.7 实现和 fake CPA 容器矩阵已经完成；最终 `gpt-5.5` subagent 严格审计已通过。
 
 来源：2026-05-16 对正在运行的 `lune-0.1.6` 容器进行只读审计。用户反馈：当前 0.1.6 容器里第二个 Codex CPA 账号在 Playground 直测时表现为额度已经耗尽，但账号卡片和详情页主状态仍显示为“服务冷却中”。
 
