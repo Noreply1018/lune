@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func newNotificationStore(t *testing.T) *Store {
@@ -59,6 +60,29 @@ func TestRecordNotificationAttemptSuccessRejectsMissingOutboxRow(t *testing.T) {
 	}
 	if len(deliveries) != 1 {
 		t.Fatalf("expected exactly one delivery after duplicate success attempt, got %d", len(deliveries))
+	}
+}
+
+func TestHasRecentNotificationDeliveryCountsFailedAndDropped(t *testing.T) {
+	st := newNotificationStore(t)
+	for _, status := range []string{"failed", "dropped"} {
+		_, err := st.DB().Exec(
+			`INSERT INTO notification_deliveries (channel_id, event, severity, title, payload_summary, status, dedup_key, triggered_by, created_at)
+			 VALUES (?, 'account_error', 'critical', 'title', 'body', ?, ?, 'system', datetime('now'))`,
+			SingletonChannelID,
+			status,
+			"dedup-"+status,
+		)
+		if err != nil {
+			t.Fatalf("insert %s delivery: %v", status, err)
+		}
+		exists, err := st.HasRecentNotificationDelivery(SingletonChannelID, "dedup-"+status, time.Now().Add(-time.Hour))
+		if err != nil {
+			t.Fatalf("dedup check %s: %v", status, err)
+		}
+		if !exists {
+			t.Fatalf("expected %s delivery to count for dedup", status)
+		}
 	}
 }
 

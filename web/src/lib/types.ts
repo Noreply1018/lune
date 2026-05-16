@@ -291,6 +291,8 @@ export interface SystemNotification {
 export interface DataRetentionSummary {
   retention_days: number;
   database_size_bytes: number;
+  database_wal_size_bytes: number;
+  database_shm_size_bytes: number;
   total_logs: number;
   oldest_log_at: string | null;
   newest_log_at: string | null;
@@ -330,6 +332,8 @@ export interface CpaService {
   updated_at: string;
   runtime_mode?: string;
   auth_dir?: string;
+  image_pinned_version?: string;
+  running_version?: string;
   current_version?: string;
   latest_version?: string;
   update_available?: boolean;

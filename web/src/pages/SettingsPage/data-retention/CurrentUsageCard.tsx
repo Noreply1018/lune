@@ -50,6 +50,11 @@ export default function CurrentUsageCard({ summary }: CurrentUsageCardProps) {
           secondary={logsRange}
         />
         <UsageRow
+          label="WAL / SHM"
+          primary={`${formatBytes(Number(summary?.database_wal_size_bytes ?? 0))} · ${formatBytes(Number(summary?.database_shm_size_bytes ?? 0))}`}
+          secondary="SQLite 实时写入与共享内存文件"
+        />
+        <UsageRow
           label="通知历史"
           primary={`${totalDeliveries.toLocaleString()} 条`}
           secondary={deliveriesRange}

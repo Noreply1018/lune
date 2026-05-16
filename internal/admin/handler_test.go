@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"lune/internal/cpa"
+	"lune/internal/health"
 	"lune/internal/notify"
 	"lune/internal/notify/drivers"
 	"lune/internal/store"
@@ -384,6 +387,140 @@ func TestFinalizeLoginSameCpaKeyUpdatesExistingAccount(t *testing.T) {
 	}
 	if len(members) != 1 || members[0].AccountID != accounts[0].ID {
 		t.Fatalf("expected one idempotent pool member, got %+v", members)
+	}
+}
+
+func TestDeleteCpaAccountRemovesAuthFileAndSignalsReload(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	reloadSignal := filepath.Join(t.TempDir(), "reload.signal")
+
+	svcID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		APIKey:  "svc-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	if err := cpa.WriteAuthFile(authDir, &cpa.CpaAuthFile{
+		AccountID: "acct-delete",
+		Email:     "delete-test",
+		Type:      "codex",
+	}, "codex-delete-test-plus"); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+	accID, err := st.CreateAccount(&store.Account{
+		Label:                 "Delete me",
+		SourceKind:            "cpa",
+		CpaServiceID:          &svcID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         "codex-delete-test-plus",
+		CpaCredentialStatus:   "ok",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	checker := health.NewChecker(st, cache, authDir, "", newTestNotifier(st))
+	checker.SetCpaReloadSignalPath(reloadSignal)
+	handler := NewHandler(st, cache, authDir, "", checker, newTestNotifier(st))
+
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/admin/api/accounts/%d", accID), http.NoBody)
+	req.SetPathValue("id", fmt.Sprintf("%d", accID))
+	rr := httptest.NewRecorder()
+	handler.deleteAccount(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(authDir, "codex-delete-test-plus.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected auth file to be removed, stat err=%v", err)
+	}
+	if acc, err := st.GetAccount(accID); err != nil || acc != nil {
+		t.Fatalf("expected account row to be deleted, acc=%+v err=%v", acc, err)
+	}
+	if _, err := os.Stat(reloadSignal); err != nil {
+		t.Fatalf("expected reload signal to be written: %v", err)
+	}
+}
+
+func TestDiagnosticRequestBypassesServingCooldownWithoutUpdatingUsageOrHealth(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected upstream path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"diag","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`))
+	}))
+	defer upstream.Close()
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	accID, err := st.CreateAccount(&store.Account{
+		Label:         "Cooldown",
+		SourceKind:    "openai_compat",
+		BaseURL:       upstream.URL + "/v1",
+		APIKey:        "fake-key",
+		Provider:      "mock",
+		Enabled:       true,
+		ServingStatus: "healthy",
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accID); err != nil {
+		t.Fatalf("add pool member: %v", err)
+	}
+	if err := st.MarkAccountServingFailure(accID, "previous failure", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("mark cooldown: %v", err)
+	}
+	cache.Invalidate()
+
+	handler := NewHandler(st, cache, "", "", nil, newTestNotifier(st), t.TempDir())
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/api/accounts/%d/diagnostic-request", accID), strings.NewReader(`{"model":"gpt-test","messages":[{"role":"user","content":"ping"}]}`))
+	req.SetPathValue("id", fmt.Sprintf("%d", accID))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.diagnosticRequest(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected diagnostic request to bypass cooldown, got %d: %s", rr.Code, rr.Body.String())
+	}
+	acc, err := st.GetAccount(accID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.ServingStatus != "cooldown" {
+		t.Fatalf("diagnostic request should not update serving health, got %q", acc.ServingStatus)
+	}
+	for i := 0; i < 20; i++ {
+		logs, _, err := st.ListLogs(10, 0)
+		if err != nil {
+			t.Fatalf("list logs: %v", err)
+		}
+		if len(logs) > 0 {
+			if !logs[0].Diagnostic {
+				t.Fatalf("expected diagnostic log, got %+v", logs[0])
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stats, err := st.GetUsageSummary(store.UsageFilter{})
+	if err != nil {
+		t.Fatalf("usage summary: %v", err)
+	}
+	if stats.TotalRequests != 0 {
+		t.Fatalf("diagnostic request should not count ordinary usage, got %+v", stats)
 	}
 }
 

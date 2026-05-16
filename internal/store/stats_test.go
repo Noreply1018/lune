@@ -402,3 +402,95 @@ func TestGetPoolStatsCountsOnlyConfirmedCpaBindingsAsTrustedUsage(t *testing.T) 
 		}
 	}
 }
+
+func TestUsageSummaryUsesDeletedAccountLabelSnapshot(t *testing.T) {
+	st := newTestStore(t)
+
+	accountID, err := st.CreateAccount(&Account{
+		Label:      "Deleted Usage Account",
+		SourceKind: "cpa",
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := st.InsertLog(&RequestLog{
+		RequestID:            "deleted-usage",
+		AccessTokenName:      "pool-token",
+		ModelRequested:       "gpt-test",
+		ModelActual:          "gpt-test",
+		AccountID:            accountID,
+		StatusCode:           200,
+		Success:              true,
+		SourceKind:           "cpa",
+		RuntimeBindingStatus: "confirmed",
+		RuntimeAuthIndex:     "idx",
+		RuntimeAuthID:        "auth",
+		RuntimeAccountKey:    "codex-redacted",
+	}); err != nil {
+		t.Fatalf("insert log: %v", err)
+	}
+	if err := st.DeleteAccount(accountID); err != nil {
+		t.Fatalf("delete account: %v", err)
+	}
+
+	stats, err := st.GetUsageSummary(UsageFilter{})
+	if err != nil {
+		t.Fatalf("GetUsageSummary: %v", err)
+	}
+	if len(stats.ByAccount) != 1 {
+		t.Fatalf("expected one account row, got %+v", stats.ByAccount)
+	}
+	if stats.ByAccount[0].AccountLabel != "Deleted Usage Account" {
+		t.Fatalf("expected deleted account snapshot label, got %q", stats.ByAccount[0].AccountLabel)
+	}
+}
+
+func TestPoolStatsUsesDeletedAccountLabelSnapshot(t *testing.T) {
+	st := newTestStore(t)
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:      "Deleted Pool Account",
+		SourceKind: "cpa",
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("add pool member: %v", err)
+	}
+	if err := st.InsertLog(&RequestLog{
+		RequestID:            "deleted-pool",
+		AccessTokenName:      "pool-token",
+		ModelRequested:       "gpt-test",
+		ModelActual:          "gpt-test",
+		PoolID:               poolID,
+		AccountID:            accountID,
+		StatusCode:           200,
+		Success:              true,
+		SourceKind:           "cpa",
+		RuntimeBindingStatus: "confirmed",
+		RuntimeAuthIndex:     "idx",
+		RuntimeAuthID:        "auth",
+		RuntimeAccountKey:    "codex-redacted",
+	}); err != nil {
+		t.Fatalf("insert log: %v", err)
+	}
+	if err := st.DeleteAccount(accountID); err != nil {
+		t.Fatalf("delete account: %v", err)
+	}
+
+	stats, err := st.GetPoolStats(poolID, "24h")
+	if err != nil {
+		t.Fatalf("GetPoolStats: %v", err)
+	}
+	if len(stats.ByAccount) != 1 {
+		t.Fatalf("expected one account row, got %+v", stats.ByAccount)
+	}
+	if stats.ByAccount[0].AccountLabel != "Deleted Pool Account" {
+		t.Fatalf("expected deleted account snapshot label, got %q", stats.ByAccount[0].AccountLabel)
+	}
+}

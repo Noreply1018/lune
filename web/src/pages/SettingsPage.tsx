@@ -93,6 +93,7 @@ export default function SettingsPage() {
   const [pools, setPools] = useState<Pool[]>([]);
   const [retentionSummary, setRetentionSummary] =
     useState<DataRetentionSummary | null>(null);
+  const [readiness, setReadiness] = useState<{ status: string; message: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [gatewayForm, setGatewayForm] = useState({
@@ -126,6 +127,24 @@ export default function SettingsPage() {
     return summary;
   }
 
+  async function loadReadiness() {
+    try {
+      const resp = await fetch("/readyz", { cache: "no-store" });
+      const payload = (await resp.json().catch(() => null)) as
+        | { status?: string; message?: string }
+        | null;
+      setReadiness({
+        status: payload?.status || (resp.ok ? "ok" : "error"),
+        message: payload?.message || (resp.ok ? "" : `HTTP ${resp.status}`),
+      });
+    } catch (err) {
+      setReadiness({
+        status: "error",
+        message: err instanceof Error ? err.message : "readiness unavailable",
+      });
+    }
+  }
+
   function load(silent = false) {
     if (!silent) setLoading(true);
     setError(null);
@@ -135,6 +154,7 @@ export default function SettingsPage() {
       api.get<AccessToken[]>("/tokens"),
       api.get<Pool[]>("/pools"),
       loadRetentionSummary(),
+      loadReadiness(),
     ])
       .then(([serviceData, settingsData, tokenData, poolData]) => {
         setService(serviceData);
@@ -484,7 +504,7 @@ export default function SettingsPage() {
         <div className="px-5 py-5 sm:px-6">
           {service ? (
             <div className="space-y-5">
-              <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2 xl:grid-cols-6">
                 <InfoBlock
                   label="Status"
                   value={
@@ -502,8 +522,20 @@ export default function SettingsPage() {
                 />
                 <InfoBlock label="Mode" value={service.runtime_mode || "embedded"} />
                 <InfoBlock
-                  label="CPA Version"
-                  value={service.current_version || "Unknown"}
+                  label="Image CPA Version"
+                  value={
+                    service.image_pinned_version ||
+                    service.current_version ||
+                    "Unknown"
+                  }
+                />
+                <InfoBlock
+                  label="Running CPA Version"
+                  value={
+                    service.running_version ||
+                    service.current_version ||
+                    "Unknown"
+                  }
                 />
                 <InfoBlock
                   label="Latest Version"
@@ -511,6 +543,21 @@ export default function SettingsPage() {
                     service.latest_version
                       ? service.latest_version
                       : "随 Lune 镜像更新"
+                  }
+                />
+                <InfoBlock
+                  label="Readiness"
+                  value={
+                    <StatusBadge
+                      ok={readiness?.status === "ok"}
+                      pending={!readiness || readiness.status === "pending"}
+                    >
+                      {readiness?.status === "ok"
+                        ? "Ready"
+                        : readiness?.status === "pending"
+                          ? "Checking"
+                          : "Not Ready"}
+                    </StatusBadge>
                   }
                 />
                 <InfoBlock
@@ -523,8 +570,12 @@ export default function SettingsPage() {
                 />
               </div>
 
-              <div className="grid gap-4 border-y border-moon-200/35 py-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+              <div className="grid gap-4 border-y border-moon-200/35 py-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)]">
                 <InfoBlock label="Auth Dir" value={service.auth_dir || "--"} />
+                <InfoBlock
+                  label="Readiness Reason"
+                  value={readiness?.message || "--"}
+                />
                 <InfoBlock label="Last Error" value={service.last_error || "None"} />
               </div>
             </div>

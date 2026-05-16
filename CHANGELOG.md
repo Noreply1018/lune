@@ -6,7 +6,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ## [0.1.6] - 未发布
 
-状态：核心路由、runtime binding、可信记账与内置 CPA 构建闭环已完成；部分运维增强仍在后续计划中。
+状态：核心路由、runtime binding、可信记账、内置 CPA 构建、主要运维验收和真实多账号 Codex 上游验证均已完成。
 
 ### 重点变化
 
@@ -76,10 +76,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ### 已知后续项
 
-- 删除 CPA 账号后的 auth file 语义仍需单独设计：删除、保留或提供显式选项。
-- 独立诊断入口尚未补齐；当前强制账号路由已不能绕过普通不可接流量状态。
-- Docker Compose healthcheck、日志轮转、stop grace period、管理端 trusted private IP 收紧仍在后续计划中。
-- management API、provider endpoint、reload signal 的容器级全链路测试仍需补齐；本轮完成的是构建、entrypoint 启动和 health/API 空状态 smoke test。
+- 管理端鉴权进一步收紧已移入 `spec/draft/06-admin-auth-hardening.md`，不作为 v0.1.6 当前发布闭环。
 
 ### 验证
 
@@ -87,8 +84,13 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - 在 `web/` 下执行 `npm run build`
 - `sh -n docker/entrypoint.sh`
 - `git diff --check`
-- `docker build -t lune:v0.1.6-pinning-final5 .`
-- 使用临时容器 `lune-v016-final5-verify` 验证 `/healthz` 和 API 空状态 smoke test；旧版 `lune-0.1.5` 容器未被停止或修改。
+- `docker build -t lune:v0.1.6-fake-ct7 .`
+- 使用临时容器完成 health、readyz、diagnostic request、usage exclusion、error sanitization、repeat folding、stdout suppression、data-retention(DB/WAL/SHM)、CPA 删除 auth file 清理、reload signal、embedded CPA 子进程退出、Compose health/logging/stop grace 等 fake/smoke 验证。
+- 使用临时容器 `lune-v016-ct0206` + fake account + mock upstream 完成 CT-02 到 CT-06 代表性容器验收：provider pinning unsupported fail closed、状态路由跳过、diagnostic request 不污染普通 usage、stream incomplete 不惩罚账号、明确 stream failure 后续绕开 cooldown 账号。
+- 使用临时容器 `lune-v016-ct07b` + fake cpa-auth 完成 CT-07 补充验收：Pool 移除不删账号/auth file，删除账号删除 auth file 并写 reload signal，历史 request log 保留删除前 account label snapshot，重新导入同 key 不与旧 auth file 冲突。
+- 使用隔离数据副本和真实 CPA 账号完成 CT-01 真实多账号上游消费验收：3 个真实 Codex CPA 账号强制路由均返回 `200` 且 request log 的 account/runtime binding 对应稳定；自动路由返回 `200` 且使用 selected account 的 confirmed pinned auth；其中 1 个账号连续 10 次普通请求保持同一 pinned runtime auth。
+- 使用 6000 条 fake request log seed 数据完成 CT-13b Usage 大数据量复测；`/admin/api/usage?range=all&page_size=500` 返回 `page_size=200`，SQLite `EXPLAIN QUERY PLAN` 确认 account/source/token 过滤走对应 usage 索引，model 过滤走 requested/actual model 的 multi-index plan。
+- 最终镜像 `lune:v0.1.6-fake-ct7` 使用临时容器 `lune-v016-ct7-smoke` 验证 `/healthz`；测试容器和 `lune-v016-*` 测试卷已清理，旧版 `lune-0.1.5` 容器未被停止或修改。
 - 多轮 `gpt-5.5` subagent 严格只读审计；审计发现的验证范围表述、spec 状态口径、测试容器清理和 patch whitespace 检查问题均已修复并复审通过。
 
 ## [0.1.5] - 2026-04-30

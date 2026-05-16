@@ -42,13 +42,14 @@ type RuntimeBinding struct {
 }
 
 type ProxyResult struct {
-	StatusCode int
-	Usage      Usage
-	Stream     *StreamResult
-	Err        error
-	Body       []byte      // non-stream: buffered body (not yet written to client)
-	Headers    http.Header // non-stream: buffered response headers
-	Written    bool        // true if response was already written (streaming)
+	StatusCode   int
+	Usage        Usage
+	Stream       *StreamResult
+	Err          error
+	HealthImpact bool
+	Body         []byte      // non-stream: buffered body (not yet written to client)
+	Headers      http.Header // non-stream: buffered response headers
+	Written      bool        // true if response was already written (streaming)
 }
 
 type StreamResult struct {
@@ -56,6 +57,7 @@ type StreamResult struct {
 	Completed        bool
 	CompletionMarker string
 	Failed           bool
+	HealthImpact     bool
 	ErrorMessage     string
 	Err              error
 }
@@ -122,6 +124,9 @@ func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, path
 	defer resp.Body.Close()
 
 	result := &ProxyResult{StatusCode: resp.StatusCode}
+	if IsRetryableStatus(resp.StatusCode) {
+		result.HealthImpact = true
+	}
 
 	// collect response headers (excluding hop-by-hop)
 	respHeaders := make(http.Header)
@@ -146,9 +151,11 @@ func Forward(w http.ResponseWriter, r *http.Request, target UpstreamTarget, path
 			result.Headers = respHeaders
 			result.Headers.Del("Content-Length")
 			result.Usage = ParseUsageFromBody(respBody)
+			result.HealthImpact = true
 			if msg := extractUpstreamErrorMessage(respBody); msg != "" {
 				result.Stream = &StreamResult{
 					Failed:       true,
+					HealthImpact: true,
 					ErrorMessage: msg,
 					Err:          errors.New(msg),
 				}
@@ -315,6 +322,9 @@ func updateStreamResultFromSSEData(result *StreamResult, data []byte) {
 		result.CompletionMarker = eventType
 	case "response.failed", "response.incomplete":
 		result.Failed = true
+		if eventType == "response.failed" {
+			result.HealthImpact = true
+		}
 		if msg := extractUpstreamErrorMessageFromMap(event); msg != "" {
 			result.ErrorMessage = msg
 		} else {

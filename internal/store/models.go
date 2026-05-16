@@ -130,8 +130,12 @@ type RequestLog struct {
 	RequestIP            string `json:"request_ip"`
 	Success              bool   `json:"success"`
 	ErrorMessage         string `json:"error_message"`
+	ErrorFingerprint     string `json:"error_fingerprint,omitempty"`
+	ErrorRepeatCount     int    `json:"error_repeat_count,omitempty"`
+	ErrorLastSeenAt      string `json:"error_last_seen_at,omitempty"`
 	SourceKind           string `json:"source_kind"`
 	AttemptCount         int    `json:"attempt_count"`
+	Diagnostic           bool   `json:"diagnostic,omitempty"`
 	RuntimeAuthIndex     string `json:"runtime_auth_index"`
 	RuntimeAuthID        string `json:"runtime_auth_id"`
 	RuntimeAccountKey    string `json:"runtime_account_key"`
@@ -163,6 +167,8 @@ type CpaService struct {
 	UpdatedAt                string  `json:"updated_at"`
 	RuntimeMode              string  `json:"runtime_mode,omitempty"`
 	AuthDir                  string  `json:"auth_dir,omitempty"`
+	ImagePinnedVersion       string  `json:"image_pinned_version,omitempty"`
+	RunningVersion           string  `json:"running_version,omitempty"`
 	CurrentVersion           string  `json:"current_version,omitempty"`
 	LatestVersion            string  `json:"latest_version,omitempty"`
 	UpdateAvailable          bool    `json:"update_available,omitempty"`
@@ -240,6 +246,8 @@ type SystemNotification struct {
 type DataRetentionSummary struct {
 	RetentionDays                  int     `json:"retention_days"`
 	DatabaseSizeBytes              int64   `json:"database_size_bytes"`
+	DatabaseWalSizeBytes           int64   `json:"database_wal_size_bytes"`
+	DatabaseShmSizeBytes           int64   `json:"database_shm_size_bytes"`
 	TotalLogs                      int64   `json:"total_logs"`
 	OldestLogAt                    *string `json:"oldest_log_at"`
 	NewestLogAt                    *string `json:"newest_log_at"`

@@ -48,6 +48,7 @@ stream forwarding 返回结构化 metadata：usage、completion state、protocol
 - 即使 HTTP status 已经写出 `200`，失败的 stream outcome 仍记录到 Activity。
 - 能在失败前解析到 usage 时，保留 partial usage。
 - 任何 stream bytes 已写给客户端后，不再重试。
+- 长输出导致的 stream 中断、gateway timeout、下游客户端断开或缺少 completion marker，默认只记录为 stream 未完整完成，不直接把账号判定为坏账号。
 
 对于收到成功 upstream HTTP status 但没有达到 completion marker 的流：
 
@@ -64,9 +65,9 @@ stream forwarding 返回结构化 metadata：usage、completion state、protocol
 - 两种情况下 Activity 都应记录 routed pool/account/model 和 upstream capacity message。
 - stream-level capacity failure 不应因为 HTTP status 是 `200` 就清除已有账号错误状态或标记账号 healthy。
 
-streaming upstream 返回 retryable status，例如 `500`，即使当前流不能安全 retry，也记录 account health impact。失败账号进入可被后续 route resolution 暂时避开的状态；后续独立请求能选择下一个健康 Pool member。仍然避免在 response bytes committed 后 retry。
+streaming upstream 返回明确上游错误，例如 HTTP `5xx`、rate limit、capacity、quota 或 auth 类错误时，即使当前流不能安全 retry，也按错误类型记录 account health impact。失败账号可进入被后续 route resolution 暂时避开的状态；后续独立请求能选择下一个健康 Pool member。仍然避免在 response bytes committed 后 retry。
 
-EOF before completion 应记录 request-level failure，并进入 time-limited `serving_status=cooldown`，不应写永久 account `error` 或泛化 `degraded` 状态。
+EOF before completion、缺少 completion marker、gateway timeout 或 downstream write failure 应记录 request-level failure。若没有明确上游 `5xx`、capacity、rate limit、quota、auth 等错误证据，默认不进入 `serving_status=cooldown`，不应写永久 account `error` 或泛化 `degraded` 状态。
 
 ## UI 表现
 
@@ -120,14 +121,13 @@ Activity 应在收到结构化 upstream error body 时保留有用细节。泛�
 
 - retryable upstream HTTP response 包含 JSON error body 时，提取最佳 message 写入 `request_logs.error_message`。
 - CPA errors 保留安全 message，例如上游 EOF。
-- message 有长度上限，避免 SQLite 或 Activity API 膨胀。
-- 不暴露凭据或完整 request body。
+- `request_logs.error_message` 最多保存 4KB，避免 SQLite 或 Activity API 膨胀。
+- 不暴露凭据、auth header、完整 prompt、完整 request body 或完整 auth file。
 - upstream body 有安全 message 时，优先使用 concise normalized message。
-- 无法安全提取时，保留 generic fallback。
+- 无法安全提取时，保留 generic fallback；超过上限时截断并保留 normalized reason。
 
 仍待明确：
 
-- `request_logs.error_message` 的最大长度。
 - 更系统的 normalized error token 设计，用于重复错误折叠。
 - stream timeout 是否需要独立于 non-stream request timeout 的设置。
 
@@ -140,25 +140,27 @@ Activity 应在收到结构化 upstream error body 时保留有用细节。泛�
 - Responses stream 发出 `[DONE]` 但没有 `response.completed`，仍记录失败。
 - CPA stream 返回 HTTP 500 且 body 为 JSON error，Activity 记录提取后的上游 message。
 - CPA stream 第一 Pool account 返回 HTTP 500 后，后续独立请求能避开该账号。
-- streaming retryable status 即使发生在单次或最终 attempt，也记录 account health impact。
+- streaming 明确上游错误即使发生在单次或最终 attempt，也按错误类型记录 account health impact。
 - SSE line 超过旧 1MB scanner limit，Activity 记录 stream read error。
-- downstream write 失败后，Activity 记录失败。
-- 长流超过 gateway timeout，Activity 记录 timeout 相关失败。
-- stream bytes 已写出后不 retry，但仍更新 request log 和 serving cooldown。
+- downstream write 失败后，Activity 记录失败；没有明确上游错误证据时不惩罚账号。
+- 长流超过 gateway timeout，Activity 记录 timeout 相关失败；默认不惩罚账号，避免把“大输出被截断”误判为账号坏。
+- stream bytes 已写出后不 retry；request log 必须记录最终 stream outcome，只有明确上游错误才更新 serving cooldown。
 - Activity flow 展示 `Pool -> Account -> Model`，并明确其基于 request log final route。
 - CPA runtime binding 未确认时，Activity 不把账号级统计表述成精确实际消耗。
 
 ### Docker 容器验收
 
-03 的最终验收必须包含真实 Docker 容器中的 streaming 行为验证。实现完成后必须用新 v0.1.6 镜像启动一次临时 Docker 容器，使用全新数据目录和可控 mock upstream / mock CPA 响应验证 SSE 转发、timeout、Activity 记账和后续路由行为。测试容器不得复用或影响上一版本正在运行的容器，结束后必须删除。
+03 的最终验收必须包含真实 Docker 容器中的 streaming 行为验证。实现完成后必须用新 v0.1.6 镜像启动一次临时 Docker 容器，使用全新数据目录和可控 mock upstream / mock CPA SSE 响应验证 SSE 转发、timeout、Activity 记账和后续路由行为。测试容器不得复用或影响上一版本正在运行的容器，结束后必须删除。
+
+本节对应 `99-acceptance-matrix.md` 中的 `CT-05` 和 `CT-06`。默认使用 fake account、mock upstream 和 mock CPA SSE，不需要真实 Codex 账号。
 
 容器验收至少覆盖：
 
 - mock upstream 返回 Chat Completions stream，但缺少 `[DONE]`：客户端收到 stream 后，Activity 必须记录 `success=false`，错误摘要包含缺少 `[DONE]`，状态码保留 upstream HTTP status。
 - mock upstream 返回 Responses stream，但缺少 `response.completed`：Activity 必须记录失败，错误摘要能解释 `stream closed before response.completed`。
 - mock upstream 返回 Responses stream 中的 `response.failed` 容量错误：Activity 必须保留上游容量 message，账号进入 `serving_status=cooldown`，不得把该账号标记为生成健康。
-- mock upstream 在 stream 中途 EOF 或超过 gateway timeout：Activity 必须记录失败，保留已解析 usage 或 partial metadata，并更新 request log 与 serving cooldown。
-- stream bytes 已写出后不得重试当前请求；如果后续独立请求发生在失败账号 cooldown 期间，路由必须选择另一个健康账号。
+- mock upstream 在 stream 中途 EOF 或超过 gateway timeout：Activity 必须记录失败，保留已解析 usage 或 partial metadata，并更新 request log；没有明确上游错误证据时不得把账号打入 cooldown。
+- stream bytes 已写出后不得重试当前请求；如果失败原因是明确上游 `5xx`、capacity、rate limit、quota 或 auth 类错误，后续独立请求发生在失败账号 cooldown 期间时，路由必须选择另一个健康账号。
 - mock CPA provider 返回 streaming HTTP `500` 且 body 为 JSON error：Activity 必须记录提取后的安全上游 message，而不是泛化为 `upstream error`。
 - Activity Flow 必须展示 `Pool -> Account -> Model`，failed routed requests 默认纳入 flow；没有 selected account 的路由拒绝请求不得混入普通账号路径。
 - CPA runtime binding 未确认或 binding 失败的 streaming 请求不得计入可信账号请求量/usage。
@@ -176,11 +178,8 @@ Activity 应在收到结构化 upstream error body 时保留有用细节。泛�
 - failed routed requests 默认纳入 flow；没有 selected account 的 rows 不再混入普通账号路径。
 - 账号级 usage/request 统计已按 confirmed CPA binding 过滤，避免 streaming 失败或 CPA 默认调度造成错误归因。
 - 已通过 `go test ./...` 覆盖 gateway、router、store、stats 相关 streaming/accounting 回归。
+- 容器 `lune-v016-ct0206` 已用 fake account + mock SSE upstream 验证 stream 缺 `[DONE]` 记录 `stream closed before [DONE]` 且账号保持 healthy，stream `500` JSON error 保留安全上游 message，stream `response.failed` 记录 `mock capacity exhausted` 并让后续独立请求绕开 cooldown 账号。
 
 ## 待解决事项
 
-- reader-based SSE forwarder 仍是后续优化。
-- `request_logs.error_message` 的最大长度待明确。
-- normalized error token 设计待完善。
-- stream timeout 是否独立配置待决策。
-- 是否展示 `stream_incomplete` badge、per-attempt retry path、`pool_label` 待后续设计。
+- 暂无。reader-based SSE forwarder、normalized error token 体系、独立 stream timeout、`stream_incomplete` badge、per-attempt retry path 和 `pool_label` API 扩展已移入 `spec/draft/08-streaming-observability-followups.md`，不作为 v0.1.6 当前 fake 容器闭环阻断项。

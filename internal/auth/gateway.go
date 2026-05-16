@@ -41,3 +41,7 @@ func AccessTokenFromContext(ctx context.Context) *store.AccessToken {
 	t, _ := ctx.Value(accessTokenKey).(*store.AccessToken)
 	return t
 }
+
+func ContextWithAccessToken(ctx context.Context, token *store.AccessToken) context.Context {
+	return context.WithValue(ctx, accessTokenKey, token)
+}

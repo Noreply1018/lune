@@ -230,3 +230,22 @@ func (c *RoutingCache) GetCpaServiceSingle() *CpaService {
 	}
 	return nil
 }
+
+func (c *RoutingCache) CpaServicesForAccounts(accounts []Account) []CpaService {
+	snap := c.Get()
+	seen := make(map[int64]bool)
+	var services []CpaService
+	for _, acc := range accounts {
+		if acc.SourceKind != "cpa" || acc.CpaServiceID == nil || seen[*acc.CpaServiceID] {
+			continue
+		}
+		if svc, ok := snap.CpaServices[*acc.CpaServiceID]; ok && svc != nil {
+			services = append(services, *svc)
+			seen[*acc.CpaServiceID] = true
+		}
+	}
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].ID < services[j].ID
+	})
+	return services
+}

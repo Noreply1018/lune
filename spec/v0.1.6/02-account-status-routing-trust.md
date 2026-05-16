@@ -51,12 +51,14 @@ UI 问题也来自同一根因：
 - CPA 到 ChatGPT/Codex 上游凭据失效：写 account `credential_status=needs_login`。
 - OpenAI-compatible 直连 API key 错误：写 account `credential_status=needs_login` 或 account error，按 source kind 归类。
 
-生成请求 `5xx/EOF/timeout`：
+非流式生成请求出现明确上游失败时：
 
 - 写入 `serving_status=cooldown`。
 - 更新 `last_failure_at`、`cooldown_until`、`failure_count`。
 - 不写 `credential_status=needs_login`。
 - 不改变 quota/subscription 阻断状态。
+
+只有具备明确上游错误证据时，`5xx`、EOF、timeout 才应影响账号 serving health。stream 长输出、gateway timeout 或客户端断开在没有明确上游错误证据时只记录失败，不惩罚账号。
 
 ### Quota 写入规则
 
@@ -110,7 +112,13 @@ subscription `401/403` 不能单独写 `credential_status=needs_login`。只有 
 - `serving_status=cooldown`：不可路由，直到冷却结束。
 - runtime credential binding 未确认：CPA 普通流量必须 fail closed，不能静默转发到 provider 级 round-robin。
 
-强制账号路由 `X-Lune-Account-Id` 也不能绕过不可接普通流量状态。管理员诊断请求可以走单独入口绕过，但必须标记 `diagnostic=true`，且不得更新普通路由健康。
+强制账号路由 `X-Lune-Account-Id` 也不能绕过不可接普通流量状态。管理员诊断请求可以走单独入口绕过部分普通路由保护，但必须标记 `diagnostic=true`，且不得更新普通路由健康。
+
+诊断入口的绕过范围：
+
+- 可以绕过 `quota_status=blocked/error/unknown`、`subscription_status=expired/free/pending/error/unknown`、`serving_status=cooldown`，用于确认辅助接口判断是否与真实模型调用矛盾。
+- 不得绕过 `credential_status=needs_login/refresh_failed/runtime_pending/runtime_error/unknown`、auth file 缺失或 runtime binding 不存在，因为这些状态下无法可靠确认账号身份或凭据可用性。
+- 诊断请求不得计入普通 usage/健康修复统计；request log 必须保留 `diagnostic=true`，便于从 Activity 和审计中区分。
 
 ## UI 表现
 
@@ -202,6 +210,8 @@ Overview / Playground / 诊断
 
 `诊断` 替代旧 `Debug`，展示路由结论、主因和影响，展开 Runtime Binding、凭据、订阅、额度、服务能力及建议操作。旧 `Debug` 中的底层字段放到 `高级信息` 折叠区。
 
+`诊断` tab 可以提供“强制诊断请求”能力，用于管理员验证 quota/subscription/serving cooldown 是否与真实模型调用矛盾。该能力必须明确标记为诊断流量，不得改变普通路由对账号可接流量状态的判断。
+
 ### Active Pool 卡片高度
 
 v0.1.6 规格后续统一使用 `需要重登` 作为卡片 chip 文案；历史 `请重登` 仅说明 v0.1.5 的已完成修复背景。若未来仍因请求数字过长、更多 status chip 或窄屏宽度导致换行，再考虑固定 active card 高度、让 `AccountCard` 继承 grid row 高度、chip 区域改为单行省略或聚合。
@@ -226,10 +236,10 @@ quota/subscription 错误详情可以展示安全截断后的 reason，但不得
 - subscription 接口 `401/403` 只写 `subscription_status=error`，不单独写 `credential_status=needs_login`。
 - `subscription_status=expired/free/pending/error/unknown` 时，普通路由跳过该账号。
 - 生成请求 `200` 不会清除或改写任何 quota/subscription 状态。
-- 生成请求 `5xx/EOF/timeout` 进入 `serving_status=cooldown`，后续独立请求在冷却期内绕过该账号。
+- 明确上游错误导致的生成失败进入 `serving_status=cooldown`，后续独立请求在冷却期内绕过该账号；stream 长输出、gateway timeout 或客户端断开在没有明确上游错误证据时只记录失败，不惩罚账号。
 - 生成请求 `401/403` 只有确认是账号上游凭据问题时，才写 `credential_status=needs_login`。
 - `auth_suspect` 默认可路由但降权，优先选择其他 `credential_status=ok` 账号。
-- 强制账号路由不能绕过不可接普通流量状态。
+- 强制账号路由不能绕过不可接普通流量状态；只有账号详情 `诊断` tab 或等价管理员诊断 API 可以在 `diagnostic=true` 下绕过 quota/subscription/serving cooldown，且不得绕过凭据和 runtime binding 硬失败。
 - Pool 详情页账号卡片最多展示请求量、订阅、主问题三个 chip；右上角 badge 只表达组合路由摘要。
 - 账号详情抽屉使用 `Overview / Playground / 诊断` 三个 tab。
 - Active Pool 卡片在常见 chip 组合下高度稳定。
@@ -238,14 +248,17 @@ quota/subscription 错误详情可以展示安全截断后的 reason，但不得
 
 02 的最终验收不能只依赖单元测试。实现完成后必须用新 v0.1.6 镜像启动一次临时 Docker 容器，使用全新数据目录和可控 mock upstream / mock CPA 响应验证状态隔离。测试容器不得复用或影响上一版本正在运行的容器，结束后必须删除。
 
+本节对应 `99-acceptance-matrix.md` 中的 `CT-03` 和 `CT-04`。默认使用 fake account、mock upstream 和 mock CPA，不需要真实 Codex 账号。
+
 容器验收至少覆盖：
 
 - 启动新容器后，通过 API 创建测试 Pool、token 和至少两个测试账号；一个账号用于模拟 quota/subscription 辅助接口异常，另一个账号用于验证路由 fallback。
 - 模拟 quota `401/403`，再让同一账号的已确认 runtime binding 模型请求返回 `200`：API/页面必须显示 `quota_status=error` 或等价“额度查询失败”，不得把 `credential_status` 改成 `needs_login`，也不得清除 quota error。
 - 模拟 quota `allowed=false` 或 `limit_reached=true`：普通路由必须跳过该账号，强制账号路由也不能绕过该阻断。
 - 模拟 subscription `401/403` 或 metadata 解析失败：只写 `subscription_status=error`，不得写 `credential_status=needs_login`；Codex 普通路由必须跳过该账号。
-- 模拟真实模型请求 `5xx/EOF/timeout`：账号进入 `serving_status=cooldown`，后续独立请求路由到另一个健康账号；cooldown 不得表述成登录失败。
+- 模拟明确上游错误导致的真实模型失败：账号进入 `serving_status=cooldown`，后续独立请求路由到另一个健康账号；cooldown 不得表述成登录失败。stream 长输出、gateway timeout 或客户端断开在没有明确上游错误证据时只记录失败，不惩罚账号。
 - 模拟真实模型请求 `200`：只修复 serving 维度和可疑 credential，不得清除 quota blocked/error 或 subscription expired/error。
+- 使用管理员诊断入口或等价 API 发起 `diagnostic=true` 请求：可以绕过 quota/subscription/serving cooldown；不得绕过凭据硬失败或 runtime binding 缺失；request log 标记诊断流量，且不计入普通 usage 或健康修复统计。
 - 在管理 UI 或 API 响应中确认账号卡片/详情能区分 `额度查询失败`、`订阅元数据获取失败`、`服务冷却中`、`需要重登`，而不是统一显示红色重登。
 - 检查 `request_logs` / Activity 中的 routed account、状态结果和错误摘要能解释本次路由选择；未确认 runtime binding 的 CPA 请求不得被用来修复该账号健康。
 
@@ -266,10 +279,11 @@ quota/subscription 错误详情可以展示安全截断后的 reason，但不得
 - CPA runtime credential binding 未确认时，普通 CPA 流量 fail closed，且不会用模型调用结果更新该账号健康。
 - Pool 统计已按 confirmed CPA binding 计算可信 request/usage，避免 provider round-robin 导致账号请求量错记。
 - 前端和后端状态大小写处理已对齐，降低状态值大小写不一致导致的 UI/路由误判。
-- 已补充 router/store 单元测试覆盖 subscription 阻断、`auth_suspect` 降权、confirmed binding 可信统计。
+- 已补充 router/store/gateway/admin 单元测试覆盖 subscription 阻断、`auth_suspect` 降权、confirmed binding 可信统计和管理员 diagnostic request。
+- 管理员 diagnostic request 已走单独入口，能绕过 serving cooldown 强测一次；不会更新普通 serving health，也不会计入普通 usage。
+- 容器 `lune-v016-fake-ct` 已用 fake account + mock upstream 验证普通失败进入 cooldown 后，diagnostic request 仍返回 `200`，账号保持 `cooldown`，普通 usage total 不包含 diagnostic 请求。
+- 容器 `lune-v016-ct0206` 已用 fake account + mock upstream 验证自动路由跳过明确 seed 的 quota blocked、subscription expired、serving cooldown 和 provider pinning unsupported CPA 账号后落到健康账号；强制 cooldown 账号的普通请求返回 `503 no_healthy_account`；diagnostic request 返回 `200`，request log 标记 `diagnostic=1`，且普通 Usage total 排除该诊断请求。
 
 ## 待解决事项
 
-- quota 缓存补齐 `quota_last_attempt_at`、`quota_last_success_at`、`quota_last_error`。
-- 增加状态写入来源、前值、后值、时间和单调版本语义。
-- 账号详情 `诊断` tab 仍可继续扩展为完整四维状态时间线。
+- 暂无。quota attempt/success/error 精细缓存、状态写入审计版本和完整状态时间线已移入 `spec/draft/07-account-state-diagnostics-followups.md`，不作为 v0.1.6 当前 fake 容器闭环阻断项。

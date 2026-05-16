@@ -25,6 +25,10 @@ type Options struct {
 	CpaRuntimeBindingSupported bool
 }
 
+type ResolveOptions struct {
+	Diagnostic bool
+}
+
 func New(cache *store.RoutingCache) *Router {
 	return &Router{cache: cache}
 }
@@ -44,6 +48,10 @@ type ResolvedRoute struct {
 // forceAccountID bypasses normal member ordering but must still belong to the
 // token Pool.
 func (rt *Router) Resolve(model string, tokenPoolID *int64, forceAccountID *int64) (*ResolvedRoute, error) {
+	return rt.ResolveWithOptions(model, tokenPoolID, forceAccountID, ResolveOptions{})
+}
+
+func (rt *Router) ResolveWithOptions(model string, tokenPoolID *int64, forceAccountID *int64, opts ResolveOptions) (*ResolvedRoute, error) {
 	snap := rt.cache.Get()
 	if tokenPoolID == nil {
 		return nil, ErrNoRoute
@@ -51,10 +59,10 @@ func (rt *Router) Resolve(model string, tokenPoolID *int64, forceAccountID *int6
 
 	// Force-route to a specific account (for inline testing)
 	if forceAccountID != nil {
-		return rt.resolveToAccount(snap, model, *tokenPoolID, *forceAccountID)
+		return rt.resolveToAccount(snap, model, *tokenPoolID, *forceAccountID, opts)
 	}
 
-	return rt.resolveInPool(snap, model, *tokenPoolID)
+	return rt.resolveInPool(snap, model, *tokenPoolID, opts)
 }
 
 // SelectNextAccount finds the next available account for retry, excluding already-tried accounts.
@@ -62,10 +70,10 @@ func (rt *Router) SelectNextAccount(model string, tokenPoolID *int64, exclude []
 	if tokenPoolID == nil {
 		return nil, ErrNoRoute
 	}
-	return rt.resolveInPool(rt.cache.Get(), model, *tokenPoolID, exclude...)
+	return rt.resolveInPool(rt.cache.Get(), model, *tokenPoolID, ResolveOptions{}, exclude...)
 }
 
-func (rt *Router) resolveToAccount(snap *store.CacheSnapshot, model string, poolID, accountID int64) (*ResolvedRoute, error) {
+func (rt *Router) resolveToAccount(snap *store.CacheSnapshot, model string, poolID, accountID int64, opts ResolveOptions) (*ResolvedRoute, error) {
 	pool, ok := snap.Pools[poolID]
 	if !ok || !pool.Enabled {
 		return nil, ErrPoolDisabled
@@ -85,7 +93,7 @@ func (rt *Router) resolveToAccount(snap *store.CacheSnapshot, model string, pool
 	if !ok {
 		return nil, ErrNoRoute
 	}
-	if !rt.accountRoutable(acc) {
+	if !rt.accountRoutable(acc, opts) {
 		if rt.accountBlockedByRuntimeBinding(acc) {
 			return nil, ErrRuntimeBinding
 		}
@@ -117,7 +125,7 @@ func (rt *Router) resolveToAccount(snap *store.CacheSnapshot, model string, pool
 	}, nil
 }
 
-func (rt *Router) resolveInPool(snap *store.CacheSnapshot, model string, poolID int64, exclude ...int64) (*ResolvedRoute, error) {
+func (rt *Router) resolveInPool(snap *store.CacheSnapshot, model string, poolID int64, opts ResolveOptions, exclude ...int64) (*ResolvedRoute, error) {
 	pool, ok := snap.Pools[poolID]
 	if !ok || !pool.Enabled {
 		return nil, ErrPoolDisabled
@@ -140,7 +148,7 @@ func (rt *Router) resolveInPool(snap *store.CacheSnapshot, model string, poolID 
 		{requireModel: false, maxPenalty: 0},
 		{requireModel: false, maxPenalty: 999},
 	} {
-		resolved, blocked := rt.pickFromMembers(snap, members, model, poolID, excludeSet, stage.requireModel, stage.maxPenalty)
+		resolved, blocked := rt.pickFromMembers(snap, members, model, poolID, excludeSet, stage.requireModel, stage.maxPenalty, opts)
 		runtimeBindingBlocked = runtimeBindingBlocked || blocked
 		if resolved != nil {
 			return resolved, nil
@@ -153,14 +161,14 @@ func (rt *Router) resolveInPool(snap *store.CacheSnapshot, model string, poolID 
 	return nil, ErrNoHealthyAccount
 }
 
-func (rt *Router) pickFromMembers(snap *store.CacheSnapshot, members []*store.PoolMember, model string, poolID int64, excludeSet map[int64]bool, requireModel bool, maxPenalty int) (*ResolvedRoute, bool) {
+func (rt *Router) pickFromMembers(snap *store.CacheSnapshot, members []*store.PoolMember, model string, poolID int64, excludeSet map[int64]bool, requireModel bool, maxPenalty int, opts ResolveOptions) (*ResolvedRoute, bool) {
 	runtimeBindingBlocked := false
 	for _, m := range members {
 		if !m.Enabled || excludeSet[m.AccountID] {
 			continue
 		}
 		acc, ok := snap.Accounts[m.AccountID]
-		if !ok || !rt.accountRoutable(acc) {
+		if !ok || !rt.accountRoutable(acc, opts) {
 			if ok && rt.accountBlockedByRuntimeBinding(acc) {
 				runtimeBindingBlocked = true
 			}
@@ -182,8 +190,8 @@ func (rt *Router) pickFromMembers(snap *store.CacheSnapshot, members []*store.Po
 	return nil, runtimeBindingBlocked
 }
 
-func (rt *Router) accountRoutable(acc *store.Account) bool {
-	if !rt.accountOtherwiseRoutable(acc) {
+func (rt *Router) accountRoutable(acc *store.Account, opts ResolveOptions) bool {
+	if !rt.accountOtherwiseRoutable(acc, opts) {
 		return false
 	}
 	if acc.SourceKind == "cpa" {
@@ -202,25 +210,25 @@ func (rt *Router) accountBlockedByRuntimeBinding(acc *store.Account) bool {
 	if acc == nil || acc.SourceKind != "cpa" || rt.options.CpaRuntimeBindingSupported {
 		return false
 	}
-	if !rt.accountOtherwiseRoutable(acc) {
+	if !rt.accountOtherwiseRoutable(acc, ResolveOptions{}) {
 		return false
 	}
 	return true
 }
 
-func (rt *Router) accountOtherwiseRoutable(acc *store.Account) bool {
+func (rt *Router) accountOtherwiseRoutable(acc *store.Account, opts ResolveOptions) bool {
 	if acc == nil || !acc.Enabled {
 		return false
 	}
 	if acc.Status != "healthy" && acc.Status != "degraded" {
 		return false
 	}
-	if strings.EqualFold(acc.ServingStatus, "cooldown") {
+	if !opts.Diagnostic && strings.EqualFold(acc.ServingStatus, "cooldown") {
 		if cooldownUntil, ok := parseRouteTime(acc.CooldownUntil); !ok || cooldownUntil.After(time.Now().UTC()) {
 			return false
 		}
 	}
-	if strings.EqualFold(acc.ServingStatus, "error") {
+	if !opts.Diagnostic && strings.EqualFold(acc.ServingStatus, "error") {
 		return false
 	}
 	if acc.SourceKind == "cpa" {
@@ -228,10 +236,10 @@ func (rt *Router) accountOtherwiseRoutable(acc *store.Account) bool {
 		case "needs_login", "refresh_failed", "runtime_pending", "runtime_error", "unknown", "":
 			return false
 		}
-		if strings.EqualFold(acc.CpaQuotaStatus, "blocked") {
+		if !opts.Diagnostic && strings.EqualFold(acc.CpaQuotaStatus, "blocked") {
 			return false
 		}
-		if strings.EqualFold(acc.CpaProvider, "codex") && !strings.EqualFold(acc.CpaSubscriptionStatus, "active") {
+		if !opts.Diagnostic && strings.EqualFold(acc.CpaProvider, "codex") && !strings.EqualFold(acc.CpaSubscriptionStatus, "active") {
 			return false
 		}
 	}

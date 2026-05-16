@@ -87,23 +87,6 @@ v0.1.6 应把内置 CPA 从当前 Dockerfile 固定的 `eceasy/cli-proxy-api:v6.
 - 可临时选择同系列最新 `6.x` 版本作为保守备选，但必须重新固定所有构建入口的 tag、digest/build-arg，并记录选择原因。
 - 任何 CPA 版本回退都必须保持 `LUNE_EMBEDDED_CPA_VERSION` 与实际内置版本一致。
 
-### 管理端鉴权
-
-管理端鉴权不得把所有 private IP 都视为可信本机来源。
-
-问题场景：
-
-- 内网部署。
-- Docker bridge。
-- 反向代理。
-- 用户把端口绑定到 `0.0.0.0`。
-
-规则：
-
-- 默认要求 admin token。
-- 如果支持 trusted proxy，必须显式配置。
-- 文档必须说明把管理端暴露到公网或内网时的鉴权要求。
-
 ### CPA 子进程监督
 
 当前 embedded CPA 与 Lune 同容器运行时，entrypoint 不能只等待 `lune up`。
@@ -207,7 +190,7 @@ Activity 仍应能展示错误趋势，但不应因为同一账号同一错误�
 - 安全截断后的 upstream message。
 - 状态迁移前后值。
 
-`request_logs.error_message` 应保留安全上游错误细节，避免所有 CPA 错误都变成 `upstream error`。
+`request_logs.error_message` 应保留安全上游错误细节，避免所有 CPA 错误都变成 `upstream error`。默认最多保存 4KB，写入前必须移除 token、auth header、完整 prompt、完整 request body 和完整 auth file；超过上限时截断并保留 normalized reason。
 
 ### 通知去重
 
@@ -233,14 +216,30 @@ Activity 仍应能展示错误趋势，但不应因为同一账号同一错误�
 
 本节是最终验收要求；具体本轮已完成范围以“已完成事项”为准，未列入已完成的项目仍需后续验证或实现。
 
-- Docker 部署默认有 healthcheck、日志轮转、合理停止宽限期，并且运行配置与文档一致。状态：待后续。
-- Dockerfile 和 release workflow 固定内置 CPA 为 `v7.0.2-lune.1`，构建出的容器实际运行版本与 `LUNE_EMBEDDED_CPA_VERSION` 一致。状态：构建和 smoke test 已完成，运行版本展示仍可继续增强。
-- entrypoint 生成配置、health、management API、provider endpoint、reload signal 均通过容器测试。状态：本轮已完成 entrypoint 启动、health/API 空状态 smoke test；management API、provider endpoint、reload signal 仍待容器级实测。
-- 如果 CPA 子进程异常退出，容器退出或 `/readyz` 变为 not ready。状态：entrypoint 监督逻辑已实现；异常退出容器级注入测试仍待补。
-- 过去 24 小时同一账号同一错误重复 1,000 次时，SQLite 和 stdout 不线性写入 1,000 条等价错误。状态：待后续。
-- 管理端暴露在内网或 `0.0.0.0` 时，不能仅凭 private IP 绕过 admin token。状态：待后续。
-- 错误诊断不落完整 prompt/request body；深度调试必须由显式 debug 开关启用，并有风险提示。状态：部分完成，仍待系统化安全审计。
-- 诊断页能展示 DB/WAL 大小、日志策略、运行版本、CPA 版本和 readiness 失败原因。状态：待后续。
+本节对应 `99-acceptance-matrix.md` 中的 `CT-08` 到 `CT-14`。除 `CT-01` 的真实多账号 Codex 上游验证外，本节运维、诊断和日志类容器测试默认使用 fake account、mock upstream、mock CPA management/provider 或 seed 测试数据，不需要真实 Codex 账号。
+
+`CT-08` 到 `CT-14` 都必须用新 v0.1.6 镜像启动临时容器或待发布 Compose，使用全新数据目录，不得复用或影响上一版本正在运行的容器，结束后必须删除测试容器和测试数据。
+
+- Docker 部署默认有 healthcheck、日志轮转、合理停止宽限期，并且运行配置与文档一致。状态：已完成，见 `docker-compose.yml` / `docker-compose.prod.yml` 和 compose config 校验。
+- Dockerfile 和 release workflow 固定内置 CPA 为 `v7.0.2-lune.1`，构建出的容器实际运行版本与 `LUNE_EMBEDDED_CPA_VERSION` 一致。状态：已完成，诊断页现同时展示来自镜像环境的 image pinned version 与从实际 `CLIProxyAPI version` 读取的 running version。
+- entrypoint 生成配置和基础 health/API 空状态已通过容器 smoke test。
+- management API、provider endpoint、reload signal 的深度行为已通过 fake 容器实测；真实 provider 上游消费由 `CT-01` 覆盖。
+- 如果 CPA 子进程异常退出，容器退出或 `/readyz` 变为 not ready。状态：已完成，异常退出容器级注入测试已补。
+- 过去 24 小时同一账号同一错误重复 1,000 次时，SQLite 和 stdout 不线性写入 1,000 条等价错误。状态：已完成，重复错误折叠和 stdout 降噪已通过 fake 容器 smoke test。
+- 错误诊断不落完整 prompt/request body；深度调试必须由显式 debug 开关启用，并有风险提示。状态：已完成，`error_message` 安全截断与脱敏已落地。
+- 诊断页能展示 DB/WAL 大小、日志策略、运行版本、CPA 版本和 readiness 失败原因。状态：已完成，DB/WAL/SHM 大小、运行版本、CPA 版本、readiness 状态和失败原因均已补齐。
+
+容器验收至少覆盖：
+
+- `CT-08`：用 fake CPA management/provider 验证 management auth-files metadata、provider endpoint pinned headers 和 reload signal；真实 provider 上游消费不在本项完成，由 `CT-01` 覆盖。
+- `CT-09`：注入 CPA 子进程退出或 management API 不可用，确认容器失败或 `/readyz` 返回 not ready，并返回 CPA 不可用原因；本轮 `/readyz` 已补 CPA runtime 失效时的 503 路径，并通过 disabled CPA service 容器验证。
+- `CT-10`：用待发布 Compose 启动容器，检查镜像 tag/digest、healthcheck、restart、stop grace period、端口绑定、volume 和 Docker json-file log rotation。
+- `CT-11`：mock upstream 返回超长错误、伪 token、伪 auth header、伪 prompt/body，确认 `request_logs.error_message` 最多 4KB 且敏感信息被移除；Activity/Usage API 只展示安全截断摘要。
+- `CT-12`：连续制造同一账号同一错误 1,000 次，确认 SQLite/request log 不线性写入 1,000 条等价错误，stdout 不刷屏；`failed/dropped` 通知按窗口去重由单测覆盖。
+- `CT-13`：seed 大量 Activity/Usage 数据，确认 API 强制 `page_size` / `limit` 上限，常用过滤字段具备索引或可接受查询计划，前端默认分页和时间窗口不拖垮实例；本轮 6000 条 fake request log 容器复测已确认 `page_size=500` 被压到 `200`，account/source/token/model 常用过滤条件走新增索引或 SQLite multi-index plan。
+- `CT-14`：构造 DB/WAL、日志策略、版本差异和 readiness failure，确认诊断页和账号 `诊断` tab 展示可排障信息；本轮已补 `DB/WAL/SHM`、image pinned CPA version、running CPA version、readiness 状态、readiness failure reason 和账号诊断 tab 的 Runtime Binding、credential、quota、subscription、serving 状态摘要。
+
+验收记录应保留：镜像 tag 或 digest、Compose/容器启动命令、端口和数据目录、mock upstream/CPA 配置或 seed 数据规模、关键 API/readyz/diagnostic 响应摘要、日志和 DB/WAL 大小摘要、UI 截图或 Playwright 断言、清理测试容器和测试数据的命令结果。
 
 ## 已完成事项
 
@@ -256,13 +255,4 @@ Activity 仍应能展示错误趋势，但不应因为同一账号同一错误�
 
 ## 待解决事项
 
-- Docker Compose 固定 tag/digest、healthcheck、restart、stop grace period。
-- Docker json-file log rotation。
-- 管理端 trusted private IP 策略收紧。
-- `/readyz` 增强。
-- request log 重复错误折叠。
-- stdout access log 降噪。
-- 通知去重覆盖 failed/dropped。
-- Activity/Usage API 上限和索引。
-- 诊断页展示 image pinned CPA version 与实际 running CPA version 的差异仍可继续增强。
-- 诊断页。
+- 暂无。

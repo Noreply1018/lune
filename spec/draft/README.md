@@ -11,6 +11,10 @@
 - `03-large-non-stream-response-streaming.md`：大型非流式响应的内存保护与流式转发。
 - `04-lightweight-vps-runtime.md`：轻量 VPS、native systemd、low-resource profile、SQLite/日志/health check/内存控制。
 - `05-runtime-binding-observability.md`：Runtime binding 的 selected auth 回传字段和 normalized reason 体系化。
+- `06-admin-auth-hardening.md`：管理端 private IP 信任策略收紧，后续评估 admin token 与 trusted proxy 语义。
+- `07-account-state-diagnostics-followups.md`：账号状态写入审计、quota 精细缓存和诊断时间线。
+- `08-streaming-observability-followups.md`：Streaming reader-based forwarder、normalized error token、timeout 和 Activity 展示增强。
+- `09-cpa-lifecycle-ui-audit-followups.md`：CPA 重复账号清理 UI 与登录/reload/metadata sync/quota refresh 安全审计增强。
 
 ## 迁移说明
 

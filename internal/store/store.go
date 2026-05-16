@@ -16,11 +16,12 @@ import (
 
 type Store struct {
 	db          *sql.DB
+	dbPath      string
 	schemaMu    sync.Mutex
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 17
+const v3SchemaVersion = 19
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -137,6 +138,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
     model_actual      TEXT NOT NULL DEFAULT '',
     pool_id           INTEGER,
     account_id        INTEGER,
+    account_label_snapshot TEXT NOT NULL DEFAULT '',
     status_code       INTEGER NOT NULL DEFAULT 0,
     latency_ms        INTEGER NOT NULL DEFAULT 0,
     input_tokens      INTEGER NOT NULL DEFAULT 0,
@@ -145,8 +147,12 @@ CREATE TABLE IF NOT EXISTS request_logs (
     request_ip        TEXT NOT NULL DEFAULT '',
     success           INTEGER NOT NULL DEFAULT 1,
     error_message     TEXT NOT NULL DEFAULT '',
+    error_fingerprint TEXT NOT NULL DEFAULT '',
+    error_repeat_count INTEGER NOT NULL DEFAULT 1,
+    error_last_seen_at TEXT NOT NULL DEFAULT '',
     source_kind       TEXT NOT NULL DEFAULT '',
     attempt_count     INTEGER NOT NULL DEFAULT 1,
+    diagnostic        INTEGER NOT NULL DEFAULT 0,
     runtime_auth_index TEXT NOT NULL DEFAULT '',
     runtime_auth_id TEXT NOT NULL DEFAULT '',
     runtime_account_key TEXT NOT NULL DEFAULT '',
@@ -157,6 +163,13 @@ CREATE TABLE IF NOT EXISTS request_logs (
 
 CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_request_logs_pool_id ON request_logs(pool_id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_usage_filters ON request_logs(created_at, access_token_name, account_id, model_requested, model_actual, source_kind);
+CREATE INDEX IF NOT EXISTS idx_request_logs_usage_account_created ON request_logs(account_id, diagnostic, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_usage_source_created ON request_logs(source_kind, diagnostic, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_usage_token_created ON request_logs(access_token_name, diagnostic, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_usage_model_requested_created ON request_logs(model_requested, diagnostic, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_usage_model_actual_created ON request_logs(model_actual, diagnostic, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_error_fingerprint ON request_logs(error_fingerprint, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_cpa_service_key_unique
     ON accounts(cpa_service_id, cpa_account_key)
     WHERE source_kind = 'cpa' AND cpa_service_id IS NOT NULL AND cpa_account_key <> '';
@@ -236,7 +249,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	s := &Store{db: db, schemaCache: make(map[string]map[string]bool)}
+	s := &Store{db: db, dbPath: dbPath, schemaCache: make(map[string]map[string]bool)}
 	if err := s.migrateV3(dbPath); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -269,6 +282,9 @@ func (s *Store) migrateV3(dbPath string) error {
 		}
 		if err := s.migrateRuntimeBindingLogColumns(); err != nil {
 			return fmt.Errorf("repair runtime binding log columns: %w", err)
+		}
+		if err := s.migrateRequestLogOperationalColumns(); err != nil {
+			return fmt.Errorf("repair request log operational columns: %w", err)
 		}
 		if err := s.migrateCpaSubscriptionStatusColumn(); err != nil {
 			return fmt.Errorf("repair CPA subscription status column: %w", err)
@@ -335,6 +351,11 @@ func (s *Store) migrateV3(dbPath string) error {
 			}
 			if err := s.migrateCpaSubscriptionStatusColumn(); err != nil {
 				return fmt.Errorf("migrate CPA subscription status column: %w", err)
+			}
+		}
+		if ver < 19 {
+			if err := s.migrateRequestLogOperationalColumns(); err != nil {
+				return fmt.Errorf("migrate request log operational columns: %w", err)
 			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
@@ -742,6 +763,53 @@ func (s *Store) migrateRuntimeBindingLogColumns() error {
 		}
 		if _, err := s.db.Exec(a.ddl); err != nil {
 			return fmt.Errorf("add column %s: %w", a.col, err)
+		}
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "request_logs")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migrateRequestLogOperationalColumns() error {
+	exists, err := s.tableExists("request_logs")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	adds := []struct{ col, ddl string }{
+		{"error_fingerprint", `ALTER TABLE request_logs ADD COLUMN error_fingerprint TEXT NOT NULL DEFAULT ''`},
+		{"error_repeat_count", `ALTER TABLE request_logs ADD COLUMN error_repeat_count INTEGER NOT NULL DEFAULT 1`},
+		{"error_last_seen_at", `ALTER TABLE request_logs ADD COLUMN error_last_seen_at TEXT NOT NULL DEFAULT ''`},
+		{"diagnostic", `ALTER TABLE request_logs ADD COLUMN diagnostic INTEGER NOT NULL DEFAULT 0`},
+		{"account_label_snapshot", `ALTER TABLE request_logs ADD COLUMN account_label_snapshot TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, a := range adds {
+		has, err := s.hasColumn("request_logs", a.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.col, err)
+		}
+	}
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_filters ON request_logs(created_at, access_token_name, account_id, model_requested, model_actual, source_kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_account_created ON request_logs(account_id, diagnostic, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_source_created ON request_logs(source_kind, diagnostic, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_token_created ON request_logs(access_token_name, diagnostic, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_model_requested_created ON request_logs(model_requested, diagnostic, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_model_actual_created ON request_logs(model_actual, diagnostic, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_error_fingerprint ON request_logs(error_fingerprint, created_at)`,
+	}
+	for _, stmt := range indexes {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
 		}
 	}
 	s.schemaMu.Lock()

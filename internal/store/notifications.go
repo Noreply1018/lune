@@ -487,7 +487,7 @@ func (s *Store) HasRecentNotificationDelivery(channelID int64, dedupKey string, 
 	err := s.db.QueryRow(
 		`SELECT COUNT(*)
 		 FROM notification_deliveries
-		 WHERE channel_id = ? AND dedup_key = ? AND status = 'success' AND created_at >= ?`,
+		 WHERE channel_id = ? AND dedup_key = ? AND status IN ('success', 'failed', 'dropped') AND created_at >= ?`,
 		channelID,
 		dedupKey,
 		since.UTC().Format("2006-01-02 15:04:05"),

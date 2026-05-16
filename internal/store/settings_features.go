@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 
@@ -299,6 +300,14 @@ func (s *Store) GetDataRetentionSummary(retentionDays int) (*DataRetentionSummar
 		return nil, err
 	}
 	summary.DatabaseSizeBytes = pageCount * pageSize
+	if s.dbPath != "" {
+		if info, err := os.Stat(s.dbPath + "-wal"); err == nil {
+			summary.DatabaseWalSizeBytes = info.Size()
+		}
+		if info, err := os.Stat(s.dbPath + "-shm"); err == nil {
+			summary.DatabaseShmSizeBytes = info.Size()
+		}
+	}
 
 	settings, err := s.GetSettings()
 	if err != nil {

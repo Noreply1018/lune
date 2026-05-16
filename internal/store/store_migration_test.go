@@ -44,6 +44,15 @@ func requireTableColumn(t *testing.T, db *sql.DB, table, column string) tableCol
 	return tableColumnInfo{}
 }
 
+func requireIndex(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+
+	var got string
+	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&got); err != nil {
+		t.Fatalf("expected index %s to exist: %v", name, err)
+	}
+}
+
 func TestMigrateV2PreservesCpaServicesWithoutManagementKeyColumn(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "legacy-v2.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -692,4 +701,77 @@ CREATE TABLE accounts (
 		requireTableColumn(t, st.DB(), "request_logs", col)
 	}
 	requireTableColumn(t, st.DB(), "accounts", "cpa_subscription_status")
+}
+
+func TestMigrateV19AddsUsageOperationalColumnsAndIndexesFromV17(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-v17-usage-operational.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '17');
+CREATE TABLE request_logs (
+    id INTEGER PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    access_token_name TEXT NOT NULL DEFAULT '',
+    model_requested TEXT NOT NULL DEFAULT '',
+    model_actual TEXT NOT NULL DEFAULT '',
+    pool_id INTEGER,
+    account_id INTEGER,
+    status_code INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    stream INTEGER NOT NULL DEFAULT 0,
+    request_ip TEXT NOT NULL DEFAULT '',
+    success INTEGER NOT NULL DEFAULT 1,
+    error_message TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    runtime_auth_index TEXT NOT NULL DEFAULT '',
+    runtime_auth_id TEXT NOT NULL DEFAULT '',
+    runtime_account_key TEXT NOT NULL DEFAULT '',
+    runtime_binding_status TEXT NOT NULL DEFAULT '',
+    runtime_binding_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE accounts (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'openai_compat',
+    cpa_subscription_status TEXT NOT NULL DEFAULT 'unknown'
+);
+CREATE INDEX idx_request_logs_created_at ON request_logs(created_at);
+	CREATE INDEX idx_request_logs_pool_id ON request_logs(pool_id);
+`); err != nil {
+		t.Fatalf("seed v17 schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("open store with migration: %v", err)
+	}
+	defer st.Close()
+
+	for _, col := range []string{"error_fingerprint", "error_repeat_count", "error_last_seen_at", "diagnostic", "account_label_snapshot"} {
+		requireTableColumn(t, st.DB(), "request_logs", col)
+	}
+	for _, name := range []string{
+		"idx_request_logs_usage_filters",
+		"idx_request_logs_usage_account_created",
+		"idx_request_logs_usage_source_created",
+		"idx_request_logs_usage_token_created",
+		"idx_request_logs_usage_model_requested_created",
+		"idx_request_logs_usage_model_actual_created",
+		"idx_request_logs_error_fingerprint",
+	} {
+		requireIndex(t, st.DB(), name)
+	}
 }

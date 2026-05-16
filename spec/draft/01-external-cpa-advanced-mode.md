@@ -70,6 +70,11 @@ LUNE_CPA_MANAGEMENT_KEY=
 - 不做 CPA on-demand suspend/resume。
 - 不做 managed CPA binary updates。
 
+## 后续扩展
+
+- 推动 CLIProxyAPI upstream 正式支持外部 per-request auth pinning，减少 Lune 本地 patch 维护成本。
+- 定义非 embedded CPA 如何声明 pinning 能力，以及能力不足时的用户可见诊断。
+
 ## 待决问题
 
 - 生产 Compose 文档中使用哪个环境变量禁用 embedded CPA？

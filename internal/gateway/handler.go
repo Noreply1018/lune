@@ -85,6 +85,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	requestID := generateRequestID()
 	accessToken := auth.AccessTokenFromContext(r.Context())
+	diagnostic := DiagnosticFromContext(r.Context())
 
 	// determine path suffix
 	pathSuffix := extractPathSuffix(r.URL.Path)
@@ -139,7 +140,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// initial route resolution
-	resolved, err := h.router.Resolve(model, tokenPoolID, forceAccountID)
+	resolved, err := h.router.ResolveWithOptions(model, tokenPoolID, forceAccountID, router.ResolveOptions{Diagnostic: diagnostic})
 	if err != nil {
 		if errors.Is(err, router.ErrNoRoute) {
 			webutil.WriteGatewayError(w, 404, "no_route", fmt.Sprintf("no route for model: %s", model))
@@ -183,7 +184,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// under a false "success" from an unrelated account. Single-shot in that
 	// case so MiniChat / per-account probes reflect the actual target.
 	maxRetries := h.getMaxRetries()
-	if forceAccountID != nil {
+	if forceAccountID != nil || diagnostic {
 		maxRetries = 1
 	}
 	var exclude []int64
@@ -243,7 +244,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"err", bindErr,
 			)
 			webutil.WriteGatewayError(w, 503, "runtime_auth_binding_unavailable", reason)
-			h.logRequestWithBinding(requestID, accessToken, model, resolved, 503, start, isStream, r, false, "runtime_auth_binding_unavailable: "+reason, Usage{}, resolved.Account.SourceKind, 0, bindingLog)
+			h.logRequestWithBinding(requestID, accessToken, model, resolved, 503, start, isStream, r, false, "runtime_auth_binding_unavailable: "+reason, Usage{}, resolved.Account.SourceKind, 0, bindingLog, diagnostic)
 			return
 		}
 		if targetBinding != nil {
@@ -266,11 +267,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// network/connection error
 			exclude = append(exclude, resolved.AccountID)
 			lastErr = result.Err
-			h.recordServingFailure(resolved.AccountID, result.Err.Error())
+			if result.HealthImpact && !diagnostic {
+				h.recordServingFailure(resolved.AccountID, result.Err.Error())
+			}
 
 			if !IsRetryable(result.Err) {
 				webutil.WriteGatewayError(w, 502, "upstream_failed", result.Err.Error())
-				h.logRequestWithBinding(requestID, accessToken, model, resolved, 0, start, isStream, r, false, result.Err.Error(), Usage{}, resolved.Account.SourceKind, attemptsUsed, bindingLog)
+				h.logRequestWithBinding(requestID, accessToken, model, resolved, 0, start, isStream, r, false, result.Err.Error(), Usage{}, resolved.Account.SourceKind, attemptsUsed, bindingLog, diagnostic)
 				return
 			}
 			continue
@@ -278,17 +281,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if IsRetryableStatus(result.StatusCode) {
 			errMsg := upstreamErrorMessage(result, fmt.Sprintf("HTTP %d", result.StatusCode))
-			h.recordServingFailure(resolved.AccountID, errMsg)
+			if result.HealthImpact && !diagnostic {
+				h.recordServingFailure(resolved.AccountID, errMsg)
+			}
 			lastStatusCode = result.StatusCode
 
 			if isStream {
 				result.WriteResponse(w)
-				h.logRequestWithBinding(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog)
+				h.logRequestWithBinding(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog, diagnostic)
 				return
 			}
 			if attempt >= maxRetries-1 {
 				result.WriteResponse(w)
-				h.logRequestWithBinding(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog)
+				h.logRequestWithBinding(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog, diagnostic)
 				return
 			}
 			exclude = append(exclude, resolved.AccountID)
@@ -321,26 +326,34 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			errMsg = upstreamErrorMessage(result, "")
 		}
 		if success {
-			h.recordServingSuccess(resolved.AccountID)
-			if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaCredentialStatus, "auth_suspect") {
-				h.updateCpaCredential(resolved.AccountID, "ok", "", "")
-			}
-			// v3: update token last_used_at (no quota tracking)
-			if accessToken != nil {
-				go func() {
-					_ = h.store.UpdateTokenLastUsed(accessToken.ID)
-				}()
+			if !diagnostic {
+				h.recordServingSuccess(resolved.AccountID)
+				if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaCredentialStatus, "auth_suspect") {
+					h.updateCpaCredential(resolved.AccountID, "ok", "", "")
+				}
+				// v3: update token last_used_at (no quota tracking)
+				if accessToken != nil {
+					go func() {
+						_ = h.store.UpdateTokenLastUsed(accessToken.ID)
+					}()
+				}
 			}
 		} else if resolved.Account.SourceKind == "cpa" && isCpaAccountUpstreamAuthFailure(result.StatusCode, result.Body) {
-			msg := fmt.Sprintf("HTTP %d", result.StatusCode)
-			h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
+			if !diagnostic {
+				msg := fmt.Sprintf("HTTP %d", result.StatusCode)
+				h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
+			}
 		} else if resolved.Account.SourceKind != "cpa" && isGatewayAuthFailure(result.StatusCode, result.Body) {
-			h.updateHealth(resolved.AccountID, "error", "upstream authentication failed")
+			if !diagnostic {
+				h.updateHealth(resolved.AccountID, "error", "upstream authentication failed")
+			}
 		} else if result.Stream != nil && result.Stream.Failed {
-			h.recordServingFailure(resolved.AccountID, errMsg)
+			if !diagnostic && result.Stream.HealthImpact {
+				h.recordServingFailure(resolved.AccountID, errMsg)
+			}
 		}
 
-		h.logRequestWithBinding(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog)
+		h.logRequestWithBinding(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, success, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog, diagnostic)
 		return
 	}
 
@@ -356,7 +369,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if lastResolved != nil {
 		lastSourceKind = lastResolved.Account.SourceKind
 	}
-	h.logRequestWithBinding(requestID, accessToken, model, lastResolved, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, lastSourceKind, attemptsUsed, lastBindingLog)
+	h.logRequestWithBinding(requestID, accessToken, model, lastResolved, lastStatusCode, start, isStream, r, false, errMsg, Usage{}, lastSourceKind, attemptsUsed, lastBindingLog, diagnostic)
 }
 
 func (h *Handler) handleModels(w http.ResponseWriter, tokenPoolID *int64) {
@@ -431,10 +444,14 @@ func (h *Handler) resolveTarget(account store.Account, binding *RuntimeBinding) 
 }
 
 func (h *Handler) logRequest(requestID string, token *store.AccessToken, model string, resolved *router.ResolvedRoute, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string, attemptCount int) {
-	h.logRequestWithBinding(requestID, token, model, resolved, statusCode, start, stream, r, success, errMsg, usage, sourceKind, attemptCount, runtimeBindingLog{})
+	diagnostic := false
+	if r != nil {
+		diagnostic = DiagnosticFromContext(r.Context())
+	}
+	h.logRequestWithBinding(requestID, token, model, resolved, statusCode, start, stream, r, success, errMsg, usage, sourceKind, attemptCount, runtimeBindingLog{}, diagnostic)
 }
 
-func (h *Handler) logRequestWithBinding(requestID string, token *store.AccessToken, model string, resolved *router.ResolvedRoute, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string, attemptCount int, binding runtimeBindingLog) {
+func (h *Handler) logRequestWithBinding(requestID string, token *store.AccessToken, model string, resolved *router.ResolvedRoute, statusCode int, start time.Time, stream bool, r *http.Request, success bool, errMsg string, usage Usage, sourceKind string, attemptCount int, binding runtimeBindingLog, diagnostic bool) {
 	tokenName := ""
 	if token != nil {
 		tokenName = token.Name
@@ -469,6 +486,7 @@ func (h *Handler) logRequestWithBinding(requestID string, token *store.AccessTok
 		ErrorMessage:         errMsg,
 		SourceKind:           sourceKind,
 		AttemptCount:         attemptCount,
+		Diagnostic:           diagnostic,
 		RuntimeAuthIndex:     binding.AuthIndex,
 		RuntimeAuthID:        binding.AuthID,
 		RuntimeAccountKey:    binding.AccountKey,

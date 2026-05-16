@@ -57,7 +57,7 @@ ARG CPA_PATCH_VERSION=v7.0.2-lune.1
 
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/data/cpa-auth /app/data/tmp /CLIProxyAPI
 

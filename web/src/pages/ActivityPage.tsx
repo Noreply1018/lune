@@ -42,7 +42,7 @@ type UsageBundle = {
   truncated: boolean;
 };
 
-const PAGE_SIZE = 250;
+const PAGE_SIZE = 200;
 const MAX_PAGES = 12;
 const AUTO_REFRESH_MS = 30_000;
 // Rows per in-UI page of the Request Logs table. Deliberately small so an

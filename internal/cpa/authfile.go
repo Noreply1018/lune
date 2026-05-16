@@ -71,6 +71,17 @@ func WriteAuthFile(dir string, f *CpaAuthFile, accountKey string) error {
 	return os.Rename(tmp, path)
 }
 
+func DeleteAuthFile(dir, accountKey string) error {
+	if err := validateAccountKey(accountKey); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, accountKey+".json")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func ScanAuthDir(dir string) ([]CpaAuthFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

@@ -10,14 +10,18 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"lune/internal/auth"
 	"lune/internal/cpa"
+	"lune/internal/gateway"
 	"lune/internal/health"
 	"lune/internal/notify"
+	"lune/internal/router"
 	"lune/internal/store"
 	"lune/internal/syscfg"
 	"lune/internal/webutil"
@@ -28,15 +32,20 @@ type Handler struct {
 	cache            *store.RoutingCache
 	cpaAuthDir       string
 	cpaManagementKey string
+	gatewayTmpDir    string
 	sessions         *cpa.SessionStore
 	healthChecker    *health.Checker
 	notifier         *notify.Service
 }
 
-func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, notifier *notify.Service) *Handler {
+func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, notifier *notify.Service, gatewayTmpDir ...string) *Handler {
 	sessionPath := ""
 	if cpaAuthDir != "" {
 		sessionPath = filepath.Join(cpaAuthDir, ".login-sessions.json")
+	}
+	tmpDir := os.TempDir()
+	if len(gatewayTmpDir) > 0 && strings.TrimSpace(gatewayTmpDir[0]) != "" {
+		tmpDir = gatewayTmpDir[0]
 	}
 
 	h := &Handler{
@@ -44,6 +53,7 @@ func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagement
 		cache:            c,
 		cpaAuthDir:       cpaAuthDir,
 		cpaManagementKey: cpaManagementKey,
+		gatewayTmpDir:    tmpDir,
 		sessions:         cpa.NewSessionStore(sessionPath),
 		healthChecker:    hc,
 		notifier:         notifier,
@@ -69,6 +79,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("POST /admin/api/accounts/{id}/enable", h.enableAccount)
 	handle("POST /admin/api/accounts/{id}/disable", h.disableAccount)
 	handle("DELETE /admin/api/accounts/{id}", h.deleteAccount)
+	handle("POST /admin/api/accounts/{id}/diagnostic-request", h.diagnosticRequest)
 	handle("POST /admin/api/accounts/test-connection", h.testConnection)
 
 	// Account refresh
@@ -304,12 +315,90 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	acc, err := h.store.GetAccount(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if acc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "account not found")
+		return
+	}
+	if acc.SourceKind == "cpa" && h.cpaAuthDir != "" && strings.TrimSpace(acc.CpaAccountKey) != "" {
+		if err := cpa.DeleteAuthFile(h.cpaAuthDir, acc.CpaAccountKey); err != nil {
+			h.internalError(w, err)
+			return
+		}
+	}
 	if err := h.store.DeleteAccount(id); err != nil {
 		h.internalError(w, err)
 		return
 	}
+	if acc.SourceKind == "cpa" && h.healthChecker != nil && acc.CpaServiceID != nil {
+		if svc, err := h.store.GetCpaServiceByID(*acc.CpaServiceID); err == nil && svc != nil {
+			_ = h.healthChecker.RequestCpaRuntimeReload(r.Context(), svc)
+		}
+	}
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) diagnosticRequest(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	acc, err := h.store.GetAccount(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if acc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "account not found")
+		return
+	}
+	poolID, ok := h.findFirstPoolForAccount(id)
+	if !ok {
+		webutil.WriteAdminError(w, 404, "no_route", "account has no enabled pool membership")
+		return
+	}
+	suffix := strings.TrimSpace(r.URL.Query().Get("path"))
+	if suffix == "" {
+		suffix = "chat/completions"
+	}
+	req := r.Clone(gateway.ContextWithDiagnostic(auth.ContextWithAccessToken(r.Context(), &store.AccessToken{
+		Name:    "admin-diagnostic",
+		PoolID:  &poolID,
+		Enabled: true,
+	})))
+	u := *r.URL
+	u.Path = "/v1/" + strings.TrimPrefix(strings.TrimSuffix(suffix, "/"), "/")
+	u.RawQuery = ""
+	req.URL = &u
+	req.RequestURI = ""
+	req.Header = r.Header.Clone()
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(id, 10))
+	req.Header.Del("Authorization")
+
+	rt := router.NewWithOptions(h.cache, router.Options{CpaRuntimeBindingSupported: h.healthChecker != nil && h.healthChecker.ProviderPinningSupported()})
+	gw := gateway.NewHandler(rt, h.cache, h.store, h.gatewayTmpDir, h.healthChecker)
+	gw.ServeHTTP(w, req)
+}
+
+func (h *Handler) findFirstPoolForAccount(accountID int64) (int64, bool) {
+	snap := h.cache.Get()
+	for poolID, members := range snap.Members {
+		pool, ok := snap.Pools[poolID]
+		if !ok || pool == nil || !pool.Enabled {
+			continue
+		}
+		for _, member := range members {
+			if member != nil && member.Enabled && member.AccountID == accountID {
+				return poolID, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // --- Account Refresh ---
@@ -1137,6 +1226,9 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 		}
 		pageSize = n
 	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
 	if v := r.URL.Query().Get("offset"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
@@ -1463,9 +1555,29 @@ func (h *Handler) decorateCpaRuntime(svc *store.CpaService) {
 	}
 	svc.AuthDir = h.cpaAuthDir
 	if svc.RuntimeMode == "embedded" {
-		svc.CurrentVersion = os.Getenv("LUNE_EMBEDDED_CPA_VERSION")
+		svc.ImagePinnedVersion = os.Getenv("LUNE_EMBEDDED_CPA_VERSION")
+		svc.RunningVersion = h.readEmbeddedCpaRunningVersion()
+		svc.CurrentVersion = svc.RunningVersion
 	}
 	svc.ProviderPinningSupported = h.cache.GetSetting("cpa_provider_pinning_supported") == "1"
+}
+
+func (h *Handler) readEmbeddedCpaRunningVersion() string {
+	out, err := exec.Command("/CLIProxyAPI/CLIProxyAPI", "version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return ""
+	}
+	if idx := strings.Index(line, "Version:"); idx >= 0 {
+		line = line[idx+len("Version:"):]
+		if cut := strings.Index(line, ","); cut >= 0 {
+			return strings.TrimSpace(line[:cut])
+		}
+	}
+	return ""
 }
 
 func (h *Handler) upsertCpaService(w http.ResponseWriter, r *http.Request) {

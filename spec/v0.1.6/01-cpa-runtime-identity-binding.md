@@ -50,7 +50,7 @@ Lune 转发到 CPA 时只使用 provider 级地址：
 - 该 CPA account 不可接普通流量。
 - 强制路由也必须失败，不能静默使用 provider 级 round-robin。
 - 错误 reason 应明确为 `runtime_auth_binding_unavailable` 或等价值。
-- 管理员诊断可以走独立入口，但必须标记为 `diagnostic=true`，且不得更新普通路由健康。
+- 管理员诊断可以走独立入口，但必须标记为 `diagnostic=true`，且不得更新普通路由健康或普通 usage 统计。诊断入口可以绕过 quota/subscription/serving cooldown 等普通路由保护来强测一次，但不得绕过 auth file 缺失、`needs_login` 或 runtime binding 不存在等无法确认账号身份的硬失败。
 
 如果当前 CPA provider endpoint 不支持公开 pinning 参数，应优先推动或适配 CPA 的 pinned auth 能力。可选方向：
 
@@ -100,13 +100,25 @@ CPA provider 转发路径应记录安全截断后的诊断信息：
 
 ## 测试与验收
 
-- 在同一个 CPA runtime 中导入 3 个 Codex auth file 后，固定选择第一个 Lune CPA account，连续发起 10 次普通模型请求时，Lune 必须全部携带该账号对应的 pinned runtime auth。
+- 在同一个 CPA runtime 中导入 3 个 Codex auth file 后，3 个真实账号都必须分别通过强制路由或自动路由发起普通模型请求，并核对各自 `request_logs.account_id`、`runtime_auth_id`、`runtime_auth_index` 稳定对应；其中至少 1 个账号连续发起 10 次普通模型请求时，Lune 必须全部携带该账号对应的 pinned runtime auth。
 - 强制路由 `X-Lune-Account-Id` 指向某个 CPA account 时，Lune 必须携带该 account 对应的 pinned runtime auth；否则请求 fail closed。
 - 普通 Pool 自动路由选择第 N 个 CPA account 时，`request_logs.account_id` 与 `runtime_auth_id/runtime_auth_index` 能够一一对应。
 - 当 CPA runtime 不支持 credential pinning 或 auth metadata 未就绪时，该账号不可接普通流量，错误 reason 明确。
 - Activity 页面账号请求量基于已确认 runtime credential 归属；无法确认时显示不确定状态。
 - 单元测试覆盖：CPA target 构建必须携带 runtime credential binding；缺失 binding 时 fail closed；日志同时保存 Lune account id 与 runtime auth id。
 - 集成测试覆盖：模拟 CPA round-robin runtime，验证 Lune pinning 后不会被 CPA 默认 round-robin 打散。
+- 真实多账号 Codex 上游消费验证是正式 v0.1.6 发布阻断项；发布前必须用同一 CPA runtime 中的多个真实 Codex auth file 验证 Lune 选择账号与 pinned runtime auth 稳定一致。
+
+容器验收分层：
+
+- `CT-01` 使用真实 Codex CPA 账号，必须由用户亲自导入至少 3 个真实账号后执行，是正式 v0.1.6 发布阻断项。
+- `CT-02` 使用 fake CPA management/provider 模拟 pinning 能力、metadata 缺失和默认 round-robin，不需要真实账号，用于覆盖 fail-closed 和可信 usage 负向路径。
+
+执行要求：
+
+- `CT-01` 和 `CT-02` 都必须使用新 v0.1.6 镜像、临时容器和全新数据目录，不得复用或影响上一版本正在运行的容器，结束后必须删除测试容器。
+- 验收记录必须保留镜像 tag 或 digest、容器启动命令、真实账号导入步骤或 mock 配置、关键 request log/API 摘要、清理命令结果。
+- `CT-01` 的真实账号记录只允许保存用户操作步骤、账号 label/id 摘要和 request log 关联字段，不得记录 token、auth file 内容或完整凭据。
 
 ## 已完成事项
 
@@ -121,8 +133,3 @@ CPA provider 转发路径应记录安全截断后的诊断信息：
 - 内置 CPA 已通过 Lune patch 支持 per-request provider pinning，并在 embedded 模式设置 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED=1`。
 - 已补充单元测试覆盖强制/自动路由 binding、缺失 binding fail closed、状态写入只信任 confirmed binding、runtime identity 日志写入。
 - 已通过 Docker 容器 smoke test 验证新镜像健康接口和 API 空状态可用。
-
-## 待解决事项
-
-- 更理想的长期方案是推动 CLIProxyAPI upstream 正式支持外部 per-request auth pinning，减少 Lune 本地 patch 维护成本。
-- 如未来支持 external CPA advanced mode，需要定义非 embedded CPA 如何声明 pinning 能力，以及能力不足时的用户可见诊断。
