@@ -10,6 +10,7 @@
 - `02-direct-account-diagnostics.md`：直连账号诊断页需要从 CPA 视角收敛为更适合直连场景的诊断结构。
 - `03-0.1.6-cpa-pinning-runtime-audit.md`：0.1.6 真实容器审计中，容器配置与运行时子进程环境的可见性差异，以及由此引出的 pinning 误判。
 - `04-settings-pool-token-editing.md`：Settings 页面里 Pool token 的替换编辑语义、展示原则和验收要求。
+- `05-codex-quota-429-cooldown-state.md`：Codex CPA 账号真实模型请求 `429` 时，额度耗尽/限流证据只沉淀为 serving cooldown，导致 UI 显示“冷却”而不是额度问题。
 - `99-acceptance-matrix.md`：跨问题验收矩阵和最终核对清单。
 
 ## 总体原则
@@ -20,6 +21,7 @@
 4. 任何保存行为都不能隐式改动凭据；空值应有明确语义，要么保留旧值，要么显式清空，不允许模糊覆盖。
 5. 不提供单独的完整 token reveal 动作；详情抽屉只展示脱敏状态和新的替换输入位。
 6. 容器配置和运行时有效环境必须分开判断。`docker inspect`、PID1 shell 环境和 `lune` / embedded CPA 子进程环境不是同一层级，诊断页不能把前者当成后者。
+7. Codex quota 快照和真实模型请求限流必须分层展示。`wham/usage` 显示 `ok` 不代表最近模型请求没有命中过 quota / rate-limit；真实请求 `429` 需要作为独立诊断证据沉淀。
 
 ## 版本边界
 
