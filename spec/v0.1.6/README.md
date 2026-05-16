@@ -1,6 +1,6 @@
 # v0.1.6 规格整理
 
-状态：核心路由、runtime binding、可信记账与内置 CPA 构建闭环已实现并通过本轮验证；部分运维验收和诊断增强仍待后续。
+状态：核心路由、runtime binding、可信记账、内置 CPA 构建、主要运维验收、诊断增强，以及真实多账号 Codex 上游验证均已完成本轮验证。
 
 本目录按“问题闭环”组织 v0.1.6 规格。每份文档围绕一个真实问题展开，统一描述问题、改进策略、UI 表现、日志与诊断、测试与验收、已完成事项和待解决事项，避免后端、UI、测试、运维规则分散在不同文件中后相互遗漏。
 
@@ -37,7 +37,7 @@ v0.1.6 成功后按新容器和新数据目录运行，不承担旧容器中的�
 - 账号状态、路由和 UI 口径补齐：Codex subscription 非 active 阻断；`auth_suspect` 可路由但降权；Pool 统计和前端状态大小写处理与后端一致。
 - 内置 CPA 从外部固定镜像切换为固定 upstream commit、Lune provider pinning patch 和本地构建，版本标识为 `v7.0.2-lune.1`。
 - embedded CPA 子进程退出时不再被静默忽略；entrypoint 会让容器失败，便于 Docker/health 发现问题。
-- 已执行 `go test ./...`、`npm run build`、`sh -n docker/entrypoint.sh`、`git diff --check`、Docker build 和新容器 smoke test；旧版 `lune-0.1.5` 容器未被改动。
+- 已执行 `go test ./...`、`npm --prefix web run build`、`sh -n docker/entrypoint.sh`、`git diff --check`、Docker build、新容器 smoke test 和真实多账号 Codex 上游验证；fake/mock/seed 可构造的容器验收与真实 CT-01 均已记录在 `99-acceptance-matrix.md`；旧版 `lune-0.1.5` 容器未被改动。
 
 ## 单篇文档模板
 

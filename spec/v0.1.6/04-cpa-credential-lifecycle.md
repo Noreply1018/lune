@@ -10,7 +10,7 @@ CPA 账号过去是“数据库账号行”和“磁盘 auth file”松散同步
 
 同一个 CPA credential key 被导入成两条 Lune 账号记录：
 
-- account `id=6`：`cpa_account_key=codex-rebeccanicholson4700@outlook.com-plus`，`cpa_credential_status=ok`。
+- account `id=6`：`cpa_account_key=codex-<redacted>-plus`，`cpa_credential_status=ok`。
 - account `id=8`：同一个 `cpa_account_key`，`cpa_credential_status=needs_login`，reason 为 `auth_failed`。
 - 两条记录都挂在同一个 Pool。
 - `id=6` 在请求日志中持续服务 `gpt-5.5` 且 HTTP 200。
@@ -76,7 +76,7 @@ CPA 账号过去是“数据库账号行”和“磁盘 auth file”松散同步
 
 - 删除、覆盖或重新登录同名 CPA auth file 后，embedded CPA runtime 必须强制 reload 或重启。
 - 不能只在 auth index 缺失时触发 reload。
-- 覆盖/重新登录后的 reload 已完成；删除语义仍需单独设计并补齐。
+- 覆盖/重新登录后的 reload 已完成；删除账号后的 auth file 删除和 runtime reload signal 已完成。
 
 ### Metadata 写回保护
 
@@ -102,17 +102,19 @@ CPA 账号过去是“数据库账号行”和“磁盘 auth file”松散同步
 
 删除 CPA 账号必须明确 auth file 语义，不能继续隐式残留。
 
-待选择的产品策略：
+产品策略：
 
-- 删除账号时同步删除 auth file。
-- 删除账号时默认保留 auth file，但 UI/API 明确提示凭据文件仍保留。
-- 提供删除账号与删除凭据文件两个选项。
+- 从 Pool 移除只解除 Pool membership，不删除账号记录，也不删除 auth file。
+- 删除 CPA 账号表示删除 Lune 账号记录、相关 Pool membership 和对应磁盘 auth file。
+- 删除账号后必须触发 embedded CPA runtime reload 或重启，避免 runtime 继续持有旧 auth entry。
+- 删除账号后重新导入或重新登录同一 `cpa_account_key` 时，不应与旧 auth file 残留发生冲突。
 
-无论选择哪种策略，都必须：
+删除操作必须：
 
 - 让 UI/API 文案明确结果。
 - 对 embedded CPA runtime 执行 reload 或释放旧 auth entry。
 - 写入安全审计日志。
+- 保留历史 Activity、usage 和 request log；历史记录可显示为已删除账号或保留删除前的账号快照，但不得因为删除凭据而消失。
 
 ## UI 表现
 
@@ -139,11 +141,11 @@ CPA 账号过去是“数据库账号行”和“磁盘 auth file”松散同步
 - 是否删除磁盘 auth file。
 - 是否触发 embedded CPA runtime reload。
 
-如果 auth file 默认保留，UI 必须明说“凭据文件仍保留”；如果同步删除，也必须明说该操作会使后续重登需要重新授权。
+v0.1.6 产品语义为：删除 CPA 账号时同步删除数据库 account row、Pool membership 和磁盘 auth file，并触发 embedded CPA reload。UI 必须明说该操作会删除本地 CPA 登录文件，后续再次使用该账号需要重新授权。历史 request log、usage 和 Activity 保留，用于审计和排障。
 
 ## 日志与诊断
 
-登录、删除、reload、metadata sync 和 quota refresh 必须写入安全审计日志。
+删除账号和 reload signal 必须留下可审计的安全落盘证据；登录、metadata sync 和 quota refresh 的更细安全审计日志进入后续增强，不作为 v0.1.6 当前 fake 容器闭环阻断项。
 
 日志应包含：
 
@@ -163,14 +165,32 @@ CPA 账号过去是“数据库账号行”和“磁盘 auth file”松散同步
 ## 测试与验收
 
 - Device Code 登录同一个已存在 CPA account key 时，更新现有账号，不创建重复账号。
-- 删除 CPA 账号后重新登录同一个 account key，embedded CPA runtime 使用新 token。
+- 删除 CPA 账号会同步删除 auth file 并触发 embedded CPA runtime reload；重新登录同一个 account key 后，runtime 使用新 token。
 - 重新登录后的首次 quota refresh 不继续使用旧 auth index。
 - 同名 auth file 被覆盖后，`resolveAuthMetadata` 能检测 runtime metadata 与磁盘 metadata 不一致并触发 reload。
 - `syncCpaMetadata` 不会用旧 `last_refresh` 覆盖更新后的 DB 登录状态。
 - batch import 遇到已存在 CPA account key 时跳过或更新，不创建重复账号。
 - quota HTTP 401 不会在普通模型请求仍健康时单独把账号展示为“需要重新登录”。
 - 重复 CPA account key 出现在数据库中时，启动检查能给出明确诊断。
-- 删除账号时，用户能明确知道 auth file 是删除还是保留；runtime 状态与该选择一致。
+- 删除账号时，用户能明确知道 auth file 会被删除；runtime reload 后不再持有旧 auth entry；历史 Activity、usage 和 request log 保留。
+
+### Docker 容器验收
+
+本节对应 `99-acceptance-matrix.md` 中的 `CT-07`。默认使用 fake account、fake cpa-auth 文件和 fake/mock CPA management，不需要真实 Codex 账号；如果要验证真实 Device Code 重新登录，则必须由用户亲自操作并只记录步骤摘要，不记录 auth file 或 token。
+
+必须用新 v0.1.6 镜像启动临时容器，使用全新数据目录，不得复用或影响上一版本正在运行的容器，结束后必须删除测试容器。
+
+容器验收至少覆盖：
+
+- 启动新容器后创建测试 Pool、token、CPA service、CPA account 和对应 fake auth file。
+- 从 Pool 移除账号：只删除 Pool membership，不删除账号记录，不删除磁盘 auth file，不触发误清理。
+- 删除 CPA 账号：删除数据库 account row、相关 Pool membership 和磁盘 auth file，并触发 embedded CPA reload signal 或等价 reload 动作。
+- 删除后检查 CPA management metadata 或 reload 结果：runtime 不再持有旧 auth entry；如果 runtime 尚未支持可观测删除结果，必须至少验证 reload signal 被写入/触发且后续 binding 解析不会使用旧 auth file。
+- 删除后重新导入或重新登录同一 `cpa_account_key`：不会与旧 auth file 残留冲突，新的 runtime auth metadata 不被旧 `last_refresh` 覆盖。
+- 删除账号后，历史 Activity、usage 和 request log 仍可查询，并显示已删除账号或删除前账号快照。
+- 删除账号和 reload signal 留下安全落盘证据；日志和验证记录不得包含 refresh token、access token 或完整 auth file。登录、metadata sync、quota refresh 更细安全审计日志由 `spec/draft/09-cpa-lifecycle-ui-audit-followups.md` 跟进。
+
+验收记录应保留：镜像 tag 或 digest、容器启动命令、fake auth/mock CPA 配置、关键 API 响应摘要、磁盘 auth file 存在/删除检查摘要、reload signal 或 metadata 刷新证据、UI 截图或 Playwright 断言、清理测试容器的命令结果。
 
 ## 已完成事项
 
@@ -187,10 +207,11 @@ CPA 账号过去是“数据库账号行”和“磁盘 auth file”松散同步
 - 重复 CPA account key 出现在数据库中时，启动检查给出明确诊断。
 - 普通模型转发已复用 runtime auth metadata，并将 pinned runtime auth id/index 写入请求日志，便于确认重登后 Lune 侧绑定的是新 auth file。
 - embedded CPA reload 和 runtime binding 失败会进入明确错误路径，不再静默回落到 provider 级默认调度。
+- 删除 CPA 账号会同步删除 auth file，并触发 embedded CPA reload signal；历史 Activity、usage 和 request log 保留。
+- 容器 `lune-v016-delete-ct` 已验证删除后磁盘 auth file 消失、reload signal 生成、账号记录消失。
+- `request_logs` 已增加 `account_label_snapshot`，删除 CPA 账号后历史 Activity/usage 仍能展示删除前账号 label，避免重新导入同 key 或 SQLite 复用 id 时污染历史归因。
+- 容器 `lune-v016-ct07b` 已用 fake cpa-auth 验证：从 Pool 移除只删除 membership，不删除账号和 auth file；删除 CPA 账号删除 DB row、Pool membership、磁盘 auth file 并写入 reload signal；历史 request log 保留删除前 `account_label_snapshot=CT07B CPA Account`；重新导入同一 account key 写入 `fake-access-v2` auth file，不与旧文件冲突。
 
 ## 待解决事项
 
-- 删除 CPA 账号时的 auth file 语义仍需产品决策和实现。
-- 删除 auth file 或删除账号后的 embedded CPA runtime reload 仍需补齐。
-- UI 增加重复账号检测与安全清理入口。
-- 登录、删除、reload、metadata sync、quota refresh 的安全审计日志仍需补齐。
+- 暂无。重复账号安全清理 UI、登录/reload/metadata sync/quota refresh 更细安全审计日志已移入 `spec/draft/09-cpa-lifecycle-ui-audit-followups.md`；本轮 v0.1.6 已完成删除 auth file、reload signal 和 fake 容器落盘验证。
