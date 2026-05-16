@@ -936,7 +936,10 @@ func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 404, "not_found", "token not found")
 		return
 	}
-	var req store.AccessToken
+	var req struct {
+		Name  string  `json:"name"`
+		Token *string `json:"token"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
@@ -946,12 +949,34 @@ func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
 		webutil.WriteAdminError(w, 400, "bad_request", "name is required")
 		return
 	}
+	tokenValue := ""
+	if req.Token != nil {
+		tokenValue = strings.TrimSpace(*req.Token)
+		if tokenValue == "" {
+			webutil.WriteAdminError(w, 400, "bad_request", "token cannot be empty")
+			return
+		}
+	}
 	if err := h.store.UpdateTokenName(id, req.Name); err != nil {
 		h.internalError(w, err)
 		return
 	}
+	if tokenValue != "" {
+		if updated, err := h.store.UpdateTokenValue(id, tokenValue); err != nil {
+			h.internalError(w, err)
+			return
+		} else if updated != nil {
+			existing = updated
+		}
+	}
 	h.cache.Invalidate()
 	existing.Name = req.Name
+	existing.TokenMasked = maskKey(existing.Token)
+	if existing.PoolID != nil {
+		if pool, err := h.store.GetPool(*existing.PoolID); err == nil && pool != nil {
+			existing.PoolLabel = pool.Label
+		}
+	}
 	existing.Token = ""
 	webutil.WriteData(w, 200, existing)
 }

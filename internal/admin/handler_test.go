@@ -396,12 +396,12 @@ func TestUpdateAccountPreservesExistingApiKeyWhenEmpty(t *testing.T) {
 	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
 
 	accountID, err := st.CreateAccount(&store.Account{
-		Label:      "Direct",
-		SourceKind: "openai_compat",
-		BaseURL:    "https://api.example.com/v1",
-		APIKey:     "sk-old",
-		Enabled:    true,
-		Status:     "healthy",
+		Label:        "Direct",
+		SourceKind:   "openai_compat",
+		BaseURL:      "https://api.example.com/v1",
+		APIKey:       "sk-old",
+		Enabled:      true,
+		Status:       "healthy",
 		QuotaDisplay: "n/a",
 	})
 	if err != nil {
@@ -432,6 +432,123 @@ func TestUpdateAccountPreservesExistingApiKeyWhenEmpty(t *testing.T) {
 	}
 	if acc.APIKey != "sk-old" {
 		t.Fatalf("expected api key to be preserved, got %q", acc.APIKey)
+	}
+}
+
+func TestUpdateTokenPreservesExistingValueWhenTokenOmitted(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	tokenID, err := st.CreateToken(&store.AccessToken{
+		Name:    "Pool Token",
+		Token:   "sk-old-token",
+		PoolID:  &poolID,
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/admin/api/tokens/%d", tokenID), strings.NewReader(`{"name":"Pool Token"}`))
+	req.SetPathValue("id", fmt.Sprintf("%d", tokenID))
+	rec := httptest.NewRecorder()
+	handler.updateToken(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	token, err := st.GetToken(tokenID)
+	if err != nil {
+		t.Fatalf("get token: %v", err)
+	}
+	if token.Token != "sk-old-token" {
+		t.Fatalf("expected token to remain unchanged, got %q", token.Token)
+	}
+	if token.Name != "Pool Token" {
+		t.Fatalf("expected name to remain unchanged, got %q", token.Name)
+	}
+}
+
+func TestUpdateTokenRejectsExplicitEmptyToken(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	tokenID, err := st.CreateToken(&store.AccessToken{
+		Name:    "Pool Token",
+		Token:   "sk-old-token",
+		PoolID:  &poolID,
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/admin/api/tokens/%d", tokenID), strings.NewReader(`{"name":"Pool Token","token":""}`))
+	req.SetPathValue("id", fmt.Sprintf("%d", tokenID))
+	rec := httptest.NewRecorder()
+	handler.updateToken(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	token, err := st.GetToken(tokenID)
+	if err != nil {
+		t.Fatalf("get token: %v", err)
+	}
+	if token.Token != "sk-old-token" {
+		t.Fatalf("expected token to remain unchanged, got %q", token.Token)
+	}
+}
+
+func TestUpdateTokenReplacesExistingValueWhenNewTokenPresent(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	tokenID, err := st.CreateToken(&store.AccessToken{
+		Name:    "Pool Token",
+		Token:   "sk-old-token",
+		PoolID:  &poolID,
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/admin/api/tokens/%d", tokenID), strings.NewReader(`{"name":"Pool Token","token":"sk-new-token"}`))
+	req.SetPathValue("id", fmt.Sprintf("%d", tokenID))
+	rec := httptest.NewRecorder()
+	handler.updateToken(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data store.AccessToken `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.Token != "" {
+		t.Fatalf("expected token secret to be stripped from response")
+	}
+	if resp.Data.TokenMasked == "" {
+		t.Fatalf("expected masked token in response")
+	}
+	token, err := st.GetToken(tokenID)
+	if err != nil {
+		t.Fatalf("get token: %v", err)
+	}
+	if token.Token != "sk-new-token" {
+		t.Fatalf("expected token to be replaced, got %q", token.Token)
 	}
 }
 

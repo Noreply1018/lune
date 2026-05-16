@@ -808,8 +808,6 @@ function DiagnosticPanel({
   discoveryHealth: string;
   isCodexCpa: boolean;
 }) {
-  const cpaCredentialStatus =
-    account.source_kind === "cpa" ? account.cpa_credential_status ?? "unknown" : null;
   const dimensions = buildDiagnosticDimensions(account, discoveryHealth, isCodexCpa);
 
   return (
@@ -836,15 +834,20 @@ function DiagnosticPanel({
         </summary>
         <div className="mt-4 space-y-3">
           <DebugRow label="Account ID" value={String(accountId)} copyable />
+          <DebugRow label="Source Kind" value={account.source_kind} />
           <DebugRow label="Runtime Base URL" value={baseUrl} copyable breakAll />
+          {account.source_kind === "openai_compat" ? (
+            <DebugRow
+              label="API Key"
+              value={account.api_key_set ? account.api_key_masked : "Missing"}
+            />
+          ) : null}
           <DebugRow label="Discovery Health" value={discoveryHealth} />
-          <DebugRow label="Route Badge" value={routeSummary.status} />
+          <DebugRow label="Route Badge" value={routeSummary.label} />
           <DebugRow label="Serving Status" value={account.serving_status || "healthy"} />
           <DebugRow label="Failure Count" value={String(account.failure_count ?? 0)} />
           <DebugRow label="Cooldown Until" value={account.cooldown_until || "--"} />
           <DebugRow label="Last Checked" value={relativeTime(account.last_checked_at ?? null) || "--"} />
-          <DebugRow label="Last Success" value={relativeTime(account.last_success_at ?? null) || "--"} />
-          <DebugRow label="Last Failure" value={relativeTime(account.last_failure_at ?? null) || "--"} />
           <DebugRow
             label="Last Error"
             value={account.last_error || "--"}
@@ -855,7 +858,7 @@ function DiagnosticPanel({
             <>
               <DebugRow label="CPA Account Key" value={account.cpa_account_key || "--"} copyable breakAll />
               <DebugRow label="Provider" value={account.cpa_provider || "--"} />
-              <DebugRow label="Raw Credential Status" value={cpaCredentialStatus || "--"} />
+              <DebugRow label="Raw Credential Status" value={account.cpa_credential_status || "--"} />
               <DebugRow label="Raw Credential Reason" value={account.cpa_credential_reason || "--"} />
               <DebugRow label="Raw Quota Status" value={account.cpa_quota_status || "unknown"} />
               <DebugRow label="Raw Subscription Status" value={account.cpa_subscription_status || "unknown"} />
@@ -916,6 +919,15 @@ function buildDiagnosticDimensions(
   discoveryHealth: string,
   isCodexCpa: boolean,
 ): DiagnosticDimension[] {
+  if (account.source_kind !== "cpa") {
+    return [
+      connectionDimension(account),
+      credentialDimension(account),
+      routeDimension(account, discoveryHealth),
+      servingDimension(account, discoveryHealth),
+      modelsDimension(account),
+    ];
+  }
   return [
     runtimeBindingDimension(account),
     credentialDimension(account),
@@ -923,6 +935,19 @@ function buildDiagnosticDimensions(
     quotaDimension(account),
     servingDimension(account, discoveryHealth),
   ];
+}
+
+function connectionDimension(account: Account): DiagnosticDimension {
+  return {
+    title: "Connection",
+    status: account.base_url || "--",
+    checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
+    reason: account.base_url
+      ? "当前请求会直接发送到这个地址。"
+      : "未配置 API Base URL。",
+    action: account.base_url ? "保持当前连接配置" : "补充 API Base URL",
+    tone: account.base_url ? "default" : "warning",
+  };
 }
 
 function runtimeBindingDimension(account: Account): DiagnosticDimension {
@@ -957,7 +982,7 @@ function runtimeBindingDimension(account: Account): DiagnosticDimension {
 function credentialDimension(account: Account): DiagnosticDimension {
   if (account.source_kind !== "cpa") {
     return {
-      title: "凭据",
+      title: "Credential",
       status: account.api_key_set ? "API key 已配置" : "API key 缺失",
       checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
       reason: account.api_key_set ? "直连凭据由用户提供。" : "没有可用 API key。",
@@ -984,6 +1009,18 @@ function credentialDimension(account: Account): DiagnosticDimension {
               ? "运行直测确认"
               : "保持监控",
     tone: healthy ? (status === "auth_suspect" ? "warning" : "default") : "danger",
+  };
+}
+
+function routeDimension(account: Account, discoveryHealth: string): DiagnosticDimension {
+  const route = getRouteSummary(account, true, discoveryHealth);
+  return {
+    title: "Route",
+    status: route.label,
+    checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
+    reason: route.reason,
+    action: route.actions[0] || "保持监控",
+    tone: route.status === "error" ? "danger" : route.status === "degraded" ? "warning" : "default",
   };
 }
 
@@ -1027,12 +1064,23 @@ function quotaDimension(account: Account): DiagnosticDimension {
 function servingDimension(account: Account, discoveryHealth: string): DiagnosticDimension {
   const status = account.serving_status || "healthy";
   return {
-    title: "服务能力",
+    title: "Serving",
     status: servingStatusLabel(status),
     checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
     reason: account.last_error || `模型发现状态：${discoveryHealth}`,
     action: status === "healthy" ? "保持监控" : status === "cooldown" ? "等待冷却结束或运行自检" : "运行自检并查看最近错误",
     tone: status === "error" ? "danger" : status === "cooldown" ? "warning" : "default",
+  };
+}
+
+function modelsDimension(account: Account): DiagnosticDimension {
+  const count = account.models?.length ?? 0;
+  return {
+    title: "Models",
+    status: count > 0 ? `${count} 个模型` : "暂无模型",
+    checkedAt: relativeTime(account.last_checked_at ?? null) || "--",
+    reason: count > 0 ? account.models.join(", ") : "尚未发现可路由模型。",
+    action: count > 0 ? "保持监控" : "刷新模型",
   };
 }
 

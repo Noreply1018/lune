@@ -11,6 +11,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  KeyRound,
   MoreHorizontal,
   PencilLine,
   RefreshCw,
@@ -107,8 +108,6 @@ export default function SettingsPage() {
     null,
   );
   const settingsRef = useRef(settings);
-  const [editingToken, setEditingToken] = useState<AccessToken | null>(null);
-  const [editingName, setEditingName] = useState("");
   const [regenerateToken, setRegenerateToken] = useState<AccessToken | null>(
     null,
   );
@@ -118,6 +117,12 @@ export default function SettingsPage() {
   const [visibleTokenIds, setVisibleTokenIds] = useState<number[]>([]);
   const [highlightedTokenId, setHighlightedTokenId] = useState<number | null>(null);
   const [testingService, setTestingService] = useState(false);
+  const [editingTokenName, setEditingTokenName] = useState<AccessToken | null>(null);
+  const [editingNameValue, setEditingNameValue] = useState("");
+  const [savingTokenName, setSavingTokenName] = useState(false);
+  const [editingTokenValueToken, setEditingTokenValueToken] = useState<AccessToken | null>(null);
+  const [editingTokenDraft, setEditingTokenDraft] = useState("");
+  const [savingTokenValue, setSavingTokenValue] = useState(false);
 
   async function loadRetentionSummary() {
     const summary = await api.get<DataRetentionSummary>(
@@ -353,38 +358,104 @@ export default function SettingsPage() {
   }
 
   async function submitRename() {
-    if (!editingToken) {
+    if (!editingTokenName || savingTokenName) {
       return;
     }
-    const name = editingName.trim();
+    const name = editingNameValue.trim();
     if (!name) {
       toast("名称不能为空", "error");
       return;
     }
 
-    const previousName = editingToken.name;
+    const previousName = editingTokenName.name;
+    setSavingTokenName(true);
     setTokens((current) =>
       current.map((token) =>
-        token.id === editingToken.id ? { ...token, name } : token,
+        token.id === editingTokenName.id ? { ...token, name } : token,
       ),
     );
 
     try {
-      await api.put(`/tokens/${editingToken.id}`, {
+      await api.put(`/tokens/${editingTokenName.id}`, {
         name,
       });
       toast("名称已更新");
-      setEditingToken(null);
-      setEditingName("");
+      setEditingTokenName(null);
+      setEditingNameValue("");
     } catch (err) {
       setTokens((current) =>
         current.map((token) =>
-          token.id === editingToken.id
+          token.id === editingTokenName.id
             ? { ...token, name: previousName }
             : token,
         ),
       );
       toast(err instanceof Error ? err.message : "更新名称失败", "error");
+    } finally {
+      setSavingTokenName(false);
+    }
+  }
+
+  async function submitTokenReplace() {
+    if (!editingTokenValueToken || savingTokenValue) {
+      return;
+    }
+    const tokenValue = editingTokenDraft.trim();
+    if (!tokenValue) {
+      toast("已保留现有 token");
+      setEditingTokenValueToken(null);
+      setEditingTokenDraft("");
+      return;
+    }
+
+    const previousToken = editingTokenValueToken;
+    setSavingTokenValue(true);
+    setTokens((current) =>
+      current.map((token) =>
+        token.id === editingTokenValueToken.id
+          ? {
+              ...token,
+              token_masked: maskToken(tokenValue),
+              updated_at: new Date().toISOString(),
+            }
+          : token,
+      ),
+    );
+
+    try {
+      const updated = await api.put<AccessToken>(`/tokens/${editingTokenValueToken.id}`, {
+        name: editingTokenValueToken.name,
+        token: tokenValue,
+      });
+      setTokens((current) =>
+        current.map((token) =>
+          token.id === updated.id
+            ? {
+                ...token,
+                name: updated.name,
+                token_masked: updated.token_masked || maskToken(tokenValue),
+                updated_at: updated.updated_at || token.updated_at,
+              }
+            : token,
+        ),
+      );
+      setRevealedTokens((current) => {
+        const next = { ...current };
+        delete next[updated.id];
+        return next;
+      });
+      toast("Token 已替换");
+      setEditingTokenValueToken(null);
+      setEditingTokenDraft("");
+    } catch (err) {
+      setTokens((current) =>
+        current.map((token) =>
+          token.id === previousToken.id ? previousToken : token,
+        ),
+      );
+      toast(err instanceof Error ? err.message : "替换 Token 失败", "error");
+    } finally {
+      setSavingTokenValue(false);
     }
   }
 
@@ -710,8 +781,12 @@ export default function SettingsPage() {
             onCopy={copyToken}
             onReveal={toggleReveal}
             onEdit={(token) => {
-              setEditingToken(token);
-              setEditingName(token.name);
+              setEditingTokenName(token);
+              setEditingNameValue(token.name);
+            }}
+            onEditToken={(token) => {
+              setEditingTokenValueToken(token);
+              setEditingTokenDraft("");
             }}
             onRegenerate={setRegenerateToken}
           />
@@ -742,25 +817,90 @@ export default function SettingsPage() {
       <NotificationHistorySection />
 
       <Dialog
-        open={Boolean(editingToken)}
-        onOpenChange={(open) => !open && setEditingToken(null)}
+        open={Boolean(editingTokenName)}
+        onOpenChange={(open) => {
+          if (open) return;
+          if (savingTokenName) return;
+          setEditingTokenName(null);
+          setEditingNameValue("");
+        }}
       >
         <DialogContent className="max-w-md rounded-[1.6rem] border border-white/75 bg-white/95 p-0">
           <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
-            <DialogTitle>Edit Token Name</DialogTitle>
-            <DialogDescription>只更新名称。</DialogDescription>
+            <DialogTitle>Edit Token</DialogTitle>
+            <DialogDescription>修改名称，不会影响当前 token 值。</DialogDescription>
           </DialogHeader>
-          <div className="px-6 py-6">
+          <div className="space-y-4 px-6 py-6">
             <Input
-              value={editingName}
-              onChange={(event) => setEditingName(event.target.value)}
+              value={editingNameValue}
+              onChange={(event) => setEditingNameValue(event.target.value)}
+              placeholder="Token name"
+              disabled={savingTokenName}
             />
           </div>
           <DialogFooter className="border-t border-moon-200/55 bg-white/76 px-6 py-4">
-            <Button variant="outline" onClick={() => setEditingToken(null)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEditingTokenName(null);
+                setEditingNameValue("");
+              }}
+              disabled={savingTokenName}
+            >
               取消
             </Button>
-            <Button onClick={() => void submitRename()}>保存</Button>
+            <Button onClick={() => void submitRename()} disabled={savingTokenName}>
+              {savingTokenName ? <RefreshCw className="size-4 animate-spin" /> : null}
+              {savingTokenName ? "保存中" : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(editingTokenValueToken)}
+        onOpenChange={(open) => {
+          if (open) return;
+          if (savingTokenValue) return;
+          setEditingTokenValueToken(null);
+          setEditingTokenDraft("");
+        }}
+      >
+        <DialogContent className="max-w-md rounded-[1.6rem] border border-white/75 bg-white/95 p-0">
+          <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
+            <DialogTitle>Edit token</DialogTitle>
+            <DialogDescription>默认不回填完整 token；留空会保留旧值。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 px-6 py-6">
+            <div className="space-y-1">
+              <p className="text-[11px] uppercase tracking-[0.16em] text-moon-400">Token name</p>
+              <p className="text-sm text-moon-700">{editingTokenValueToken?.name ?? "--"}</p>
+            </div>
+            <Input
+              value={editingTokenDraft}
+              onChange={(event) => setEditingTokenDraft(event.target.value)}
+              type="password"
+              placeholder="Paste a new token to replace the current one"
+              autoComplete="off"
+              disabled={savingTokenValue}
+            />
+            <p className="text-xs text-moon-400">不输入新值就会沿用当前 token。</p>
+          </div>
+          <DialogFooter className="border-t border-moon-200/55 bg-white/76 px-6 py-4">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEditingTokenValueToken(null);
+                setEditingTokenDraft("");
+              }}
+              disabled={savingTokenValue}
+            >
+              取消
+            </Button>
+            <Button onClick={() => void submitTokenReplace()} disabled={savingTokenValue}>
+              {savingTokenValue ? <RefreshCw className="size-4 animate-spin" /> : null}
+              {savingTokenValue ? "保存中" : "保存"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -866,6 +1006,7 @@ function PoolCredentialsTable({
   onCopy,
   onReveal,
   onEdit,
+  onEditToken,
   onRegenerate,
 }: {
   credentials: { pool: Pool; token: AccessToken | null }[];
@@ -875,6 +1016,7 @@ function PoolCredentialsTable({
   onCopy: (token: AccessToken) => void;
   onReveal: (token: AccessToken) => void;
   onEdit: (token: AccessToken) => void;
+  onEditToken: (token: AccessToken) => void;
   onRegenerate: (token: AccessToken) => void;
 }) {
   return (
@@ -918,6 +1060,7 @@ function PoolCredentialsTable({
               onCopy={token ? () => onCopy(token) : undefined}
               onReveal={token ? () => onReveal(token) : undefined}
               onEdit={token ? () => onEdit(token) : undefined}
+              onEditToken={token ? () => onEditToken(token) : undefined}
               onRegenerate={token ? () => onRegenerate(token) : undefined}
             />
           ))}
@@ -936,6 +1079,7 @@ function PoolCredentialRow({
   onCopy,
   onReveal,
   onEdit,
+  onEditToken,
   onRegenerate,
 }: {
   pool: Pool;
@@ -946,6 +1090,7 @@ function PoolCredentialRow({
   onCopy?: () => void;
   onReveal?: () => void;
   onEdit?: () => void;
+  onEditToken?: () => void;
   onRegenerate?: () => void;
 }) {
   const displayToken = token
@@ -1021,6 +1166,10 @@ function PoolCredentialRow({
             <DropdownMenuItem onClick={onEdit} disabled={!token}>
               <PencilLine className="size-4" />
               Edit name
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onEditToken} disabled={!token}>
+              <KeyRound className="size-4" />
+              Edit token
             </DropdownMenuItem>
             <DropdownMenuItem onClick={onRegenerate} disabled={!token}>
               <WandSparkles className="size-4" />

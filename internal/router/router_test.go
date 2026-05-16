@@ -250,9 +250,13 @@ func TestRoutingCpaRuntimeBindingDoesNotMaskSpecificBlockingState(t *testing.T) 
 	if err := st.UpdateAccountCodexQuotaStatus(blockedID, "blocked", "limit reached", time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
 	}
+	model429ID := createRouterCpaAccount(t, st, poolID, serviceID, "model-429", "ok")
+	if err := st.UpdateAccountCodexQuotaStatus(model429ID, "error", "HTTP 429 from model request", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+	}
 
 	rt := New(store.NewRoutingCache(st))
-	for _, accountID := range []int64{needsLoginID, expiredID, blockedID} {
+	for _, accountID := range []int64{needsLoginID, expiredID, blockedID, model429ID} {
 		if _, err := rt.Resolve("gpt-test", &poolID, &accountID); !errors.Is(err, ErrNoHealthyAccount) {
 			t.Fatalf("expected specific CPA blocker to remain no_healthy_account for forced account %d, got %v", accountID, err)
 		}

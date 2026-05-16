@@ -97,6 +97,27 @@ func (s *Store) UpdateTokenName(id int64, name string) error {
 	return err
 }
 
+func (s *Store) UpdateTokenValue(id int64, value string) (*AccessToken, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, fmt.Errorf("token is required")
+	}
+	res, err := s.db.Exec(
+		`UPDATE access_tokens SET token=?, updated_at=datetime('now') WHERE id=?`,
+		value, id,
+	)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	return s.GetToken(id)
+}
+
 func (s *Store) RegenerateToken(id int64) (*AccessToken, error) {
 	value, err := generateToken()
 	if err != nil {

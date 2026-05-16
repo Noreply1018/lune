@@ -15,6 +15,7 @@ const accountRoutableBaseWhereSQL = `a.enabled = 1
 				COALESCE((SELECT value FROM system_config WHERE key='cpa_provider_pinning_supported'), '0') = '1'
 				AND lower(a.cpa_credential_status) NOT IN ('needs_login', 'refresh_failed', 'runtime_pending', 'runtime_error', 'unknown', '')
 				AND lower(a.cpa_quota_status) <> 'blocked'
+				AND NOT (lower(a.cpa_provider) = 'codex' AND lower(a.cpa_quota_status) = 'error' AND a.cpa_quota_last_error LIKE 'HTTP 429 from model request%')
 				AND (lower(a.cpa_provider) <> 'codex' OR lower(a.cpa_subscription_status) = 'active')
 			)
 		)`

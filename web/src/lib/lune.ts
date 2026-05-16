@@ -199,6 +199,13 @@ function isCpaOtherwiseRoutable(account: Account): boolean {
     return false;
   }
   if (account.cpa_quota_status === "blocked") return false;
+  if (
+    provider === "codex" &&
+    account.cpa_quota_status === "error" &&
+    account.cpa_quota_last_error?.startsWith("HTTP 429 from model request")
+  ) {
+    return false;
+  }
   if (provider === "codex" && account.cpa_subscription_status !== "active") return false;
   return true;
 }

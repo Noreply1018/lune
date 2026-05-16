@@ -229,6 +229,47 @@ func TestPoolRoutableCountMatchesCpaRouteState(t *testing.T) {
 	}
 }
 
+func TestPoolRoutableCountBlocksCodexModelRequest429Evidence(t *testing.T) {
+	st := newTestStore(t)
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&CpaService{Label: "CPA", BaseURL: "https://cpa.example.com", Enabled: true})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:                 "Model limited",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         "codex-limited@example.com-plus",
+		CpaCredentialStatus:   "ok",
+		CpaQuotaStatus:        "error",
+		CpaQuotaLastError:     "HTTP 429 from model request",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("add pool member: %v", err)
+	}
+	if err := st.SetSetting("cpa_provider_pinning_supported", "1"); err != nil {
+		t.Fatalf("enable provider pinning setting: %v", err)
+	}
+
+	pool, err := st.GetPool(poolID)
+	if err != nil || pool == nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if pool.RoutableAccountCount != 0 {
+		t.Fatalf("expected Codex model-request 429 evidence to block routing, got %d", pool.RoutableAccountCount)
+	}
+}
+
 func TestPoolRoutableCountAllowsNonCodexCpaWithoutSubscriptionStatus(t *testing.T) {
 	st, err := New(filepath.Join(t.TempDir(), "pool-non-codex.db"))
 	if err != nil {

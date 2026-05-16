@@ -227,8 +227,39 @@ func (s *Store) UpdateAccountCpaCredentialStatus(id int64, status, reason, lastE
 
 func (s *Store) UpdateAccountCodexQuota(id int64, quotaJSON, fetchedAt string) error {
 	_, err := s.db.Exec(
-		`UPDATE accounts SET codex_quota_json=?, codex_quota_fetched_at=?, cpa_quota_status='ok', cpa_quota_last_error='', cpa_quota_checked_at=? WHERE id=?`,
+		`UPDATE accounts
+		 SET codex_quota_json=?,
+		     codex_quota_fetched_at=?,
+		     cpa_quota_status=CASE
+		       WHEN cpa_quota_last_error LIKE 'HTTP 429 from model request%' THEN cpa_quota_status
+		       ELSE 'ok'
+		     END,
+		     cpa_quota_last_error=CASE
+		       WHEN cpa_quota_last_error LIKE 'HTTP 429 from model request%' THEN cpa_quota_last_error
+		       ELSE ''
+		     END,
+		     cpa_quota_checked_at=?,
+		     updated_at=datetime('now')
+		 WHERE id=?`,
 		quotaJSON, fetchedAt, fetchedAt, id,
+	)
+	return err
+}
+
+func (s *Store) ClearAccountCodexModelRequestQuotaEvidence(id int64) error {
+	_, err := s.db.Exec(
+		`UPDATE accounts
+		 SET cpa_quota_status=CASE
+		       WHEN cpa_quota_status IN ('error', 'blocked') AND cpa_quota_last_error LIKE 'HTTP 429 from model request%' THEN 'ok'
+		       ELSE cpa_quota_status
+		     END,
+		     cpa_quota_last_error=CASE
+		       WHEN cpa_quota_last_error LIKE 'HTTP 429 from model request%' THEN ''
+		       ELSE cpa_quota_last_error
+		     END,
+		     updated_at=datetime('now')
+		 WHERE id=?`,
+		id,
 	)
 	return err
 }

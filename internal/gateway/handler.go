@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"lune/internal/auth"
@@ -29,6 +30,7 @@ type Handler struct {
 	store         *store.Store
 	tmpDir        string
 	runtimeBinder runtimeBinder
+	logWG         sync.WaitGroup
 }
 
 type runtimeBinder interface {
@@ -79,6 +81,10 @@ func NewHandler(rt *router.Router, cache *store.RoutingCache, st *store.Store, t
 		binder = binders[0]
 	}
 	return &Handler{router: rt, cache: cache, store: st, tmpDir: tmpDir, runtimeBinder: binder}
+}
+
+func (h *Handler) waitForLogWrites() {
+	h.logWG.Wait()
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -138,9 +144,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			forceAccountID = &id
 		}
 	}
+	diagnosticRoute := diagnostic || forceAccountID != nil
 
 	// initial route resolution
-	resolved, err := h.router.ResolveWithOptions(model, tokenPoolID, forceAccountID, router.ResolveOptions{Diagnostic: diagnostic})
+	resolved, err := h.router.ResolveWithOptions(model, tokenPoolID, forceAccountID, router.ResolveOptions{Diagnostic: diagnosticRoute})
 	if err != nil {
 		if errors.Is(err, router.ErrNoRoute) {
 			webutil.WriteGatewayError(w, 404, "no_route", fmt.Sprintf("no route for model: %s", model))
@@ -334,6 +341,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaCredentialStatus, "auth_suspect") {
 					h.updateCpaCredential(resolved.AccountID, "ok", "", "")
 				}
+				if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaProvider, "codex") {
+					_ = h.store.ClearAccountCodexModelRequestQuotaEvidence(resolved.AccountID)
+					h.cache.Invalidate()
+				}
 				// v3: update token last_used_at (no quota tracking)
 				if accessToken != nil {
 					go func() {
@@ -496,7 +507,9 @@ func (h *Handler) logRequestWithBinding(requestID string, token *store.AccessTok
 		RuntimeBindingStatus: binding.Status,
 		RuntimeBindingReason: binding.Reason,
 	}
+	h.logWG.Add(1)
 	go func() {
+		defer h.logWG.Done()
 		if err := h.store.InsertLog(log); err != nil {
 			slog.Error("failed to insert request log", "request_id", log.RequestID, "err", err)
 		}

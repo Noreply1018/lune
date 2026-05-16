@@ -28,6 +28,7 @@ func newHandlerTestStore(t *testing.T) (*store.Store, *store.RoutingCache, *Hand
 	t.Cleanup(func() { _ = st.Close() })
 	cache := store.NewRoutingCache(st)
 	handler := NewHandler(router.NewWithOptions(cache, router.Options{CpaRuntimeBindingSupported: true}), cache, st, filepath.Join(t.TempDir(), "tmp"))
+	t.Cleanup(handler.waitForLogWrites)
 	poolID, err := st.CreatePool("test-pool", 1, true)
 	if err != nil {
 		t.Fatalf("CreatePool: %v", err)
@@ -662,6 +663,96 @@ func TestGatewayCodexCpaBare429RecordsWarningQuotaEvidence(t *testing.T) {
 	}
 	if acc.CpaQuotaStatus != "error" || acc.CpaQuotaLastError != "HTTP 429 from model request" {
 		t.Fatalf("expected warning quota evidence, got %+v", acc)
+	}
+}
+
+func TestGatewayCodexCpaModelRequest429EvidenceClearsAfterModelSuccess(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	if err := st.SetSetting("max_retry_attempts", "1"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "recovered-cpa", "codex", "gpt-5-codex")
+	if err := st.UpdateAccountCodexQuotaStatus(accountID, "error", "HTTP 429 from model request", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+	}
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaQuotaStatus != "ok" || acc.CpaQuotaLastError != "" {
+		t.Fatalf("expected model request quota evidence to clear after success, got %+v", acc)
+	}
+}
+
+func TestGatewayCodexCpaBlockedModelRequest429EvidenceClearsAfterModelSuccess(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	if err := st.SetSetting("max_retry_attempts", "1"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "blocked-recovered-cpa", "codex", "gpt-5-codex")
+	if err := st.UpdateAccountCodexQuotaStatus(accountID, "blocked", "HTTP 429 from model request: rate limit reached", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+	}
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaQuotaStatus != "ok" || acc.CpaQuotaLastError != "" {
+		t.Fatalf("expected blocked model request quota evidence to clear after success, got %+v", acc)
 	}
 }
 

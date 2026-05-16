@@ -591,6 +591,39 @@ func TestCodexQuotaSuccessDoesNotClearCredentialState(t *testing.T) {
 	}
 }
 
+func TestCodexQuotaRefreshPreservesModelRequest429Evidence(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:                 "Codex",
+		SourceKind:            "cpa",
+		CpaProvider:           "codex",
+		CpaCredentialStatus:   "ok",
+		CpaSubscriptionStatus: "active",
+		CpaQuotaStatus:        "error",
+		CpaQuotaLastError:     "HTTP 429 from model request",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+
+	if err := st.UpdateAccountCodexQuota(accountID, `{"rate_limit":{"allowed":true,"limit_reached":false}}`, "2026-05-16T08:00:00Z"); err != nil {
+		t.Fatalf("update quota: %v", err)
+	}
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.CodexQuotaJSON == "" {
+		t.Fatalf("expected quota JSON to be persisted")
+	}
+	if acc.CpaQuotaStatus != "error" || acc.CpaQuotaLastError != "HTTP 429 from model request" {
+		t.Fatalf("expected model request 429 evidence to survive snapshot refresh, got status=%q err=%q", acc.CpaQuotaStatus, acc.CpaQuotaLastError)
+	}
+}
+
 func TestCodexQuotaUnauthorizedPreservesBlockedSnapshotStatus(t *testing.T) {
 	t.Parallel()
 

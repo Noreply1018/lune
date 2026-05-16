@@ -239,6 +239,12 @@ func (rt *Router) accountOtherwiseRoutable(acc *store.Account, opts ResolveOptio
 		if !opts.Diagnostic && strings.EqualFold(acc.CpaQuotaStatus, "blocked") {
 			return false
 		}
+		if !opts.Diagnostic &&
+			strings.EqualFold(acc.CpaProvider, "codex") &&
+			strings.EqualFold(acc.CpaQuotaStatus, "error") &&
+			strings.HasPrefix(acc.CpaQuotaLastError, "HTTP 429 from model request") {
+			return false
+		}
 		if !opts.Diagnostic && strings.EqualFold(acc.CpaProvider, "codex") && !strings.EqualFold(acc.CpaSubscriptionStatus, "active") {
 			return false
 		}
