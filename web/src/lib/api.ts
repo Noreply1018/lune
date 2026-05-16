@@ -36,9 +36,31 @@ async function request<T>(
   return json.data as T;
 }
 
+async function formRequest<T>(method: string, path: string, body: FormData): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    body,
+  });
+
+  if (res.status === 401) {
+    window.dispatchEvent(new CustomEvent("lune:auth-error"));
+  }
+
+  if (!res.ok) {
+    const err = await res
+      .json()
+      .catch(() => ({ error: { message: res.statusText } }));
+    throw new ApiError(res.status, err.error?.message ?? err.error?.code ?? "Unknown error");
+  }
+
+  const json = await res.json().catch(() => ({ data: null }));
+  return json.data as T;
+}
+
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
+  postForm: <T>(path: string, body: FormData) => formRequest<T>("POST", path, body),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   delete: <T>(path: string) => request<T>("DELETE", path),
 };

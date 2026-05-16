@@ -6,9 +6,11 @@ import {
   Clock3,
   Copy,
   ExternalLink,
+  FileJson,
   Loader2,
   ShieldCheck,
   Sparkles,
+  Upload,
   X,
 } from "lucide-react";
 import {
@@ -38,6 +40,7 @@ const NEW_POOL_VALUE = "__new_pool__";
 const CPA_SESSION_STORAGE_KEY = "lune:add-account:cpa-session";
 
 type SourceKind = "cpa" | "openai_compat" | null;
+type CpaEntryMode = "login" | "import";
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -66,6 +69,26 @@ type StoredCpaSession = PendingCpaFlow & {
   sessionId: string;
   provider: string;
   serviceId: number;
+};
+
+type AuthJSONSummary = {
+  provider: string;
+  email: string;
+  account_id: string;
+  plan_type: string;
+  expired_at: string;
+  disabled: boolean;
+};
+
+type AuthJSONImportResponse = {
+  account: Account;
+  account_key: string;
+  summary: AuthJSONSummary;
+  refresh: {
+    models: string;
+    quota: string;
+    subscription: string;
+  };
 };
 
 const EMPTY_DIRECT_FORM: DirectForm = {
@@ -309,6 +332,17 @@ function PoolRow({
   );
 }
 
+function ImportSummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">{label}</p>
+      <p className="truncate text-sm text-moon-700" title={value}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
 export default function AddAccountDrawer() {
   const { addAccountOpen, closeAddAccount, preferredPoolId, refreshData } = useAdminUI();
   const { navigate } = useRouter();
@@ -329,6 +363,10 @@ export default function AddAccountDrawer() {
   const [pendingCpaFlow, setPendingCpaFlow] = useState<PendingCpaFlow | null>(null);
   const [restoredSession, setRestoredSession] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
+  const [cpaEntryMode, setCpaEntryMode] = useState<CpaEntryMode>("login");
+  const [authJSONFile, setAuthJSONFile] = useState<File | null>(null);
+  const [authJSONSummary, setAuthJSONSummary] = useState<AuthJSONSummary | null>(null);
+  const [authJSONError, setAuthJSONError] = useState<string | null>(null);
 
   const currentStepMeta = STEP_META[step];
 
@@ -459,6 +497,10 @@ export default function AddAccountDrawer() {
       setSelectedPoolId("");
       setNewPoolLabel("");
       setPoolLoadFailed(false);
+      setCpaEntryMode("login");
+      setAuthJSONFile(null);
+      setAuthJSONSummary(null);
+      setAuthJSONError(null);
       if (pollRef.current) {
         window.clearTimeout(pollRef.current);
         pollRef.current = null;
@@ -611,6 +653,7 @@ export default function AddAccountDrawer() {
     if (kind === "cpa") {
       setDirectForm(EMPTY_DIRECT_FORM);
       setRestoredSession(false);
+      setCpaEntryMode("login");
     } else {
       setLoginSession(null);
       setPendingCpaFlow(null);
@@ -763,6 +806,91 @@ export default function AddAccountDrawer() {
     }
   }
 
+  async function chooseAuthJSONFile(file: File | null) {
+    setAuthJSONFile(file);
+    setAuthJSONSummary(null);
+    setAuthJSONError(null);
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".json")) {
+      setAuthJSONError("请选择 JSON 文件");
+      return;
+    }
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+        throw new Error("不是可识别的 CPA auth JSON");
+      }
+      if ("sessions" in parsed || file.name === ".login-sessions.json") {
+        throw new Error("请上传单个 auth JSON，不要上传 .login-sessions.json");
+      }
+      const refreshToken = typeof parsed.refresh_token === "string" ? parsed.refresh_token : "";
+      if (!refreshToken) {
+        throw new Error("缺少 refresh_token");
+      }
+      const providerValue =
+        typeof parsed.type === "string"
+          ? parsed.type
+          : typeof parsed.provider === "string"
+            ? parsed.provider
+            : "";
+      if (providerValue && providerValue.toLowerCase() !== "codex") {
+        throw new Error(`暂不支持 provider: ${providerValue}`);
+      }
+      const email = typeof parsed.email === "string" ? parsed.email : "";
+      const accountId = typeof parsed.account_id === "string" ? parsed.account_id : "";
+      if (!email && !accountId) {
+        throw new Error("缺少账号 email / account_id");
+      }
+      setAuthJSONSummary({
+        provider: providerValue || "codex",
+        email,
+        account_id: accountId,
+        plan_type: typeof parsed.plan_type === "string" ? parsed.plan_type : "",
+        expired_at: typeof parsed.expired === "string" ? parsed.expired : "",
+        disabled: Boolean(parsed.disabled),
+      });
+    } catch (err) {
+      setAuthJSONError(err instanceof Error ? err.message : "不是可识别的 CPA auth JSON");
+    }
+  }
+
+  async function submitAuthJSONImport() {
+    if (!cpaService) {
+      toast("内置 CPA 服务未就绪，请稍后重试或检查容器日志。", "error");
+      return;
+    }
+    if (!authJSONFile || authJSONError) {
+      toast(authJSONError || "请先选择 auth JSON", "error");
+      return;
+    }
+    setLoading(true);
+    try {
+      const poolId = await ensurePool();
+      const form = new FormData();
+      form.set("file", authJSONFile);
+      form.set("pool_id", String(poolId));
+      form.set("enabled", "true");
+      const imported = await api.postForm<AuthJSONImportResponse>("/accounts/cpa/import-json", form);
+      await refreshAfterAccountCreate(imported.account?.id);
+      setResult({
+        poolId,
+        poolLabel: getPoolLabel(poolId),
+        label: imported.account?.label || imported.summary?.email || "CPA account",
+        source: `CPA · ${imported.summary?.provider || "codex"} · JSON`,
+      });
+      setStep(4);
+      setAuthJSONFile(null);
+      setAuthJSONSummary(null);
+      setAuthJSONError(null);
+      toast("凭据已导入");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "导入失败", "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function cancelCpaLogin() {
     if (!loginSession) return;
     setLoading(true);
@@ -797,6 +925,10 @@ export default function AddAccountDrawer() {
     setRestoredSession(false);
     setSelectedPoolId("");
     setNewPoolLabel("");
+    setCpaEntryMode("login");
+    setAuthJSONFile(null);
+    setAuthJSONSummary(null);
+    setAuthJSONError(null);
     clearStoredCpaSession();
   }
 
@@ -1043,13 +1175,31 @@ export default function AddAccountDrawer() {
               <section className="space-y-7">
                 <div>
                   <h3 className="text-[1.08rem] font-semibold tracking-[-0.02em] text-moon-800">
-                    在浏览器中完成授权
+                    {cpaEntryMode === "login" ? "在浏览器中完成授权" : "导入 auth JSON"}
                   </h3>
                   <p className="mt-2 text-sm text-moon-500">
-                    打开授权地址并输入授权码，完成后此页会继续自动处理。
+                    {cpaEntryMode === "login"
+                      ? "打开授权地址并输入授权码，完成后此页会继续自动处理。"
+                      : "上传已有 Codex CPA auth JSON，Lune 会写入凭据并加入目标 Pool。"}
                   </p>
                 </div>
 
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <PathCard
+                    active={cpaEntryMode === "login"}
+                    title="Login with Codex"
+                    description="通过 Device Code 新登录"
+                    onClick={() => setCpaEntryMode("login")}
+                  />
+                  <PathCard
+                    active={cpaEntryMode === "import"}
+                    title="Import auth JSON"
+                    description="迁移已有 CPA 凭据文件"
+                    onClick={() => setCpaEntryMode("import")}
+                  />
+                </div>
+
+                {cpaEntryMode === "login" ? (
                 <div className="relative overflow-hidden rounded-[1.65rem] border border-white/75 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(243,240,249,0.64))] px-6 py-6 shadow-[0_26px_58px_-46px_rgba(33,40,63,0.26)]">
                   <div className="absolute inset-x-6 top-0 h-px moon-divider" />
                   {!loginSession ? (
@@ -1153,6 +1303,52 @@ export default function AddAccountDrawer() {
                     </div>
                   )}
                 </div>
+                ) : (
+                  <div className="space-y-5 rounded-[1.45rem] border border-white/75 bg-white/70 px-5 py-5 shadow-[0_24px_58px_-48px_rgba(33,40,63,0.28)]">
+                    <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-[1.25rem] border border-dashed border-moon-200/75 bg-white/70 px-5 py-7 text-center transition-colors hover:border-lunar-300/70">
+                      <span className="inline-flex size-11 items-center justify-center rounded-full bg-lunar-100/80 text-lunar-700">
+                        <Upload className="size-5" />
+                      </span>
+                      <span className="space-y-1">
+                        <span className="block text-sm font-medium text-moon-800">
+                          {authJSONFile ? authJSONFile.name : "选择 Codex auth JSON"}
+                        </span>
+                        <span className="block text-sm text-moon-500">
+                          只支持单个 JSON 文件，不支持 .login-sessions.json。
+                        </span>
+                      </span>
+                      <input
+                        type="file"
+                        accept="application/json,.json"
+                        className="sr-only"
+                        onChange={(event) => void chooseAuthJSONFile(event.target.files?.[0] ?? null)}
+                      />
+                    </label>
+
+                    {authJSONError ? (
+                      <div className="rounded-[1rem] border border-status-red/20 bg-red-50/75 px-4 py-3 text-sm text-status-red">
+                        {authJSONError}
+                      </div>
+                    ) : null}
+
+                    {authJSONSummary ? (
+                      <div className="space-y-3 rounded-[1.2rem] bg-white/72 px-4 py-4">
+                        <div className="flex items-center gap-2 text-sm font-medium text-moon-800">
+                          <FileJson className="size-4 text-lunar-700" />
+                          安全摘要
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <ImportSummaryRow label="Provider" value={authJSONSummary.provider || "codex"} />
+                          <ImportSummaryRow label="Email" value={authJSONSummary.email || "--"} />
+                          <ImportSummaryRow label="Account ID" value={authJSONSummary.account_id || "--"} />
+                          <ImportSummaryRow label="Plan" value={authJSONSummary.plan_type || "--"} />
+                          <ImportSummaryRow label="Expired At" value={authJSONSummary.expired_at || "--"} />
+                          <ImportSummaryRow label="Disabled" value={authJSONSummary.disabled ? "Yes" : "No"} />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </section>
             ) : null}
 
@@ -1235,24 +1431,34 @@ export default function AddAccountDrawer() {
                 </Button>
               ) : null}
 
-              {step === 3 && sourceKind === "cpa" && !loginSession ? (
+              {step === 3 && sourceKind === "cpa" && cpaEntryMode === "login" && !loginSession ? (
                 <Button onClick={startCpaLogin} disabled={loading || !cpaService}>
                   {loading ? <Loader2 className="size-4 animate-spin" /> : null}
                   开始授权
                 </Button>
               ) : null}
 
-              {step === 3 && sourceKind === "cpa" && loginSession && (loginSession.status === "failed" || loginSession.status === "expired") ? (
+              {step === 3 && sourceKind === "cpa" && cpaEntryMode === "login" && loginSession && (loginSession.status === "failed" || loginSession.status === "expired") ? (
                 <Button onClick={startCpaLogin} disabled={loading || !cpaService}>
                   {loading ? <Loader2 className="size-4 animate-spin" /> : null}
                   重新开始
                 </Button>
               ) : null}
 
-              {step === 3 && sourceKind === "cpa" && loginSession?.status === "cancelled" ? (
+              {step === 3 && sourceKind === "cpa" && cpaEntryMode === "login" && loginSession?.status === "cancelled" ? (
                 <Button onClick={startCpaLogin} disabled={loading || !cpaService}>
                   {loading ? <Loader2 className="size-4 animate-spin" /> : null}
                   重新开始
+                </Button>
+              ) : null}
+
+              {step === 3 && sourceKind === "cpa" && cpaEntryMode === "import" ? (
+                <Button
+                  onClick={submitAuthJSONImport}
+                  disabled={loading || !cpaService || !authJSONFile || Boolean(authJSONError)}
+                >
+                  {loading ? <Loader2 className="size-4 animate-spin" /> : <FileJson className="size-4" />}
+                  Import credential
                 </Button>
               ) : null}
 

@@ -1,6 +1,6 @@
 # 02. 直连账号诊断页收敛
 
-状态：draft。本轮仅沉淀产品决策和待商讨项，不代表实现或验收已经完成。
+状态：release-blocker verification complete, final audit pending。实现和验收已经纳入 v0.1.7 发布阻塞矩阵；最终 `gpt-5.5` subagent 严格审计通过前仍不能视为正式发布完成。
 
 来源：来自账号详情抽屉的诊断页问题。当前诊断页以 CPA 账号的五维模板为核心，直连账号虽然能勉强套用，但会出现 `Quota`、`Subscription`、`Runtime Binding` 等不适配字段，信息噪音大于帮助。
 

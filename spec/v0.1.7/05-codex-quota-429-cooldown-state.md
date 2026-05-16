@@ -1,6 +1,6 @@
 # 05. Codex 额度耗尽与 Serving 冷却状态归类
 
-状态：draft。0.1.6 真实运行态已完成只读审计；v0.1.7 的 `429` 产品表达按本轮确认口径沉淀。
+状态：release-blocker verification complete, final audit pending。0.1.6 真实运行态只读审计、v0.1.7 实现和 fake CPA 容器矩阵已经完成；最终 `gpt-5.5` subagent 严格审计通过前仍不能视为正式发布完成。
 
 来源：2026-05-16 对正在运行的 `lune-0.1.6` 容器进行只读审计。用户反馈：当前 0.1.6 容器里第二个 Codex CPA 账号在 Playground 直测时表现为额度已经耗尽，但账号卡片和详情页主状态仍显示为“服务冷却中”。
 
@@ -205,7 +205,7 @@ Routing impact: cooldown until 2026-05-16 07:53:51
 | CT-429-05 | `wham/usage` 快照 ok 但模型请求 429 | quota mock 返回 ok，模型 mock 返回 `429` | 刷新额度后再发模型请求 | Quota snapshot 与 real request evidence 分层保存，`wham/usage` 成功快照不覆盖模型请求 429 evidence |
 | CT-429-06 | 冷却过期后状态解释 | 等待或模拟 cooldown 到期 | 刷新 Pool 页面 | 若 quota evidence 仍有效，主状态不应直接退回“可接流量”；若上游恢复，需要清除或降级旧 evidence |
 
-容器测试完成后必须删除测试容器和临时 volume / 数据目录。本轮仅沉淀规格和产品口径，未启动新的 v0.1.7 容器，也不声称已执行完整 fake CPA 429 矩阵。
+容器测试完成后必须删除测试容器和临时 volume / 数据目录。本轮已经使用 `lune:v0.1.7-blocker-test` 与 external fake CPA 完成 `CT-429-01`、`CT-429-02`、`CT-429-05`、`CT-429-06` 的真实容器验收，并在前序隔离容器中覆盖非 Codex `429`；证据见 `100-release-evidence.md`。
 
 ## 审计记录
 
@@ -213,7 +213,8 @@ Routing impact: cooldown until 2026-05-16 07:53:51
 - 已确认目标账号 API 返回字段中 `cpa_quota_status='ok'` 且 `serving_status='cooldown'`。
 - 已确认 quota 快照中 `rate_limit.allowed=true`、`rate_limit.limit_reached=false`、`primary_window.used_percent=100`。
 - 已确认容器日志中真实模型请求在 `2026-05-16 07:48:51` 返回 `429`。
-- 已确认 gateway 当前只把 `429` 归入 retryable serving failure，不会同步写入 `cpa_quota_status`。
+- 已确认 v0.1.6 gateway 只把 `429` 归入 retryable serving failure，不会同步写入 `cpa_quota_status`。
+- 已在 v0.1.7 实现中修复：普通 Codex CPA 模型请求 `429` 同时写入 serving cooldown 与 `HTTP 429 from model request` quota/rate-limit evidence；quota snapshot 成功刷新不会覆盖模型请求 evidence。
 
 ## 后续非阻塞项
 

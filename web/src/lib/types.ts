@@ -338,6 +338,7 @@ export interface CpaService {
   latest_version?: string;
   update_available?: boolean;
   provider_pinning_supported: boolean;
+  provider_pinning_state?: "enabled" | "disabled" | "unknown";
 }
 
 export interface CpaServiceTestResult {

@@ -4,6 +4,55 @@
 
 Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本，但在默认体验、部署方式、配置形态还没有完全稳定前，minor 版本可能会调整产品边界。
 
+## [0.1.7] - 2026-05-16
+
+状态：发布阻塞验证已完成，最终审计待通过。代码实现、测试矩阵和隔离容器 smoke 已完成；最终 `gpt-5.5` subagent 严格审计通过、提交和公开镜像发布尚未完成。
+
+### 账号详情与直连诊断
+
+- 账号详情抽屉 tab 统一为 `Overview / Playground / Diagnostics`。
+- 直连账号的 `Connection` 编辑区移到 `Overview`，可在详情抽屉里编辑 API 地址和 token。
+- 直连账号保存时，空 `api_key` 表示保留旧 token，不会误清空已有凭据。
+- 直连账号 `Diagnostics` 改为 `Connection / Credential / Route / Serving / Models` 主结构，不再混入 CPA 专属的 runtime binding、subscription、quota 作为核心诊断维度。
+- 高级诊断信息保留直连排障所需字段，不展示完整 token 或请求内容。
+
+### Pool token 管理
+
+- Settings 页面将 `Edit name` 与 `Edit token` 拆成独立入口、独立弹窗和独立提交状态。
+- Pool token 默认不回填完整明文；替换成功后刷新 masked 值和更新时间，响应不泄露完整 token。
+- 后端 `PUT /admin/api/tokens/{id}` 语义收紧：缺省 `token` 保留旧值，显式 `token:""` 返回 400，非空 `token` 才替换。
+- 显式空 token 请求不会发生 name 部分更新，避免前端校验被绕过时产生半成功状态。
+
+### Codex 429 quota/cooldown 分层
+
+- Codex CPA 普通模型请求返回 `429` 时，同时写入 serving cooldown 与 quota / rate-limit evidence。
+- 明确包含 quota、rate limit、limit reached 等语义的 `429` 会写入 `cpa_quota_status=blocked`；裸 `429` 写入 `error` 和 `HTTP 429 from model request`。
+- 非 Codex 账号 `429` 不写 Codex quota 字段；diagnostic 429 不污染普通 serving/quota 状态。
+- `wham/usage` 成功快照不会覆盖模型请求 429 evidence，避免 quota snapshot 和真实模型请求证据互相抹平。
+
+### 路由与恢复语义
+
+- 普通路由会跳过仍有效的模型请求 429 evidence，避免账号在 quota/rate-limit 证据仍存在时被误判为可接流量。
+- 强制账号直测可绕过普通健康拦截，用于恢复验证。
+- 后续强制账号模型成功会清理 `error` 或 `blocked` 的模型请求 429 evidence。
+
+### 文档与验收
+
+- `spec/v0.1.7` 同步发布阻塞验证状态，并把剩余讨论改为后续非阻塞项。
+- `100-release-evidence.md` 记录最终验证证据，区分 embedded CPA 容器、Codex 429 fake CPA 矩阵和 auth JSON 导入矩阵。
+- 保留 0.1.6 运行态只读审计结论：不能只用 `docker inspect` 或 PID1 环境判断 embedded CPA pinning 是否生效，必须以 Lune 进程加载后的 effective runtime state 为准。
+
+### 验证
+
+- `go test ./...`
+- `npm --prefix web run build`
+- `docker build -t lune:v0.1.7-blocker-test --build-arg LUNE_VERSION=0.1.7-blocker-test .`
+- 使用临时 embedded CPA 容器 `lune-v017-embedded-final`、端口 `127.0.0.1:17791`、隔离数据目录 `/tmp/lune-v017-embedded-final.u2yRnx` 完成 `/healthz`、provider pinning effective state、Pool token 替换语义和 CPA auth JSON 导入矩阵。
+- 使用临时 external fake CPA 容器 `lune-v017-ct429-matrix`、端口 `127.0.0.1:17790`、隔离数据目录 `/tmp/lune-v017-ct429-matrix.gzWAsA` 完成文案型 `too many requests` / quota 文案 `429`、`wham/usage` ok snapshot 分层和 cooldown 过期后 quota evidence 阻断矩阵。
+- 使用临时 external fake CPA 容器 `lune-v017-ct429-bare`、端口 `127.0.0.1:17792`、隔离数据目录 `/tmp/lune-v017-ct429-bare.CVaCdR` 完成空 body 裸 `429` 分类矩阵，验证其写入 `cpa_quota_status=error` 和 `HTTP 429 from model request` evidence。
+- 测试容器和临时数据已删除。
+- 最终 `gpt-5.5` subagent 严格审计待通过；通过前不得提交发布阻塞改动。
+
 ## [0.1.6] - 2026-05-16
 
 状态：已发布。核心路由、runtime binding、可信记账、内置 CPA 构建、主要运维验收和真实多账号 Codex 上游验证均已完成。

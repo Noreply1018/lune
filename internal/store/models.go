@@ -173,6 +173,7 @@ type CpaService struct {
 	LatestVersion            string  `json:"latest_version,omitempty"`
 	UpdateAvailable          bool    `json:"update_available,omitempty"`
 	ProviderPinningSupported bool    `json:"provider_pinning_supported"`
+	ProviderPinningState     string  `json:"provider_pinning_state"`
 }
 
 type UsageStats struct {

@@ -1,6 +1,6 @@
 # 04. Settings 页面编辑 Pool Token
 
-状态：draft。本轮仅沉淀产品决策和待商讨项，不代表实现或验收已经完成。
+状态：release-blocker verification complete, final audit pending。实现和验收已经纳入 v0.1.7 发布阻塞矩阵；最终 `gpt-5.5` subagent 严格审计通过前仍不能视为正式发布完成。
 
 来源：来自 Settings 页面里 Pool token 管理能力不完整的问题。当前 Settings 只能查看、复制、重命名和重新生成 token，不能在同一入口里直接把已有 pool token 替换成用户提供的新值，导致凭据变更仍然要借助更绕的流程。
 

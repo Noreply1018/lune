@@ -235,7 +235,6 @@ func TestGatewayCpaAuthFailureDoesNotOverwriteDiscoveryStatus(t *testing.T) {
 	cache.Invalidate()
 
 	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
-	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
 	rr := httptest.NewRecorder()
 	req.ServeHTTP(rr, req.Request)
 	if rr.Code != http.StatusUnauthorized {
@@ -824,6 +823,48 @@ func TestGatewayDiagnostic429DoesNotRecordQuotaEvidenceOrServingCooldown(t *test
 	}
 	if acc.ServingStatus != "healthy" || acc.CpaQuotaStatus != "unknown" || acc.CpaQuotaLastError != "" {
 		t.Fatalf("diagnostic 429 must not mutate ordinary route health or quota evidence, got %+v", acc)
+	}
+}
+
+func TestGatewayForcedAccount429DoesNotRecordQuotaEvidenceOrServingCooldown(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"quota limit reached"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "forced-limited-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.ServingStatus != "healthy" || acc.CpaQuotaStatus != "unknown" || acc.CpaQuotaLastError != "" {
+		t.Fatalf("forced account 429 must not mutate ordinary route health or quota evidence, got %+v", acc)
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if !log.Diagnostic {
+		t.Fatalf("expected forced account request to be logged as diagnostic, got %+v", log)
 	}
 }
 

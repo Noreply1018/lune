@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,6 +38,67 @@ func newTestNotifier(st *store.Store) *notify.Service {
 		st,
 		notify.NewRegistry(drivers.NewWeChatWorkBotDriver()),
 	)
+}
+
+func fakeJWT(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	encode := func(v any) string {
+		t.Helper()
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal jwt part: %v", err)
+		}
+		return base64.RawURLEncoding.EncodeToString(data)
+	}
+	return encode(map[string]any{"alg": "none", "typ": "JWT"}) + "." + encode(claims) + "."
+}
+
+func multipartAuthJSONBody(t *testing.T, filename string, fields map[string]string, payload string) (*bytes.Buffer, string) {
+	t.Helper()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			t.Fatalf("write multipart field: %v", err)
+		}
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write([]byte(payload)); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	return body, writer.FormDataContentType()
+}
+
+func codexAuthJSON(t *testing.T, email, accountID, refreshToken string) string {
+	t.Helper()
+	token := fakeJWT(t, map[string]any{
+		"email":                             email,
+		"chatgpt_account_id":                accountID,
+		"chatgpt_plan_type":                 "plus",
+		"chatgpt_subscription_active_until": time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339),
+		"https://api.openai.com/profile":    map[string]any{"email": email},
+		"https://api.openai.com/auth":       map[string]any{"chatgpt_account_id": accountID, "chatgpt_plan_type": "plus"},
+	})
+	payload, err := json.Marshal(map[string]any{
+		"type":          "codex",
+		"email":         email,
+		"account_id":    accountID,
+		"refresh_token": refreshToken,
+		"access_token":  token,
+		"id_token":      token,
+		"disabled":      false,
+		"last_refresh":  time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("marshal auth json: %v", err)
+	}
+	return string(payload)
 }
 
 func TestBatchImportCpaAccountsRollsBackWhenPoolMembershipFails(t *testing.T) {
@@ -165,6 +227,299 @@ func TestBatchImportCpaAccountsIsIdempotentForDuplicateKey(t *testing.T) {
 	}
 	if len(members) != 1 {
 		t.Fatalf("expected one pool member after duplicate import, got %d", len(members))
+	}
+}
+
+func TestImportCpaAuthJSONCreatesAccountAndDoesNotLeakTokens(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		APIKey:  "service-key",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Codex", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+	refreshToken := "refresh-secret-123"
+	body, contentType := multipartAuthJSONBody(t, "../../x.json", map[string]string{
+		"pool_id": fmt.Sprint(poolID),
+		"label":   "Uploaded Codex",
+	}, codexAuthJSON(t, "upload@example.com", "acct_upload", refreshToken))
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+
+	handler.importCpaAuthJSON(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), refreshToken) {
+		t.Fatalf("response leaked refresh token: %s", rr.Body.String())
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected one account, got %d", len(accounts))
+	}
+	if accounts[0].Label != "Uploaded Codex" || accounts[0].CpaAccountKey != "codex-upload@example.com-plus" {
+		t.Fatalf("unexpected imported account: %+v", accounts[0])
+	}
+	members, err := st.ListPoolMembers(poolID)
+	if err != nil {
+		t.Fatalf("list pool members: %v", err)
+	}
+	if len(members) != 1 || members[0].AccountID != accounts[0].ID {
+		t.Fatalf("expected imported account in pool, got %+v", members)
+	}
+	if _, err := os.Stat(filepath.Join(authDir, "codex-upload@example.com-plus.json")); err != nil {
+		t.Fatalf("expected generated auth file inside auth dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(authDir, "x.json")); !os.IsNotExist(err) {
+		t.Fatalf("user supplied filename should not be used, stat err=%v", err)
+	}
+}
+
+func TestImportCpaAuthJSONIsIdempotentForSameAccount(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		APIKey:  "service-key",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Codex", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+	for i := 0; i < 2; i++ {
+		body, contentType := multipartAuthJSONBody(t, "auth.json", map[string]string{
+			"pool_id": fmt.Sprint(poolID),
+		}, codexAuthJSON(t, "repeat@example.com", "acct_repeat", fmt.Sprintf("refresh-%d", i)))
+		req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json", body)
+		req.Header.Set("Content-Type", contentType)
+		rr := httptest.NewRecorder()
+		handler.importCpaAuthJSON(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("import %d expected 201, got %d: %s", i, rr.Code, rr.Body.String())
+		}
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected idempotent account update, got %d accounts", len(accounts))
+	}
+	members, err := st.ListPoolMembers(poolID)
+	if err != nil {
+		t.Fatalf("list pool members: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("expected idempotent pool member, got %d", len(members))
+	}
+}
+
+func TestImportCpaAuthJSONRejectsUnsafeInputs(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		APIKey:  "service-key",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Codex", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+	cases := []struct {
+		name     string
+		filename string
+		payload  string
+		want     string
+	}{
+		{name: "login sessions filename", filename: ".login-sessions.json", payload: `{"sessions":[]}`, want: ".login-sessions"},
+		{name: "login sessions shape", filename: "auth.json", payload: `{"sessions":[]}`, want: ".login-sessions"},
+		{name: "missing refresh", filename: "auth.json", payload: `{"type":"codex","email":"x@example.com","access_token":"abc.def"}`, want: "refresh_token"},
+		{name: "unsupported provider", filename: "auth.json", payload: `{"type":"openai","email":"x@example.com","refresh_token":"r","access_token":"abc.def"}`, want: "unsupported provider"},
+		{name: "array json", filename: "auth.json", payload: `[]`, want: "object"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, contentType := multipartAuthJSONBody(t, tc.filename, map[string]string{
+				"pool_id": fmt.Sprint(poolID),
+			}, tc.payload)
+			req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json", body)
+			req.Header.Set("Content-Type", contentType)
+			rr := httptest.NewRecorder()
+			handler.importCpaAuthJSON(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tc.want) {
+				t.Fatalf("expected response to mention %q, got %s", tc.want, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestImportCpaAuthJSONRollsBackNewFileWhenPoolAddFails(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	reloadSignal := filepath.Join(t.TempDir(), "cpa-reload.signal")
+	var healthCalls int
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			t.Fatalf("unexpected CPA path %s", r.URL.Path)
+		}
+		healthCalls++
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer cpaServer.Close()
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: cpaServer.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	checker := health.NewChecker(st, cache, authDir, "", newTestNotifier(st))
+	checker.SetCpaReloadSignalPath(reloadSignal)
+	handler := NewHandler(st, cache, authDir, "", checker, newTestNotifier(st))
+	body, contentType := multipartAuthJSONBody(t, "auth.json", map[string]string{
+		"pool_id": "999",
+	}, codexAuthJSON(t, "rollback@example.com", "acct_rollback", "refresh-rollback"))
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+
+	handler.importCpaAuthJSON(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(authDir, "codex-rollback@example.com-plus.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected new auth file rollback, stat err=%v", err)
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("expected account rollback, got %+v", accounts)
+	}
+	if _, err := os.Stat(reloadSignal); err != nil {
+		t.Fatalf("expected rollback path to request CPA runtime reload: %v", err)
+	}
+	if healthCalls < 2 {
+		t.Fatalf("expected upload reload and rollback reload health probes, got %d", healthCalls)
+	}
+}
+
+func TestImportCpaAuthJSONRestoresExistingAccountAndFileWhenPoolAddFails(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	svcID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountKey := "codex-existing@example.com-plus"
+	oldAuth := &cpa.CpaAuthFile{
+		Type:         "codex",
+		Email:        "existing@example.com",
+		AccountID:    "acct_existing",
+		RefreshToken: "old-refresh",
+		AccessToken:  fakeJWT(t, map[string]any{"email": "existing@example.com", "chatgpt_account_id": "acct_existing", "chatgpt_plan_type": "plus"}),
+	}
+	if err := cpa.WriteAuthFile(authDir, oldAuth, accountKey); err != nil {
+		t.Fatalf("write old auth file: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:               "Existing Codex",
+		SourceKind:          "cpa",
+		CpaServiceID:        &svcID,
+		CpaProvider:         "codex",
+		CpaAccountKey:       accountKey,
+		CpaEmail:            "existing@example.com",
+		CpaPlanType:         "plus",
+		CpaOpenaiID:         "acct_existing",
+		CpaCredentialStatus: "ok",
+		Enabled:             true,
+		Notes:               "old notes",
+	})
+	if err != nil {
+		t.Fatalf("create existing account: %v", err)
+	}
+	if err := st.UpdateAccountHealth(accountID, "error", "old failure"); err != nil {
+		t.Fatalf("mark old health: %v", err)
+	}
+
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+	body, contentType := multipartAuthJSONBody(t, "auth.json", map[string]string{
+		"pool_id": "999",
+		"label":   "New Label",
+		"notes":   "new notes",
+	}, codexAuthJSON(t, "existing@example.com", "acct_existing", "new-refresh"))
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+
+	handler.importCpaAuthJSON(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+	authAfter, err := cpa.ReadAuthFile(authDir, accountKey)
+	if err != nil {
+		t.Fatalf("read restored auth file: %v", err)
+	}
+	if authAfter.RefreshToken != "old-refresh" {
+		t.Fatalf("expected old auth file to be restored, got refresh token %q", authAfter.RefreshToken)
+	}
+	accountAfter, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get restored account: %v", err)
+	}
+	if accountAfter.Label != "Existing Codex" || accountAfter.Notes != "old notes" {
+		t.Fatalf("expected existing account label/notes restored, got %+v", accountAfter)
+	}
+	if accountAfter.Status != "error" || accountAfter.LastError != "old failure" {
+		t.Fatalf("expected existing account health restored, got status=%q last_error=%q", accountAfter.Status, accountAfter.LastError)
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected no duplicate account after failed overwrite, got %+v", accounts)
 	}
 }
 
@@ -1149,6 +1504,9 @@ func TestGetCpaServiceDoesNotExposeManagementKey(t *testing.T) {
 	if got, ok := resp.Data["provider_pinning_supported"].(bool); !ok || !got {
 		t.Fatalf("expected provider_pinning_supported=true, got %#v", resp.Data["provider_pinning_supported"])
 	}
+	if got, ok := resp.Data["provider_pinning_state"].(string); !ok || got != "enabled" {
+		t.Fatalf("expected provider_pinning_state=enabled, got %#v", resp.Data["provider_pinning_state"])
+	}
 }
 
 func TestUpsertCpaServicePreservesManagementKey(t *testing.T) {
@@ -1201,6 +1559,9 @@ func TestUpsertCpaServicePreservesManagementKey(t *testing.T) {
 	}
 	if got {
 		t.Fatalf("expected provider_pinning_supported=false when capability is unset")
+	}
+	if state, ok := resp.Data["provider_pinning_state"].(string); !ok || state != "unknown" {
+		t.Fatalf("expected provider_pinning_state=unknown when capability is unset, got %#v", resp.Data["provider_pinning_state"])
 	}
 }
 

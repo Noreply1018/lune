@@ -1,6 +1,6 @@
 # v0.1.7 规格整理
 
-状态：draft。本轮仅沉淀已经确认的产品口径和 v0.1.7 必须闭环项，不代表代码实现、测试矩阵、隔离容器 smoke 或发布提交已经完成。`06-cpa-auth-json-import.md` 是后续新增的 v0.1.7 增补规格，尚未实现，也尚未执行对应容器验收。
+状态：release-blocker verification complete, final audit pending。本目录已经沉淀 v0.1.7 必须闭环项、测试矩阵和本地/容器验证证据。最终 `gpt-5.5` subagent 严格审计通过并提交前，仍不能视为正式发布完成。
 
 本目录按“问题闭环”组织 v0.1.7 规格。每份文档围绕一个真实 UI / 运行态问题展开，统一描述问题、改进策略、UI 表现、日志与诊断、测试与验收、已决策记录或审计记录、后续非阻塞项，避免详情抽屉、诊断页和交互规则散落在不同文件后互相遗漏。
 
@@ -13,6 +13,7 @@
 - `05-codex-quota-429-cooldown-state.md`：Codex CPA 账号真实模型请求 `429` 时，额度耗尽/限流证据只沉淀为 serving cooldown，导致 UI 显示“冷却”而不是额度问题。
 - `06-cpa-auth-json-import.md`：Add Account 增加 `Import auth JSON` 入口，用于受控导入已有 CPA/Codex auth JSON 凭证并创建/更新账号。
 - `99-acceptance-matrix.md`：跨问题验收矩阵和最终核对清单。
+- `100-release-evidence.md`：v0.1.7 发布阻塞实现、测试、真实容器矩阵和清理证据。
 
 ## 总体原则
 
@@ -46,7 +47,7 @@
 
 v0.1.7 作为 UI 与诊断体验版本，优先收敛账号详情抽屉、直连账号诊断页、Pool token 编辑、Codex 429 状态归类、最小 provider pinning 状态数据源和 Add Account auth JSON 单文件导入。后续如需更严格的管理端鉴权、专门的 Raw diagnostics 区域、连接测试入口、完整 runtime diagnostics API、自动健康刷新、更细 quota state、批量/目录导入等能力，应进入后续版本或 `spec/draft/`，不再作为 v0.1.7 阻塞项。
 
-凡是落实本目录中的 UI 或交互改动，只要涉及运行时行为、保存语义、路由结果或凭据展示，就必须在**新容器**里做实际验收，使用隔离数据目录或数据副本，不得影响正在运行的旧版本容器。本轮仅沉淀规格和产品口径，未启动新的 v0.1.7 容器。
+凡是落实本目录中的 UI 或交互改动，只要涉及运行时行为、保存语义、路由结果或凭据展示，就必须在**新容器**里做实际验收，使用隔离数据目录或数据副本，不得影响正在运行的旧版本容器。本轮已经使用 `lune:v0.1.7-blocker-test` 启动隔离测试容器完成 embedded CPA、external fake CPA 429 和 auth JSON 导入矩阵；证据见 `100-release-evidence.md`。
 
 ## 单篇文档模板
 

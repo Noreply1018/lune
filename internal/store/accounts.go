@@ -217,6 +217,31 @@ func (s *Store) UpdateCpaAccountFromImport(id int64, a *Account) error {
 	return err
 }
 
+func (s *Store) RestoreCpaAccountImportSnapshot(a *Account) error {
+	if a == nil {
+		return nil
+	}
+	var lastCheckedAt any
+	if a.LastCheckedAt != nil {
+		lastCheckedAt = *a.LastCheckedAt
+	}
+	_, err := s.db.Exec(
+		`UPDATE accounts SET
+			label=?, cpa_provider=?, cpa_email=?, cpa_plan_type=?, cpa_openai_id=?,
+			cpa_expired_at=?, cpa_last_refresh_at=?, cpa_disabled=?,
+			cpa_credential_status=?, cpa_credential_reason=?, cpa_credential_last_error=?, cpa_credential_checked_at=?,
+			cpa_subscription_expires_at=?, cpa_subscription_fetched_at=?, cpa_subscription_last_error=?, cpa_subscription_status=?,
+			enabled=?, status=?, last_error=?, last_checked_at=?, notes=?, updated_at=datetime('now')
+		 WHERE id=?`,
+		a.Label, a.CpaProvider, a.CpaEmail, a.CpaPlanType, a.CpaOpenaiID,
+		a.CpaExpiredAt, a.CpaLastRefreshAt, a.CpaDisabled,
+		defaultCpaCredentialStatus(a.CpaCredentialStatus), a.CpaCredentialReason, a.CpaCredentialLastError, a.CpaCredentialCheckedAt,
+		a.CpaSubscriptionExpiresAt, a.CpaSubscriptionFetchedAt, a.CpaSubscriptionLastError, defaultCpaSubscriptionStatus(a.CpaSubscriptionStatus),
+		a.Enabled, a.Status, a.LastError, lastCheckedAt, a.Notes, a.ID,
+	)
+	return err
+}
+
 func (s *Store) UpdateAccountCpaCredentialStatus(id int64, status, reason, lastError, checkedAt string) error {
 	_, err := s.db.Exec(
 		`UPDATE accounts SET cpa_credential_status=?, cpa_credential_reason=?, cpa_credential_last_error=?, cpa_credential_checked_at=?, updated_at=datetime('now') WHERE id=?`,

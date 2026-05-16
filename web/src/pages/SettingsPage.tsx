@@ -617,6 +617,21 @@ export default function SettingsPage() {
                   }
                 />
                 <InfoBlock
+                  label="Provider Pinning"
+                  value={
+                    <StatusBadge
+                      ok={service.provider_pinning_state === "enabled" || service.provider_pinning_supported}
+                      pending={service.provider_pinning_state === "unknown"}
+                    >
+                      {service.provider_pinning_state === "enabled" || service.provider_pinning_supported
+                        ? "Enabled"
+                        : service.provider_pinning_state === "unknown"
+                          ? "Unknown"
+                          : "Disabled"}
+                    </StatusBadge>
+                  }
+                />
+                <InfoBlock
                   label="Readiness"
                   value={
                     <StatusBadge

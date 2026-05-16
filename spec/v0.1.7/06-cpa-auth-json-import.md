@@ -1,6 +1,6 @@
 # 06. Add Account 导入 CPA Auth JSON
 
-状态：draft
+状态：release-blocker verification complete, final audit pending。功能实现、本地测试和 embedded CPA 容器主路径验收已经完成；最终 `gpt-5.5` subagent 严格审计通过前仍不能视为正式发布完成。
 
 来源：用户希望在 v0.1.7 的 Add Account 流程里增加一个选项，可以直接导入已有 Codex / CPA auth JSON 文件，用于从旧容器、旧数据目录或其他 CLI 登录环境迁移账号凭证。目标是避免用户手动进入容器复制 `/app/data/cpa-auth/*.json`，也避免误拷 `.login-sessions.json`、数据库文件或其他无关数据。
 
@@ -214,13 +214,15 @@ Runtime sync: confirmed / pending / error
 | CT-JSON-06 | Runtime reload / auth index 同步 | 导入后等待 CPA management auth-files | RefreshAccount 能拿到 auth index；模型/额度/订阅刷新进入可解释状态 |
 | CT-JSON-07 | 覆盖失败回滚 | 模拟 upsert 或 pool add 失败 | 新文件回滚；已有文件不丢失；前端显示安全错误 |
 
-容器测试完成后必须删除测试容器和临时数据目录。仅编写本规格文档时可以不跑容器，但实现该功能后必须完成上述矩阵中至少 CT-JSON-01 到 CT-JSON-06。
+容器测试完成后必须删除测试容器和临时数据目录。实现后已经使用 `lune:v0.1.7-blocker-test` 的 embedded CPA 隔离容器完成 CT-JSON-01 到 CT-JSON-06 主路径验收；CT-JSON-07 覆盖失败回滚由单元测试覆盖新文件回滚和已有账号/文件恢复。证据见 `100-release-evidence.md`。
 
 ## 完成记录
 
 - 已确认该功能适合放在 Add Account 的 CPA 分支中，而不是 Settings 或手动运维文档里。
 - 已明确首版只支持单文件 JSON 导入，不做批量导入、不导入数据库、不导入 `.login-sessions.json`。
 - 已明确导入后必须走现有 CPA import / RefreshAccount 流程，不能只把文件落盘就算成功。
+- 已实现 `POST /admin/api/accounts/cpa/import-json`，支持 multipart 单文件导入、校验、写入、upsert、加入 Pool、runtime reload、异步刷新和失败回滚。
+- 已补充失败回滚测试：新文件失败回滚；已有账号覆盖导入失败时恢复旧 auth file 和账号快照。
 
 ## 后续非阻塞项
 

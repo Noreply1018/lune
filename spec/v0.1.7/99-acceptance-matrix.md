@@ -6,7 +6,8 @@
 
 ## 本轮验证状态
 
-- 本轮仅沉淀已经确认的产品口径、v0.1.7 必须闭环项和延后项迁移结果；未进行代码实现、单元测试、前端构建或 v0.1.7 容器 smoke。
+- 已完成：v0.1.7 发布阻塞实现、本地测试、前端构建、测试镜像构建、embedded CPA 容器矩阵、external fake CPA Codex 429 容器矩阵和测试容器清理。可复核证据见 `100-release-evidence.md`。
+- 待完成：最终 `gpt-5.5` subagent 严格审计通过和对应 Git 提交；通过前不得视为正式发布完成。
 - 已完成：只读审计正在运行的 `lune-0.1.6` 容器，并用临时 `noreply1018/lune:0.1.6` 容器复核 embedded CPA 启动路径。审计结论为：`docker inspect` 和 PID1 环境缺少 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED` 不能证明 Lune 运行态未启用 pinning；真实 `lune up` 子进程和 embedded `CLIProxyAPI` 子进程均携带 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED=1`。临时测试容器和测试 volume 已删除。
 - 已完成：只读审计正在运行的 `lune-0.1.6` 容器中 Codex CPA 账号 `429` 与“服务冷却中”展示的矛盾。审计结论为：真实模型请求 `429` 只写入 `serving_status='cooldown'`，没有沉淀到 Codex quota 维度；因此用户在 Playground 看到额度/限流耗尽，而 UI 主状态显示冷却。
 

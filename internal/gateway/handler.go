@@ -145,6 +145,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	diagnosticRoute := diagnostic || forceAccountID != nil
+	if diagnosticRoute && !diagnostic {
+		r = r.WithContext(ContextWithDiagnostic(r.Context()))
+		diagnostic = true
+	}
 
 	// initial route resolution
 	resolved, err := h.router.ResolveWithOptions(model, tokenPoolID, forceAccountID, router.ResolveOptions{Diagnostic: diagnosticRoute})
@@ -341,16 +345,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaCredentialStatus, "auth_suspect") {
 					h.updateCpaCredential(resolved.AccountID, "ok", "", "")
 				}
-				if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaProvider, "codex") {
-					_ = h.store.ClearAccountCodexModelRequestQuotaEvidence(resolved.AccountID)
-					h.cache.Invalidate()
-				}
 				// v3: update token last_used_at (no quota tracking)
 				if accessToken != nil {
 					go func() {
 						_ = h.store.UpdateTokenLastUsed(accessToken.ID)
 					}()
 				}
+			}
+			if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaProvider, "codex") {
+				_ = h.store.ClearAccountCodexModelRequestQuotaEvidence(resolved.AccountID)
+				h.cache.Invalidate()
 			}
 		} else if resolved.Account.SourceKind == "cpa" && isCpaAccountUpstreamAuthFailure(result.StatusCode, result.Body) {
 			if !diagnostic {
