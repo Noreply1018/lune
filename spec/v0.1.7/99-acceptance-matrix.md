@@ -6,13 +6,11 @@
 
 ## 本轮验证状态
 
-- 待完成：`go test ./...`
-- 待完成：`npm --prefix web run build`
-- 待完成：必要时补充容器 smoke test，验证新 UI 与直连账号保存语义的一致性。
+- 本轮仅沉淀已经确认的产品口径和后续非阻塞项；未进行代码实现、单元测试、前端构建或 v0.1.7 容器 smoke。
 - 已完成：只读审计正在运行的 `lune-0.1.6` 容器，并用临时 `noreply1018/lune:0.1.6` 容器复核 embedded CPA 启动路径。审计结论为：`docker inspect` 和 PID1 环境缺少 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED` 不能证明 Lune 运行态未启用 pinning；真实 `lune up` 子进程和 embedded `CLIProxyAPI` 子进程均携带 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED=1`。临时测试容器和测试 volume 已删除。
 - 已完成：只读审计正在运行的 `lune-0.1.6` 容器中 Codex CPA 账号 `429` 与“服务冷却中”展示的矛盾。审计结论为：真实模型请求 `429` 只写入 `serving_status='cooldown'`，没有沉淀到 Codex quota 维度；因此用户在 Playground 看到额度/限流耗尽，而 UI 主状态显示冷却。
 
-## 真实容器测试要求
+## 真实容器测试口径
 
 凡是实现本目录里的 UI 调整，都要在**新容器**中做最终验收：
 
@@ -23,11 +21,9 @@
 
 建议的最小容器验收覆盖：
 
-- `UI-01` 和 `UI-02` 同容器验证：打开直连账号详情抽屉，确认 tab 语言统一、`Connection` 仅在 `Overview`，`Diagnostics` 不再混入 CPA 专属结构。
-- `UI-03` 同容器验证：保存时留空 token 不会清掉旧 token，填入新 token 才替换。
-- `UI-06` 同容器验证：Settings 页面可编辑 pool token，且替换后 masked 展示立即刷新。
-- `UI-04` 和 `UI-05` 同容器验证：直连账号诊断页更适合直连场景，且高级信息收敛后仍能辅助排障。
-- `OPS-03` 同容器验证：Codex CPA 真实模型请求 `429` 时，UI/API 能区分 generic serving cooldown 与 quota / rate-limit 证据。
+- `UI-01` 到 `UI-06` 可同容器验证；其中直连保存语义与 Settings token 替换语义必须通过 API 或 UI 交互复核。
+- `UI-07` / `CPA-JSON-01` 的 Add Account auth JSON 导入必须使用 fixture 或假凭据做容器验收，不得在测试记录中保存真实 refresh token。
+- `OPS-03` 的 Codex 429 细分矩阵应优先使用 mock upstream / fake CPA，避免消耗真实 Codex 额度；如只用单元或集成测试覆盖，文档不得声称已经完成端到端容器矩阵。
 
 ## 需要统一验证的点
 
@@ -39,22 +35,39 @@
 | UI-04 | 直连账号诊断页 | 页面人工检查或组件测试 | 对 `openai_compat` 账号不显示 `Runtime Binding`、`Subscription`、`Quota` 作为主诊断维度；主诊断区只出现 `Connection`、`Credential`、`Route`、`Serving`、`Models` |
 | UI-05 | 高级信息收敛 | 页面人工检查 | `Advanced` 区域仅保留 `Account ID`、`Runtime Base URL`、`Last Error`、`Last Checked At`、`Source Kind` 等直连排障字段，不展示完整 token 或 request body |
 | UI-06 | Pool token 编辑 | 页面交互测试 | Settings 页面提供显式 token 替换入口；默认不回填完整 token；空值保留旧 token；保存后 masked 值与更新时间刷新；当前 reveal 展开状态不被错误切换；`Edit token` 与 `Regenerate` 使用独立弹窗和提交状态 |
+| UI-07 | Add Account 导入 auth JSON | 页面交互测试 | CPA 分支显示 `Login with Codex` 与 `Import auth JSON` 两个互斥入口；导入页只展示安全摘要，不展示完整 JSON 或 token 字段 |
 | OPS-01 | 0.1.6 embedded CPA pinning 运行态审计 | 真实运行容器只读审计 + 临时发布镜像容器复核 | 区分 `docker inspect` 静态环境、PID1 shell 环境和 `lune` / embedded CPA 子进程有效环境；确认 embedded 模式下 Lune effective pinning capability；测试容器用完删除 |
 | OPS-02 | CPA 路由阻断原因展示 | API / 诊断页验收 | 对固定 fixture 的 CPA 账号，接口或页面必须分别展示 `provider_pinning_unsupported`、`runtime_auth_binding_unavailable`、`no_healthy_account`、`model_not_on_account`、subscription 非 active、账号 `status=error` 六类不同阻断原因之一，且不能统一折叠成同一个“账号不可用” |
-| OPS-03 | Codex CPA `429` 与 quota/cooldown 归类 | 真实运行容器只读审计 + 新容器 mock upstream 验收 | 真实模型请求 `429` 不能只沉淀为 generic serving cooldown；UI/API 必须展示 quota / rate-limit evidence，并与 `wham/usage` 快照分层 |
+| OPS-03 | Codex CPA `429` 与 quota/cooldown 归类 | 真实运行容器只读审计 + mock upstream / fake CPA 验收 | 真实模型请求 `429` 不能只沉淀为 generic serving cooldown；UI/API 必须展示 quota / rate-limit evidence，并与 `wham/usage` 快照分层 |
+| CPA-JSON-01 | CPA auth JSON 上传导入 | API / 容器验收 | 合法 Codex auth JSON 写入 `cpa_auth_dir`，创建或更新账号，加入目标 Pool，并触发模型、quota、订阅刷新 |
+| CPA-JSON-02 | CPA auth JSON 安全拒绝 | API / 容器验收 | `.login-sessions.json`、非 JSON、缺 `refresh_token`、缺账号身份、unsupported provider 均被拒绝；用户上传文件名永不参与目标路径生成，且不泄露 token 内容 |
 
-## Codex 429 真实容器测试矩阵
+## Codex 429 验收矩阵
 
 以下矩阵用于 `05-codex-quota-429-cooldown-state.md` 的最终验收。必须使用新容器、隔离数据目录和 mock upstream / fake CPA，避免消耗真实 Codex 额度。
 
 | 编号 | 场景 | 验收方式 | 必须验证 |
 | --- | --- | --- | --- |
-| CT-429-01 | Codex CPA 模型请求返回裸 `429` | 新容器 + fake Codex CPA + mock upstream | 普通请求后账号进入短期 cooldown，同时 UI/API 记录 `HTTP 429` quota / rate-limit evidence，不只显示泛化“服务冷却中” |
+| CT-429-01 | Codex CPA 模型请求返回裸 `429` | 新容器 + fake Codex CPA + mock upstream | 普通请求后账号进入短期 cooldown，同时 UI/API 记录 `HTTP 429 from model request` quota / rate-limit evidence，不只显示泛化“服务冷却中” |
 | CT-429-02 | Codex CPA 模型请求返回明确 quota 文案 `429` | 新容器 + mock upstream body 包含 `quota` / `rate limit` / `limit reached` | `cpa_quota_status` 或新增 quota state 反映 blocked/limited，卡片和详情页主问题显示额度/限流 |
 | CT-429-03 | 非 Codex 账号返回 `429` | openai_compat fake upstream | 只触发 serving cooldown，不写 Codex quota 字段，不误报 Codex 额度耗尽 |
-| CT-429-04 | Diagnostic / Playground 强制账号返回 `429` | `X-Lune-Account-Id` 强制路由 | request log 保留直测失败证据；是否污染普通 cooldown 与 quota evidence 按最终设计断言，不能隐式破坏普通路由状态 |
-| CT-429-05 | `wham/usage` 快照 ok 但模型请求 `429` | quota mock 返回 `allowed=true`、`limit_reached=false`、`used_percent=100`，模型 mock 返回 `429` | UI 同屏展示 quota snapshot 与 real request evidence，不再把快照 ok 解释成真实请求可用 |
+| CT-429-04 | Diagnostic / Playground 强制账号返回 `429` | `X-Lune-Account-Id` 强制路由 | request log 保留直测失败证据；直测失败不污染普通 serving/quota 状态 |
+| CT-429-05 | `wham/usage` 快照 ok 但模型请求 `429` | quota mock 返回 ok，模型 mock 返回 `429` | quota snapshot 与 real request evidence 分层保存，`wham/usage` 成功快照不覆盖模型请求 429 evidence |
 | CT-429-06 | 冷却过期后的状态解释 | 等待或模拟 cooldown 到期 | 若 quota evidence 仍有效，主状态不应直接退回“可接流量”；若上游恢复，需要清除或降级旧 evidence |
+
+## CPA Auth JSON 导入容器测试矩阵
+
+以下矩阵用于 `06-cpa-auth-json-import.md` 的最终验收。必须使用新容器、隔离数据目录和测试 fixture；不得把真实 refresh token、access token、id token 写入测试日志或文档。
+
+| 编号 | 场景 | 验收方式 | 必须验证 |
+| --- | --- | --- | --- |
+| CT-JSON-01 | 合法 Codex auth JSON 首次导入 | Add Account 上传 fixture | auth file 写入 `cpa_auth_dir`；账号创建并加入目标 Pool；Pool 页面可见 |
+| CT-JSON-02 | 同账号 JSON 重复导入 | 再次上传同一 account key fixture | 更新已有账号，不新增重复账号；Pool member 幂等 |
+| CT-JSON-03 | 拒绝 `.login-sessions.json` | 上传 login sessions fixture | 返回明确错误；不写 auth file；不创建账号 |
+| CT-JSON-04 | 拒绝缺 token JSON | 上传缺 `refresh_token` 的 fixture | 返回 400；响应和日志不包含上传内容 |
+| CT-JSON-05 | 防路径穿越 | 上传 filename 为 `../../x.json` 的文件 | 后端忽略用户文件名，生成路径仍在 `cpa_auth_dir` 内 |
+| CT-JSON-06 | Runtime reload / auth index 同步 | 导入后等待 CPA management auth-files | RefreshAccount 能拿到 auth index；模型、quota、订阅刷新进入可解释状态 |
+| CT-JSON-07 | 覆盖失败回滚 | 模拟 upsert 或 pool add 失败 | 新文件回滚；已有文件不丢失；前端显示安全错误 |
 
 ## 最低验收标准
 
@@ -68,3 +81,21 @@
 - 容器诊断不能只依据 `docker inspect` 或 PID1 环境判断 pinning 是否启用；必须以 Lune 进程加载后的 effective 配置为准。
 - 账号不可用时，UI/API 给出具体阻断层，不能把所有 503 都表述成同一个“账号不可用”。
 - Codex CPA 账号真实请求返回 `429` 时，状态归类不能停留在 generic cooldown；必须把 quota snapshot 与 real request evidence 分层展示。
+
+## 已确认口径与后续项
+
+已确认不再反复讨论的口径：
+
+- 直连账号不保留完整 `Raw` 区域，只保留脱敏 curated `Advanced` 字段。
+- `Route` 与 `Serving` 不合并为单一维度，只允许做视觉紧凑化。
+- `API Base URL` 编辑区保留推荐格式提示。
+- v0.1.7 不提供清空 Pool token 动作。
+- Add Account 的 auth JSON 导入首版只支持单文件导入；不支持 `.login-sessions.json`、批量导入或整库迁移。
+- 直连账号不新增独立连接测试入口，账号级直测统一使用 `Playground`。
+- 连接信息保存成功后只刷新账号详情数据，不自动触发完整健康刷新；保存动作不等同于连接成功。
+- Codex 裸 `HTTP 429` 在 UI 上命名为“模型请求被限流”；带 `quota`、`rate limit`、`limit reached` 文案的 `429` 显示为“额度 / 限流问题”。
+- Runtime pinning 诊断作为管理员排障灯，放在 Settings 的 CPA runtime 区块，优先展示一句 `Provider pinning: enabled / disabled / unknown`，避免在首版展示过多容器 env / PID / 子进程细节。
+
+后续实现时需要注意：
+
+- Settings CPA runtime 区块增加 pinning 状态时，前端排布要克制：不要把状态塞成大卡片，也不要挤压现有 CPA runtime 操作；优先做成同区块内的一行状态或紧凑 badge。
