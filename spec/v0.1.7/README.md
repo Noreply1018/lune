@@ -1,8 +1,8 @@
 # v0.1.7 规格整理
 
-状态：已完成。代码实现、测试矩阵、隔离容器 smoke、subagent 严格审计和提交均已完成；最终实现提交为 `f25c399 Implement v0.1.7 acceptance fixes`。`06-cpa-auth-json-import.md` 是后续新增的 v0.1.7 增补规格，尚未实现，也尚未执行对应容器验收。
+状态：draft。本轮仅沉淀已经确认的产品口径和后续非阻塞项，不代表代码实现、测试矩阵、隔离容器 smoke 或发布提交已经完成。`06-cpa-auth-json-import.md` 是后续新增的 v0.1.7 增补规格，尚未实现，也尚未执行对应容器验收。
 
-本目录按“问题闭环”组织 v0.1.7 规格。每份文档围绕一个真实 UI / 运行态问题展开，统一描述问题、改进策略、UI 表现、日志与诊断、测试与验收、完成记录和后续非阻塞项，避免详情抽屉、诊断页和交互规则散落在不同文件后互相遗漏。
+本目录按“问题闭环”组织 v0.1.7 规格。每份文档围绕一个真实 UI / 运行态问题展开，统一描述问题、改进策略、UI 表现、日志与诊断、测试与验收、已决策记录或审计记录、后续非阻塞项，避免详情抽屉、诊断页和交互规则散落在不同文件后互相遗漏。
 
 ## 文档结构
 
@@ -25,21 +25,26 @@
 7. Codex quota 快照和真实模型请求限流必须分层展示。`wham/usage` 显示 `ok` 不代表最近模型请求没有命中过 quota / rate-limit；真实请求 `429` 需要作为独立诊断证据沉淀。
 8. CPA auth JSON 导入必须是受控凭据写入流程，不允许把完整 JSON、refresh token、access token 或 id token 暴露到 UI、日志、错误响应或测试记录。
 
-## 完成摘要
+## 已确认口径
 
-- 账号详情抽屉 tab 已统一为 `Overview / Playground / Diagnostics`。
-- 直连账号连接编辑已收敛到 `Overview`，空 token 保存保留旧凭据。
-- 直连账号 `Diagnostics` 已收敛为 `Connection / Credential / Route / Serving / Models`。
-- Settings 的 Pool token 已提供独立 `Edit token` 流程，和重命名、Reveal、Regenerate 分离。
-- 后端 `PUT /admin/api/tokens/{id}` 已支持缺省保留、显式空值 400、非空替换，响应不泄露完整 token。
-- Codex CPA 模型请求 `429` 已写入 quota/rate-limit evidence，并和 `wham/usage` quota snapshot 分层；普通路由会避开仍有效的模型请求 429 evidence，强制账号直测成功可清理该 evidence。
+- 账号详情抽屉 tab 使用 `Overview / Playground / Diagnostics`。
+- 直连账号连接编辑收敛到 `Overview`，空 token 保存保留旧凭据。
+- 直连账号 `Diagnostics` 收敛为 `Connection / Credential / Route / Serving / Models`。
+- 直连账号不保留完整 `Raw` 区域，只保留脱敏 curated `Advanced` 字段。
+- `Route` 与 `Serving` 不合并为单一维度，只允许做视觉紧凑化。
+- 直连账号不新增独立连接测试入口，账号级直测统一使用 `Playground`。
+- 连接信息保存成功后只刷新账号详情数据，不自动触发完整健康刷新；保存动作不等同于连接成功。
+- Settings 的 Pool token 使用独立 `Edit token` 流程，和重命名、Reveal、Regenerate 分离。
+- v0.1.7 不提供清空 Pool token 动作。
+- Codex 裸 `HTTP 429` 在 UI 上命名为“模型请求被限流”；带 `quota`、`rate limit`、`limit reached` 文案的 `429` 显示为“额度 / 限流问题”；Playground 直测失败只作为诊断证据，不影响普通路由状态。
+- Runtime pinning 诊断作为管理员排障灯，放在 Settings 的 CPA runtime 区块，优先展示一句 `Provider pinning: enabled / disabled / unknown`；前端排布要克制，不做大卡片、不挤压现有操作。
 - 0.1.6 embedded CPA pinning 运行态误判已完成只读审计，并在验收矩阵中保留结论。
 
 ## 版本边界
 
-v0.1.7 作为 UI 与诊断体验版本，完成账号详情抽屉、直连账号诊断页、Pool token 编辑和 Codex 429 状态归类。后续如需更严格的管理端鉴权、专门的 Raw diagnostics 区域、连接测试入口或更完整的运行态诊断 API，应进入后续版本或 `spec/draft/`，不再作为 v0.1.7 阻塞项。
+v0.1.7 作为 UI 与诊断体验版本，优先收敛账号详情抽屉、直连账号诊断页、Pool token 编辑和 Codex 429 状态归类。后续如需更严格的管理端鉴权、专门的 Raw diagnostics 区域、连接测试入口或更完整的运行态诊断 API，应进入后续版本或 `spec/draft/`，不再作为 v0.1.7 阻塞项。
 
-凡是落实本目录中的 UI 或交互改动，只要涉及运行时行为、保存语义、路由结果或凭据展示，就必须在**新容器**里做实际验收，使用隔离数据目录或数据副本，不得影响正在运行的旧版本容器。v0.1.7 最终验收已使用本地镜像 `lune:v0.1.7-local-smoke`、临时容器 `lune-v017-smoke-local`、端口 `127.0.0.1:11157` 和隔离数据目录 `/tmp/lune-v017-smoke-data` 完成；测试容器和临时数据已删除。
+凡是落实本目录中的 UI 或交互改动，只要涉及运行时行为、保存语义、路由结果或凭据展示，就必须在**新容器**里做实际验收，使用隔离数据目录或数据副本，不得影响正在运行的旧版本容器。本轮仅沉淀规格和产品口径，未启动新的 v0.1.7 容器。
 
 ## 单篇文档模板
 
@@ -50,5 +55,5 @@ v0.1.7 作为 UI 与诊断体验版本，完成账号详情抽屉、直连账号
 - `UI 表现`：卡片、badge、详情抽屉、诊断页等用户可见结果。
 - `日志与诊断`：如涉及凭据保存、错误摘要或排障字段，则说明如何展示和隐藏。
 - `测试与验收`：组件测试、接口测试、交互验收或容器验收要求。
-- `完成记录`：已经落地的实现、测试和容器验收。
-- `后续非阻塞项`：不影响 v0.1.7 完成状态、可进入后续版本讨论的内容。
+- `已决策记录 / 审计记录`：已经明确的产品口径，或真实只读审计事实。
+- `后续非阻塞项`：不影响当前产品口径收敛、可进入后续版本讨论的内容。

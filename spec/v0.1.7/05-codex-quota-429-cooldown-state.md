@@ -1,6 +1,6 @@
 # 05. Codex 额度耗尽与 Serving 冷却状态归类
 
-状态：draft
+状态：draft。0.1.6 真实运行态已完成只读审计；v0.1.7 的 `429` 产品表达按本轮确认口径沉淀。
 
 来源：2026-05-16 对正在运行的 `lune-0.1.6` 容器进行只读审计。用户反馈：当前 0.1.6 容器里第二个 Codex CPA 账号在 Playground 直测时表现为额度已经耗尽，但账号卡片和详情页主状态仍显示为“服务冷却中”。
 
@@ -143,7 +143,8 @@ v0.1.7 应补齐真实请求限流到账号状态的归类能力，同时保留 
 
 ```text
 模型请求限流
-最近 Playground / 普通请求返回 HTTP 429，账号已短期冷却；可能是 Codex 额度窗口耗尽。
+最近普通模型请求返回 HTTP 429，账号已短期冷却；可能是 Codex 额度窗口耗尽。
+Playground 直测返回 HTTP 429 时，只在诊断证据里展示，不触发普通路由冷却。
 ```
 
 Quota 详情区应把 `wham/usage` 快照与真实请求证据拆开：
@@ -183,7 +184,7 @@ Routing impact: cooldown until 2026-05-16 07:53:51
 
 - gateway 测试：Codex CPA 账号真实请求返回 `429` 时，应写入 serving cooldown，并写入 quota evidence。
 - gateway 测试：非 Codex 账号返回 `429` 时，不应误写 Codex quota 字段。
-- gateway 测试：diagnostic 请求返回 `429` 时，不应污染普通路由的 serving cooldown；是否写 quota evidence 需按产品决策单独断言。
+- gateway 测试：diagnostic 请求返回 `429` 时，不应污染普通路由的 serving cooldown 或 quota evidence；只保留直测失败证据。
 - health checker 测试：`wham/usage` 返回 `allowed=false` 或 `limit_reached=true` 时继续写 `blocked`。
 - health checker 测试：`wham/usage` 返回 `used_percent=100`、`allowed=true`、`limit_reached=false` 时不应被静默展示为完全健康，至少应有 UI warning 或 quota evidence。
 - 前端测试：当账号同时有 `serving_status='cooldown'` 和最近 quota / rate-limit evidence 时，卡片主问题应显示限流/额度相关文案，而不是 generic “服务冷却中”。
@@ -197,16 +198,16 @@ Routing impact: cooldown until 2026-05-16 07:53:51
 
 | 编号 | 场景 | 准备 | 操作 | 期望 |
 | --- | --- | --- | --- | --- |
-| CT-429-01 | Codex CPA 模型请求返回裸 `429` | 新容器 + fake Codex CPA 账号 + mock upstream 返回 `429` | 使用 Pool token 发普通 `/v1/chat/completions` | 账号进入短期 cooldown；UI 不只显示 generic 健康；quota evidence 记录 `HTTP 429` |
-| CT-429-02 | Codex CPA 模型请求返回明确 quota 文案的 `429` | mock upstream 返回 `429`，body 含 `rate limit` / `quota` / `limit reached` | 发普通请求 | `cpa_quota_status` 或新增 quota state 反映 blocked/limited；卡片主问题显示限流/额度 |
-| CT-429-03 | 非 Codex 账号返回 `429` | openai_compat fake upstream 返回 `429` | 发普通请求 | 只触发 serving cooldown，不写 Codex quota 字段 |
-| CT-429-04 | Diagnostic / Playground 强制账号返回 `429` | Codex CPA fake account + mock upstream | 使用 `X-Lune-Account-Id` 触发直测 | request log 保留诊断证据；是否污染普通 cooldown 按设计断言；UI 能解释直测失败 |
-| CT-429-05 | `wham/usage` 快照 ok 但模型请求 429 | quota mock 返回 `allowed=true`、`limit_reached=false`、`used_percent=100`，模型 mock 返回 `429` | 刷新额度后再发模型请求 | Quota snapshot 与 real request evidence 同屏展示，不再互相覆盖 |
-| CT-429-06 | 冷却过期后状态解释 | 复用 CT-429-02 数据，等待或模拟 cooldown 到期 | 刷新 Pool 页面 | 若 quota evidence 仍有效，主状态不应退回“可接流量”；若已恢复，应清除或降级旧 evidence |
+| CT-429-01 | Codex CPA 模型请求返回裸 `429` | 新容器 + fake Codex CPA + mock upstream | 使用 Pool token 发普通 `/v1/chat/completions` | 账号进入短期 cooldown；quota evidence 记录 `HTTP 429 from model request`，UI 不只显示 generic 健康 |
+| CT-429-02 | Codex CPA 模型请求返回明确 quota 文案的 `429` | 新容器 + mock upstream body 包含 `quota` / `rate limit` / `limit reached` | 发普通请求 | `cpa_quota_status` 或新增 quota state 反映 blocked/limited；卡片主问题显示限流/额度 |
+| CT-429-03 | 非 Codex 账号返回 `429` | openai_compat fake upstream | 发普通请求 | 只触发 serving cooldown，不写 Codex quota 字段 |
+| CT-429-04 | Diagnostic / Playground 强制账号返回 `429` | `X-Lune-Account-Id` 强制路由 | 使用 Playground 或 diagnostic request 触发直测 | request log 保留诊断证据；直测失败不污染普通 serving cooldown 或 quota evidence |
+| CT-429-05 | `wham/usage` 快照 ok 但模型请求 429 | quota mock 返回 ok，模型 mock 返回 `429` | 刷新额度后再发模型请求 | Quota snapshot 与 real request evidence 分层保存，`wham/usage` 成功快照不覆盖模型请求 429 evidence |
+| CT-429-06 | 冷却过期后状态解释 | 等待或模拟 cooldown 到期 | 刷新 Pool 页面 | 若 quota evidence 仍有效，主状态不应直接退回“可接流量”；若上游恢复，需要清除或降级旧 evidence |
 
-容器测试完成后必须删除测试容器和临时 volume / 数据目录。仅本规格文档沉淀阶段未启动新测试容器，原因是本次只记录 0.1.6 真实运行审计结果和 v0.1.7 验收要求，没有修改运行时代码。
+容器测试完成后必须删除测试容器和临时 volume / 数据目录。本轮仅沉淀规格和产品口径，未启动新的 v0.1.7 容器，也不声称已执行完整 fake CPA 429 矩阵。
 
-## 已完成事项
+## 审计记录
 
 - 已只读审计运行中的 `lune-0.1.6` 容器。
 - 已确认目标账号 API 返回字段中 `cpa_quota_status='ok'` 且 `serving_status='cooldown'`。
@@ -214,9 +215,15 @@ Routing impact: cooldown until 2026-05-16 07:53:51
 - 已确认容器日志中真实模型请求在 `2026-05-16 07:48:51` 返回 `429`。
 - 已确认 gateway 当前只把 `429` 归入 retryable serving failure，不会同步写入 `cpa_quota_status`。
 
-## 待解决事项
+## 后续非阻塞项
 
-- 设计并实现真实模型请求 `429` 到 quota evidence / quota state 的写入规则。
-- 明确 diagnostic / Playground 请求是否允许写入 quota evidence，以及是否允许触发普通 serving cooldown。
-- 前端卡片和详情页需要区分 generic cooldown 与 quota/rate-limit cooldown。
-- 容器验收需要使用 fake upstream 复现 `429`，避免消耗真实 Codex 账号额度。
+- 如后续需要更接近真实 Codex runtime 的端到端 429 验收，可补充专用 fake CPA 容器场景，但不应消耗真实账号额度。
+- 如果未来新增更细的 quota state（例如 `limited`），需要同步类型、路由条件和 UI 文案；v0.1.7 当前保守复用 `blocked` / `error`。
+
+## 后续非阻塞说明
+
+v0.1.7 采用保守产品口径：普通 Codex 模型请求遇到 `429` 时，Lune 同时记录短期 `serving cooldown` 和一条 quota / rate-limit 证据；裸 `429` 不直接说“额度已用尽”，只有错误内容明确指向 quota / rate limit 时才提升为更强的额度问题。
+
+- 裸 `HTTP 429` 在 UI 上命名为“模型请求被限流”。
+- 带 `quota`、`rate limit`、`limit reached` 文案的 `429` 显示为“额度 / 限流问题”。
+- Playground 人为直测失败只作为诊断证据展示，不影响普通路由状态。
