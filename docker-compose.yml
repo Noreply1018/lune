@@ -1,7 +1,7 @@
 services:
   lune:
     build: .
-    image: lune:v0.1.7-local
+    image: lune:v0.1.8-local
     container_name: lune
     restart: unless-stopped
     stop_grace_period: 30s

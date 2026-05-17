@@ -112,7 +112,7 @@ http://127.0.0.1:7788/admin
 如果你使用固定版本，建议拉取类似：
 
 ```text
-noreply1018/lune:0.1.7
+noreply1018/lune:0.1.8
 ```
 
 ## 服务器 / Compose 运行
@@ -200,7 +200,7 @@ cp .env.example .env
 
 ## Docker 与 CPA 服务
 
-CPA 是 Lune 默认镜像内置的运行时能力。镜像内的 `CLIProxyAPI` 会随 Lune 一起启动，版本由 Lune release 固定；如需新版 CPA，升级 Lune 镜像即可。v0.1.7 使用的内置 CPA 为 `v7.0.2-lune.1`，基于 `router-for-me/CLIProxyAPI@v7.0.2` 的固定 commit 加 Lune provider pinning patch 构建。外部 CPA 未声明支持逐请求 pinning 时，CPA 账号流量会 fail closed，避免账号统计和额度归因误绑。
+CPA 是 Lune 默认镜像内置的运行时能力。镜像内的 `CLIProxyAPI` 会随 Lune 一起启动，版本由 Lune release 固定；如需新版 CPA，升级 Lune 镜像即可。v0.1.8 使用的内置 CPA 为 `v7.0.2-lune.1`，基于 `router-for-me/CLIProxyAPI@v7.0.2` 的固定 commit 加 Lune provider pinning patch 构建。外部 CPA 未声明支持逐请求 pinning 时，CPA 账号流量会 fail closed，避免账号统计和额度归因误绑。
 
 在 Docker Compose 场景下：
 

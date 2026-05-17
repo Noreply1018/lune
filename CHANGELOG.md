@@ -6,12 +6,76 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ## [未发布]
 
+暂无。
+
+## [0.1.8] - 2026-05-17
+
+状态：发布候选。代码实现、自动化测试、真实容器验收矩阵和 subagent 严格审计已完成；提交后创建并推送 `v0.1.8` tag，由 GitHub Actions Release workflow 发布 GHCR / Docker Hub 多架构镜像。
+
+### Pool 路由策略
+
+- Pool 新增 `routing_policy`，默认 `health_first`，可切换为 `ordered`。
+- `health_first` 优先选择健康账号；`ordered` 按 Pool 成员顺序优先，但仍不会绕过禁用、凭据异常、Access 未确认、quota blocked、模型请求 429、runtime binding、serving cooldown/error 或模型明确不支持等硬阻断。
+- Pool API 会返回策略字段，非法策略返回 `400`，旧客户端不传策略时保留原值。
+- Router 的模型匹配语义收紧：模型明确不匹配不再作为 unknown fallback。
+
+### Codex CPA 可路由分层
+
+- 新增 `cpa_access_status / reason / last_error / checked_at`，把 Codex Access 与 paid subscription、quota、credential、runtime、serving 状态拆开。
+- Codex Free / Go 账号不再因为缺少 paid subscription active 被直接判死；`wham/usage` 成功或真实模型请求成功可把 Access 提升为 `eligible`。
+- Access `pending / unknown / ineligible` 为硬阻断；quota `pending / unknown / error` 为轻降级；quota `blocked` 和真实模型请求 `HTTP 429 from model request` 为硬阻断。
+- 已确认 `eligible` 的账号遇到 quota fetch `401/403/request failed` 不会被降级为 `ineligible`。
+- Pool `routable_account_count` 与 Router 使用等价的统一裁判口径。
+
+### Route trace 与审计可见性
+
+- `request_logs` 新增 `route_trace`，记录每次尝试的 `routing_policy`、`selected_account_id`、候选账号和 `skip_reason`。
+- 全池不可用、retry、serving cooldown、already attempted、账号不健康、模型明确不匹配等路径都能在 trace 中复核原因。
+- route trace 不记录 prompt、token、request body 或完整上游响应。
+
+### CPA auth JSON 批量导入
+
+- 新增 CPA auth JSON 批量预检与确认导入接口：
+  - `POST /admin/api/accounts/cpa/import-json-batch/preview`
+  - `POST /admin/api/accounts/cpa/import-json-batch`
+- 预检严格只读：不写 auth file、不创建或更新账号、不新增 Pool member、不触发 runtime reload。
+- 正式导入按文件返回 `created / updated / skipped / failed`，同批重复返回 `skipped + duplicate_in_batch`。
+- 响应只返回 masked email、hash、account id suffix 等安全摘要，不泄露 refresh/access/id token 或完整 auth JSON。
+- 导入主状态与 runtime sync 状态拆开，返回 `batch_id` 与 `synced/pending/failed_runtime_sync` 计数。
+- DB account upsert 与 Pool membership 在同一数据库事务内完成；auth file 采用备份/恢复的可补偿事务口径。
+- 新增 `cpa_import_batch` 通知事件。
+
+### Codex quota 与刷新退避
+
+- 新增 `cpa_quota_backoff_until` 与 `cpa_quota_backoff_count`，quota/access refresh 失败后进入退避窗口，避免持续打 CPA management / wham/usage。
+- 退避窗口内跳过 quota fetch；成功刷新后清理退避。
+- 前端和后端文案区分真实模型请求 429、quota fetch 401/403、management/api-call 查询失败。
+- Free / primary-only quota 不再强制要求 7d secondary window；无周额度时按实际窗口展示。
+
+### 管理界面
+
+- AccountCard 右上角展示 Plan chip，底部 chip 收敛为单行请求量与主问题，减少卡片高度抖动。
+- Pool 详情页可在自检按钮旁切换 `health_first / ordered`。
+- Add Account 的 auth JSON 导入改为“预检文件 -> 确认导入”两步，不再一次点击直接写入。
+- 批量导入结果页展示每个文件的最终主状态与 runtime sync 状态，不把导入成功误写成“立即可用”。
+
 ### 发布流程与文档维护
 
 - Release workflow 升级到声明 Node 24 runtime 的 action 版本，并启用 `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`，消除 Node.js 20 action runtime 弃用提醒。
 - Docker Hub 同步短描述收敛到 100 bytes 以内，避免发布时被 Docker Hub 截断。
 - Docker 镜像默认 CPA 凭据目录变量改为 `LUNE_CPA_FILES_DIR`，避免 BuildKit 把目录变量误判为 secret；`LUNE_CPA_AUTH_DIR` 保留为兼容别名。
 - README、Docker Hub 描述、Compose 示例和 `.env.example` 已同步新的 CPA 凭据目录变量口径。
+- `spec/v0.1.8/100-implementation-evidence.md` 记录自动化测试、Docker build、真实容器矩阵和清理证据。
+
+### 验证
+
+- `go test ./...`
+- `npm --prefix web run build`
+- `docker build -t lune:v0.1.8-test --build-arg GOPROXY=https://goproxy.cn,direct --build-arg LUNE_VERSION=0.1.8-test ... .`
+- 使用临时容器 `lune-v018-test`、端口 `127.0.0.1:23333`、隔离数据目录 `/tmp/lune-v018-test-*` 和临时网络 `lune-v018-net` 完成 `/healthz`、Pool routing_policy API、`health_first` retry/cooldown、`ordered` retry、route_trace 脱敏、CPA auth JSON batch preview/import、Access eligible 落库矩阵。
+- fake upstream 容器 `lune-upstream-first` 返回 `503`，`lune-upstream-second` 返回 `200`。
+- 测试容器、fake upstream、临时网络和临时数据目录均已删除；旧版 `lune-0.1.7`、`lune-0.1.5` 容器未被停止或修改。
+- subagent 严格复审通过。
 
 ## [0.1.7] - 2026-05-16
 
