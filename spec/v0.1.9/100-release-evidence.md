@@ -9,13 +9,16 @@
 - `README.md`
 - `01-pool-lifecycle-management.md`
 - `02-codex-plus-quota-audit.md`
+- `03-codex-real-probe-state-writeback.md`
 - `99-acceptance-matrix.md`
 
 ## 本轮补充
 
 - 新增 Codex Plus quota 展示审计规格，记录 v0.1.8 真实容器中 Plus 账号 `wham/usage` 返回 `HTTP 401`、模型请求仍成功、UI 不应显示“无周额度”的问题。
-- README 纳入 Codex Plus quota 展示修正范围。
+- 新增 Codex 真实探查状态回写规格，记录 v0.1.8 中 `X-Lune-Account-Id` 被一律归类为 diagnostic，导致 Playground / Pool 自检真实认证失败不写 `needs_login` 的问题。
+- README 纳入 Codex Plus quota 展示修正和真实探查状态回写修正范围。
 - 验收矩阵新增 Codex Plus quota 场景，覆盖无 snapshot、401/403、primary-only、旧快照、provider 大小写、字符串数字、access 不降级、路由语义和模型请求 429 反例。
+- 验收矩阵新增真实探查状态回写场景，覆盖 quota 401 + 模型 200、认证失败、`auth_unavailable`、service key 错误、429、普通请求 5xx、stateful probe 5xx / timeout / EOF、纯 diagnostic 和状态优先级。
 - 真实邮箱和 runtime account key 已脱敏。
 
 ## 本地校验

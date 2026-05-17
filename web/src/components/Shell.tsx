@@ -6,6 +6,7 @@ import {
   Cog,
   LayoutDashboard,
   MoonStar,
+  Plus,
   Waves,
 } from "lucide-react";
 import {
@@ -27,6 +28,9 @@ import type { Pool, PoolDetailResponse } from "@/lib/types";
 import { derivePoolSnapshot, type PoolSnapshot } from "@/lib/lune";
 import { useAdminUI } from "@/components/AdminUI";
 import AddAccountDrawer from "@/components/AddAccountDrawer";
+import PoolCreateDialog from "@/components/PoolCreateDialog";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 function PoolDot({ snapshot }: { snapshot: PoolSnapshot }) {
   const tone = snapshot.health;
@@ -45,7 +49,7 @@ function PoolDot({ snapshot }: { snapshot: PoolSnapshot }) {
 export default function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
   const { onLinkClick, navigate } = useRouter();
-  const { openAddAccount, dataVersion, poolSnapshots, setPoolSnapshots } = useAdminUI();
+  const { openAddAccount, openCreatePool, dataVersion, poolSnapshots, setPoolSnapshots } = useAdminUI();
   const mainRef = useRef<HTMLElement | null>(null);
   const [pools, setPools] = useState<Pool[]>([]);
   const [poolsExpanded, setPoolsExpanded] = useState(true);
@@ -145,7 +149,7 @@ export default function Shell({ children }: { children: ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
 
-            <SidebarMenuItem>
+            <SidebarMenuItem className="flex items-center gap-1">
               <SidebarMenuButton
                 isActive={path.startsWith("/admin/pools/")}
                 onClick={() => {
@@ -155,7 +159,7 @@ export default function Shell({ children }: { children: ReactNode }) {
                   }
                 }}
                 className={cn(
-                  "h-11 rounded-[1rem] px-3 text-[13px] font-medium",
+                  "h-11 flex-1 rounded-[1rem] px-3 text-[13px] font-medium",
                   path.startsWith("/admin/pools/")
                     ? "bg-[linear-gradient(180deg,rgba(134,125,193,0.16),rgba(134,125,193,0.07))] text-moon-800"
                     : "text-moon-500 hover:bg-white/70 hover:text-moon-700",
@@ -170,6 +174,26 @@ export default function Shell({ children }: { children: ReactNode }) {
                   )}
                 />
               </SidebarMenuButton>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      className="rounded-full text-moon-400 hover:bg-white/70 hover:text-lunar-700 group-data-[collapsible=icon]:hidden"
+                    />
+                  }
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setPoolsExpanded(true);
+                    openCreatePool();
+                  }}
+                >
+                  <Plus className="size-3.5" />
+                </TooltipTrigger>
+                <TooltipContent side="right">新建 Pool</TooltipContent>
+              </Tooltip>
             </SidebarMenuItem>
 
             {poolsExpanded ? (
@@ -283,6 +307,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       </SidebarInset>
 
       <AddAccountDrawer />
+      <PoolCreateDialog />
     </>
   );
 }

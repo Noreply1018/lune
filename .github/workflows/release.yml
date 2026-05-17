@@ -19,7 +19,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -118,3 +118,19 @@ jobs:
           repository: ${{ env.IMAGE_NAME }}
           short-description: "Quiet LLM gateway with admin UI, SQLite, and CPA account pooling."
           readme-filepath: ./docs/dockerhub-description.md
+
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: ./scripts/extract-changelog-release.sh "${GITHUB_REF_NAME}"
+
+      - name: Create GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Lune ${GITHUB_REF_NAME}" \
+            --notes-file "${{ steps.changelog.outputs.release_body }}"

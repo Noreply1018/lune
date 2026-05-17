@@ -70,11 +70,13 @@
 | RPW-05 | quota 401 + `auth_unavailable` | 模型请求返回 503 或 401，body 含 `auth_unavailable: no auth available` | Playground 或自检 | 归类为账号认证不可用，写 `needs_login` 或等价 credential 硬失败 |
 | RPW-06 | quota 401 + service key 错误 | CPA 返回 401，body 含 `invalid api key` / `management key` | 普通请求、Playground、自检分别验证 | 不写账号 `needs_login`；写 CPA service / runtime 错误或保留安全错误 |
 | RPW-07 | quota 401 + 模型 429 | 模型请求返回 429，body 含 quota / rate limit / limit reached | 普通请求和自检 | 写 quota / rate-limit evidence；UI 显示额度已用尽或模型请求限流，不显示需要重登 |
-| RPW-08 | quota 401 + 模型 5xx | 模型请求返回 500 / 502 | 普通请求 | 写 serving failure / cooldown；Credential 不变 |
-| RPW-09 | stateful probe 不计普通 usage | Playground / 自检成功与失败各一次 | 查询 Activity / usage summary | 普通 usage 不统计 stateful probe；诊断或 probe 日志可被排除或单独过滤 |
-| RPW-10 | 纯 diagnostic 不写状态 | 调用 `/admin/api/accounts/{id}/diagnostic-request` 或显式 `X-Lune-Diagnostic: true`，上游返回认证失败 | 查询账号 | 不写 `needs_login`，除非该入口明确声明为有状态诊断 |
-| RPW-11 | 强制账号不等于 diagnostic | 普通客户端带 `X-Lune-Account-Id` 但不带 diagnostic header | 模型请求返回账号认证失败 | 写 `needs_login`；request log 能说明 force account |
-| RPW-12 | 状态优先级 | 同一账号同时有 quota 401 和 credential needs_login | 打开卡片、Route Summary、Diagnostics | 主问题统一为需要重新登录，quota warning 作为次级信息 |
+| RPW-08 | quota 401 + 普通请求模型 5xx | 模型请求返回 500 / 502 | 普通请求 | 写 serving failure / cooldown；Credential 不变 |
+| RPW-09 | quota 401 + stateful probe 模型 5xx | 模型请求返回 500 / 502 | Playground 和 Pool 自检分别验证 | 写 probe error；不得写 `needs_login`；不得写 serving failure / cooldown |
+| RPW-10 | quota 401 + stateful probe timeout / EOF | fake CPA 模拟 timeout 或 EOF | Playground 和 Pool 自检分别验证 | 写 probe error；不得写 `needs_login`；错误摘要安全截断 |
+| RPW-11 | stateful probe 不计普通 usage | Playground / 自检成功与失败各一次 | 查询 Activity / usage summary | 普通 usage 不统计 stateful probe；诊断或 probe 日志可被排除或单独过滤 |
+| RPW-12 | 纯 diagnostic 不写状态 | 调用 `/admin/api/accounts/{id}/diagnostic-request` 或显式 `X-Lune-Diagnostic: true`，上游返回认证失败 | 查询账号 | 不写 `needs_login`，除非该入口明确声明为有状态诊断 |
+| RPW-13 | 强制账号不等于 diagnostic | 普通客户端带 `X-Lune-Account-Id` 但不带 diagnostic header | 模型请求返回账号认证失败 | 写 `needs_login`；request log 能说明 force account |
+| RPW-14 | 状态优先级 | 同一账号同时有 quota 401 和 credential needs_login | 打开卡片、Route Summary、Diagnostics | 主问题统一为需要重新登录，quota warning 作为次级信息 |
 
 ## 关键反例
 

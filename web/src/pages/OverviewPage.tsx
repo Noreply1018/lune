@@ -72,7 +72,7 @@ function poolsToOrbit(pools: Pool[], details: Record<number, PoolDetailResponse>
 }
 
 export default function OverviewPage() {
-  const { openAddAccount, dataVersion } = useAdminUI();
+  const { openAddAccount, openCreatePool, dataVersion } = useAdminUI();
   const { navigate } = useRouter();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [pools, setPools] = useState<Pool[]>([]);
@@ -204,6 +204,11 @@ export default function OverviewPage() {
         title="开始之前，先接入第一个账号。"
         description="管理面板以 Pool 为中心。添加账号后，Lune 会自动生成可用的 API 地址与 Token。"
         action={<Button onClick={() => openAddAccount()}>添加账号</Button>}
+        secondary={
+          <Button variant="outline" onClick={openCreatePool}>
+            只创建 Pool
+          </Button>
+        }
       />
     );
   }

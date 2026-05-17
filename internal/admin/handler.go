@@ -756,7 +756,7 @@ func (h *Handler) deletePool(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.store.DeletePoolWithOrphans(id); err != nil {
+	if err := h.store.DeletePoolWithAccounts(id); err != nil {
 		h.internalError(w, err)
 		return
 	}

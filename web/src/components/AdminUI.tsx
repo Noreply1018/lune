@@ -10,11 +10,14 @@ import type { PoolSnapshot } from "@/lib/lune";
 
 type AdminUIContextValue = {
   addAccountOpen: boolean;
+  createPoolOpen: boolean;
   preferredPoolId: number | null;
   dataVersion: number;
   poolSnapshots: Record<number, PoolSnapshot>;
   openAddAccount: (poolId?: number | null) => void;
   closeAddAccount: () => void;
+  openCreatePool: () => void;
+  closeCreatePool: () => void;
   refreshData: () => void;
   setPoolSnapshots: (snapshots: Record<number, PoolSnapshot>) => void;
 };
@@ -23,6 +26,7 @@ const AdminUIContext = createContext<AdminUIContextValue | null>(null);
 
 export function AdminUIProvider({ children }: { children: ReactNode }) {
   const [addAccountOpen, setAddAccountOpen] = useState(false);
+  const [createPoolOpen, setCreatePoolOpen] = useState(false);
   const [preferredPoolId, setPreferredPoolId] = useState<number | null>(null);
   const [dataVersion, setDataVersion] = useState(0);
   const [poolSnapshots, setPoolSnapshots] = useState<Record<number, PoolSnapshot>>({});
@@ -36,6 +40,14 @@ export function AdminUIProvider({ children }: { children: ReactNode }) {
     setAddAccountOpen(false);
   }, []);
 
+  const openCreatePool = useCallback(() => {
+    setCreatePoolOpen(true);
+  }, []);
+
+  const closeCreatePool = useCallback(() => {
+    setCreatePoolOpen(false);
+  }, []);
+
   const refreshData = useCallback(() => {
     setDataVersion((current) => current + 1);
   }, []);
@@ -43,15 +55,29 @@ export function AdminUIProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AdminUIContextValue>(
     () => ({
       addAccountOpen,
+      createPoolOpen,
       preferredPoolId,
       dataVersion,
       poolSnapshots,
       openAddAccount,
       closeAddAccount,
+      openCreatePool,
+      closeCreatePool,
       refreshData,
       setPoolSnapshots,
     }),
-    [addAccountOpen, closeAddAccount, dataVersion, openAddAccount, poolSnapshots, preferredPoolId, refreshData],
+    [
+      addAccountOpen,
+      closeAddAccount,
+      closeCreatePool,
+      createPoolOpen,
+      dataVersion,
+      openAddAccount,
+      openCreatePool,
+      poolSnapshots,
+      preferredPoolId,
+      refreshData,
+    ],
   );
 
   return (

@@ -8,6 +8,29 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 暂无。
 
+## [0.1.9] - 2026-05-17
+
+状态：发布流程进行中。代码实现、自动化测试、真实容器验收、subagent 严格审计、发布文档提交、tag 与镜像推送完成后更新为已发布。
+
+### Pool 管理体验
+
+- 侧边栏 Pools 行新增低噪声 `+` 入口，可直接新建空 Pool；弹窗提供 OpenAI / Claude / Gemini / Codex 等推荐命名提示。
+- Overview 首次空状态保留“添加账号”主入口，并新增“只创建 Pool”的次级入口，复用同一个新建 Pool 弹窗。
+- Add Account 内的“新建 Pool”快捷路径保留，用于接入账号时顺手创建归属 Pool。
+- Pool 详情页在“自检 Pool”和路由策略按钮右侧新增“更多设置”，集中承载 Pool 重命名、启用/停用与删除。
+
+### Pool 删除语义
+
+- 删除 Pool 会删除该 Pool 当前包含的账号，并通过账号外键级联移除这些账号在其他 Pool 中的成员关系。
+- 删除确认文案明确提示会删除 Pool Token、Pool 内账号以及这些账号的其他 Pool 归属，避免把删除误理解为只移除分组。
+
+### 验证
+
+- `go test ./internal/store ./internal/admin`
+- `npm --prefix web run build`
+- `go test ./...`
+- 真实容器验收、subagent 严格审计和最终清理证据见 `spec/v0.1.9/100-release-evidence.md`。
+
 ## [0.1.8] - 2026-05-17
 
 状态：已发布。代码实现、自动化测试、真实容器验收矩阵、subagent 严格审计、发布文档提交、`v0.1.8` tag、GHCR / Docker Hub 多架构镜像推送和 Docker Hub 描述同步均已完成。

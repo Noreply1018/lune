@@ -239,6 +239,47 @@ func (s *Store) DisablePool(id int64) error {
 	return err
 }
 
+// DeletePoolWithAccounts deletes a pool and all accounts that currently belong
+// to it. Deleting the accounts also removes their memberships in any other
+// pools through the pool_members account_id foreign key.
+func (s *Store) DeletePoolWithAccounts(id int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT account_id FROM pool_members WHERE pool_id = ?`, id)
+	if err != nil {
+		return err
+	}
+	var accountIDs []int64
+	for rows.Next() {
+		var aid int64
+		if err := rows.Scan(&aid); err != nil {
+			rows.Close()
+			return err
+		}
+		accountIDs = append(accountIDs, aid)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM pools WHERE id = ?`, id); err != nil {
+		return err
+	}
+
+	for _, aid := range accountIDs {
+		if _, err := tx.Exec(`DELETE FROM accounts WHERE id = ?`, aid); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 // DeletePoolWithOrphans deletes a pool and cleans up orphan accounts
 // (accounts that are not referenced by any remaining pool_member).
 func (s *Store) DeletePoolWithOrphans(id int64) error {

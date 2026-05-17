@@ -102,6 +102,65 @@ func TestAddPoolMemberIdempotentReturnsExistingMember(t *testing.T) {
 	}
 }
 
+func TestDeletePoolWithAccountsDeletesMemberAccountsEvenWhenShared(t *testing.T) {
+	st, err := New(filepath.Join(t.TempDir(), "pool-delete-accounts.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	firstPoolID, err := st.CreatePool("First", 0, true)
+	if err != nil {
+		t.Fatalf("create first pool: %v", err)
+	}
+	secondPoolID, err := st.CreatePool("Second", 1, true)
+	if err != nil {
+		t.Fatalf("create second pool: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:      "Shared",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://example.com/v1",
+		APIKey:     "sk-test",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create shared account: %v", err)
+	}
+	if _, err := st.AddPoolMember(firstPoolID, accountID); err != nil {
+		t.Fatalf("add first member: %v", err)
+	}
+	if _, err := st.AddPoolMember(secondPoolID, accountID); err != nil {
+		t.Fatalf("add second member: %v", err)
+	}
+
+	if err := st.DeletePoolWithAccounts(firstPoolID); err != nil {
+		t.Fatalf("delete pool with accounts: %v", err)
+	}
+
+	deletedPool, err := st.GetPool(firstPoolID)
+	if err != nil {
+		t.Fatalf("get deleted pool: %v", err)
+	}
+	if deletedPool != nil {
+		t.Fatalf("expected first pool to be deleted, got %+v", deletedPool)
+	}
+	account, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("get deleted account: %v", err)
+	}
+	if account != nil {
+		t.Fatalf("expected shared account to be deleted, got %+v", account)
+	}
+	secondMembers, err := st.ListPoolMembers(secondPoolID)
+	if err != nil {
+		t.Fatalf("list second pool members: %v", err)
+	}
+	if len(secondMembers) != 0 {
+		t.Fatalf("expected shared account membership to be removed from second pool, got %+v", secondMembers)
+	}
+}
+
 func TestPoolRoutableCountHonorsQuotaAndServingState(t *testing.T) {
 	st, err := New(filepath.Join(t.TempDir(), "pool-routable.db"))
 	if err != nil {

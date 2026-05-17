@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, KeyRound, ListOrdered, ShieldCheck } from "lucide-react";
+import { Check, Copy, KeyRound, ListOrdered, Loader2, MoreHorizontal, ShieldCheck, Trash2 } from "lucide-react";
 import AccountCard from "@/components/AccountCard";
 import AccountDetailSheet from "@/components/AccountDetailSheet";
 import CodexSetupDialog from "@/components/CodexSetupDialog";
@@ -11,12 +11,22 @@ import PageHeader from "@/components/PageHeader";
 import { useAdminUI } from "@/components/AdminUI";
 import { toast } from "@/components/Feedback";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { compact, pct } from "@/lib/fmt";
 import { ensureArray, getApiBaseUrl, getPoolHealth } from "@/lib/lune";
-import { matchPath, usePathname } from "@/lib/router";
+import { matchPath, usePathname, useRouter } from "@/lib/router";
 import type {
+  Pool,
   PoolDetailResponse,
   PoolMember,
   RevealedAccessToken,
@@ -56,6 +66,7 @@ function scoreModel(model: string) {
 
 export default function PoolDetailPage() {
   const pathname = usePathname();
+  const { navigate } = useRouter();
   const { dataVersion, refreshData } = useAdminUI();
   const params = matchPath("/admin/pools/:id", pathname);
   const poolId = Number(params?.id);
@@ -73,6 +84,7 @@ export default function PoolDetailPage() {
   const [flashMap, setFlashMap] = useState<Record<number, FlashState>>({});
   const [refreshingAccountIds, setRefreshingAccountIds] = useState<Set<number>>(() => new Set());
   const [routingPolicySaving, setRoutingPolicySaving] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const loadSeqRef = useRef(0);
   const hasLoadedRef = useRef(false);
   const flashTimersRef = useRef<Map<number, number>>(new Map());
@@ -609,6 +621,15 @@ export default function PoolDetailPage() {
               <ListOrdered className="size-3.5" />
               {pool.routing_policy === "ordered" ? "排序优先" : "健康优先"}
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSettingsOpen(true)}
+              className="rounded-full border-moon-200/55 bg-white/45"
+            >
+              <MoreHorizontal className="size-3.5" />
+              更多设置
+            </Button>
           </>
         }
         metaEnd={
@@ -685,6 +706,25 @@ export default function PoolDetailPage() {
         model={defaultPoolModel}
       />
 
+      <PoolSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        pool={pool}
+        accountCount={members.length}
+        onChanged={refreshData}
+        onDeleted={async () => {
+          setSettingsOpen(false);
+          refreshData();
+          try {
+            const pools = await api.get<Pool[]>("/pools");
+            const nextPool = ensureArray(pools).find((item) => item.id !== pool.id);
+            navigate(nextPool ? `/admin/pools/${nextPool.id}` : "/admin");
+          } catch {
+            navigate("/admin");
+          }
+        }}
+      />
+
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
@@ -693,6 +733,193 @@ export default function PoolDetailPage() {
         onConfirm={deleteAccount}
       />
     </div>
+  );
+}
+
+function PoolSettingsDialog({
+  open,
+  onOpenChange,
+  pool,
+  accountCount,
+  onChanged,
+  onDeleted,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  pool: Pool;
+  accountCount: number;
+  onChanged: () => void;
+  onDeleted: () => void | Promise<void>;
+}) {
+  const [label, setLabel] = useState(pool.label);
+  const [savingLabel, setSavingLabel] = useState(false);
+  const [statusSaving, setStatusSaving] = useState(false);
+  const [deleteSaving, setDeleteSaving] = useState(false);
+  const [disableConfirmOpen, setDisableConfirmOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setLabel(pool.label);
+      setSavingLabel(false);
+      setStatusSaving(false);
+      setDeleteSaving(false);
+      setDisableConfirmOpen(false);
+      setDeleteConfirmOpen(false);
+    }
+  }, [open, pool.label]);
+
+  async function saveLabel() {
+    const nextLabel = label.trim();
+    if (!nextLabel) {
+      toast("请输入 Pool 名称", "error");
+      return;
+    }
+    setSavingLabel(true);
+    try {
+      await api.put(`/pools/${pool.id}`, {
+        label: nextLabel,
+        priority: pool.priority,
+        enabled: pool.enabled,
+        routing_policy: pool.routing_policy,
+      });
+      toast("Pool 名称已更新");
+      onChanged();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "保存 Pool 名称失败", "error");
+    } finally {
+      setSavingLabel(false);
+    }
+  }
+
+  async function setPoolEnabled(enabled: boolean) {
+    setStatusSaving(true);
+    try {
+      await api.post(`/pools/${pool.id}/${enabled ? "enable" : "disable"}`);
+      toast(enabled ? "Pool 已启用" : "Pool 已停用");
+      setDisableConfirmOpen(false);
+      onChanged();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Pool 状态更新失败", "error");
+    } finally {
+      setStatusSaving(false);
+    }
+  }
+
+  async function deletePool() {
+    setDeleteSaving(true);
+    try {
+      await api.delete(`/pools/${pool.id}`);
+      toast("Pool 已删除");
+      await onDeleted();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "删除 Pool 失败", "error");
+    } finally {
+      setDeleteSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="gap-5 rounded-[1.25rem] bg-white/95 p-5 sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-[1.05rem] text-moon-800">更多设置</DialogTitle>
+            <DialogDescription>
+              管理当前 Pool 的名称、启用状态和删除操作。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5">
+            <section className="space-y-3 border-b border-moon-200/60 pb-5">
+              <div>
+                <p className="text-sm font-medium text-moon-800">基础信息</p>
+                <p className="mt-1 text-sm text-moon-500">名称会同步显示在侧边栏、Token 和导出配置中。</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                <div className="space-y-2.5">
+                  <Label>Pool 名称</Label>
+                  <Input
+                    value={label}
+                    onChange={(event) => setLabel(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !savingLabel) void saveLabel();
+                    }}
+                  />
+                </div>
+                <Button onClick={saveLabel} disabled={savingLabel || label.trim() === pool.label}>
+                  {savingLabel ? <Loader2 className="size-4 animate-spin" /> : null}
+                  保存
+                </Button>
+              </div>
+            </section>
+
+            <section className="space-y-3 border-b border-moon-200/60 pb-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-moon-800">运行状态</p>
+                  <p className="mt-1 text-sm text-moon-500">
+                    停用后，该 Pool 的网关请求会停止路由；Token 保留，可随时恢复。
+                  </p>
+                </div>
+                <span className="rounded-full bg-moon-100/80 px-3 py-1.5 text-xs text-moon-600">
+                  {pool.enabled ? "已启用" : "已停用"}
+                </span>
+              </div>
+              {pool.enabled ? (
+                <Button
+                  variant="outline"
+                  onClick={() => setDisableConfirmOpen(true)}
+                  disabled={statusSaving}
+                >
+                  停用 Pool
+                </Button>
+              ) : (
+                <Button onClick={() => void setPoolEnabled(true)} disabled={statusSaving}>
+                  {statusSaving ? <Loader2 className="size-4 animate-spin" /> : null}
+                  启用 Pool
+                </Button>
+              )}
+            </section>
+
+            <section className="space-y-3">
+              <div>
+                <p className="text-sm font-medium text-status-red">危险操作</p>
+                <p className="mt-1 text-sm text-moon-500">
+                  删除会移除这个 Pool、Pool Token 和其中的 {accountCount} 个账号；这些账号也会从其他 Pool 中移除。
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setDeleteConfirmOpen(true)}
+                disabled={deleteSaving}
+              >
+                <Trash2 className="size-4" />
+                删除 Pool
+              </Button>
+            </section>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={disableConfirmOpen}
+        onOpenChange={setDisableConfirmOpen}
+        title="停用 Pool"
+        description={`停用 ${pool.label} 后，使用该 Pool Token 的网关请求会停止路由。`}
+        confirmLabel="停用"
+        onConfirm={() => void setPoolEnabled(false)}
+      />
+
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+        title="删除 Pool"
+        description={`将删除 ${pool.label}、Pool Token，以及其中的 ${accountCount} 个账号；这些账号也会从其他 Pool 中移除。此操作不可撤销。`}
+        confirmLabel="删除 Pool"
+        onConfirm={() => void deletePool()}
+      />
+    </>
   );
 }
 
