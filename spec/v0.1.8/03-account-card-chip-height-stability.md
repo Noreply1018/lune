@@ -54,7 +54,7 @@ member 5: 今日 0 | 30 天后到期 | 模型请求被限流
 
 - `今日 N` 来自 24h account stats。
 - `30 天后到期` 来自 Codex CPA subscription expiry。
-- `模型请求被限流` 来自 `cpa_quota_status='error'` 的 Codex quota / rate-limit evidence。
+- `模型请求被限流` 来自 v0.1.7 前端把 `cpa_quota_status='error'` 一律映射为限流文案；本轮 02 文档已经确认该运行态案例实际是 quota fetch `HTTP 401`，不是普通模型请求 `429` evidence。
 
 这组内容在 `15.5rem` 最小卡片列宽、左侧拖拽留白、卡片内边距和 `gap-1.5` 共同作用下，存在稳定换行条件。
 
@@ -95,7 +95,7 @@ repeat(auto-fill, minmax(15.5rem, 1fr))
 具体判断：
 
 - 异常是前端布局问题，不是 API 数据异常。
-- `模型请求被限流` 是 v0.1.7 为 Codex `429` 归类新增的有效状态文案，但它比旧文案更容易触发换行。
+- 对真实 Codex 普通模型请求 `HTTP 429 from model request`，`模型请求被限流` 是 v0.1.7 新增的有效状态文案；但在本次 `HTTP 401` quota fetch error 运行态案例中，它是前端误归类后的展示文案。
 - 只缩短单个文案可以缓解当前案例，但不能彻底防止未来其他三 chip 组合再次换行。
 - 卡片 chip 是摘要层，不应为了完整展示所有 chip 文案牺牲卡片网格稳定性。
 
@@ -109,7 +109,7 @@ v0.1.8 应把账号卡片 chip 区域收敛为稳定单行摘要，同时保留�
 2. chip 行加 `overflow-hidden`，保证不会撑高卡片。
 3. 每个 chip 使用 `min-w-0 truncate` 或等价约束，允许单个 chip 内部省略。
 4. 保留 `title={chip.detail}`，让完整原因可通过 hover 查看。
-5. 对高频较长文案做卡片级短文案收敛，例如把 `模型请求被限流` 缩短为 `请求限流` 或 `模型限流`。
+5. 对真实 `HTTP 429 from model request` 的高频较长文案做卡片级短文案收敛，例如把 `模型请求被限流` 缩短为 `请求限流` 或 `模型限流`；quota fetch `HTTP 401/403/request failed` 仍必须使用额度查询失败类文案。
 6. 详情抽屉和诊断区保留完整表述，不把卡片短文案作为唯一信息源。
 
 最低实现口径：
@@ -139,6 +139,7 @@ chip 项：可收缩、内部省略、保留 title
 | --- | --- | --- |
 | Codex 模型请求裸 `429` evidence | 模型请求被限流 | 请求限流 |
 | Codex 明确 quota / rate-limit 文案 | 额度 / 限流问题 | 额度受限 |
+| Codex quota fetch `HTTP 401/403/request failed` | 额度查询失败 / 额度接口鉴权失败 | 额度查询失败 |
 | Serving cooldown 且无 quota evidence | 服务冷却中 | 冷却中 |
 | Credential needs login | 需要重新登录 | 需要重登 |
 | Runtime binding issue | Binding 未确认 | Binding |
@@ -152,7 +153,7 @@ chip 项：可收缩、内部省略、保留 title
 但验收时需要确认：
 
 - chip 的 `title` 或等价 tooltip 不泄露 token、auth JSON、完整请求体或 prompt。
-- `模型请求被限流` / `请求限流` 的完整原因仍来自既有 `cpa_quota_last_error` 或详情抽屉诊断字段。
+- `模型请求被限流` / `请求限流` 只能用于真实 `HTTP 429 from model request`，完整原因仍来自既有 `cpa_quota_last_error` 或详情抽屉诊断字段。
 - 只读审计证据中涉及的真实账号邮箱、token mask 和请求统计不应写入自动化测试快照。
 
 ## 测试与验收
@@ -161,7 +162,8 @@ chip 项：可收缩、内部省略、保留 title
 
 | 编号 | 场景 | 准备 | 操作 | 期望 |
 | --- | --- | --- | --- | --- |
-| CHIP-UI-01 | 三枚短 chip | `今日 0`、`30 天后到期`、`请求限流` | 渲染 Active Pool 卡片 | chip 行保持一行，卡片高度不超过同类卡片 |
+| CHIP-UI-01 | 三枚短 chip：真实 429 | `今日 0`、`30 天后到期`、`请求限流` | 渲染 Active Pool 卡片 | chip 行保持一行，卡片高度不超过同类卡片 |
+| CHIP-UI-01A | 三枚短 chip：quota fetch 失败 | `今日 0`、`30 天后到期`、`额度查询失败` | 渲染 Active Pool 卡片 | chip 行保持一行，卡片高度不超过同类卡片 |
 | CHIP-UI-02 | 三枚长 chip | `今日 999.9k`、`7 天内到期`、`Binding 未确认` | 渲染最小列宽卡片 | chip 行不换行；长 chip 内部省略；底部按钮不被挤压 |
 | CHIP-UI-03 | 旧长文案兼容 | 主问题仍为 `模型请求被限流` | 渲染卡片 | 即使长文案未缩短，布局也不换行撑高 |
 | CHIP-UI-04 | 单枚 chip | 只有 `今日 0` | 与三枚 chip 卡片同屏 | 卡片高度保持稳定，不因 chip 数量少产生异常塌陷 |
@@ -184,7 +186,7 @@ chip 项：可收缩、内部省略、保留 title
 
 | 编号 | 场景 | 验收方式 | 必须验证 |
 | --- | --- | --- | --- |
-| CT-CHIP-01 | 0.1.7 真实缺陷数据复现 | 使用隔离数据目录导入或构造三 chip Codex CPA 账号 | 旧问题组合 `今日 N / N 天后到期 / 请求限流` 在新版本中不再换行撑高 |
+| CT-CHIP-01 | 0.1.7 真实缺陷数据复现 | 使用隔离数据目录导入或构造三 chip Codex CPA 账号 | 修正后的组合 `今日 N / N 天后到期 / 额度查询失败` 在新版本中不再换行撑高 |
 | CT-CHIP-02 | 多账号同屏对比 | 构造一枚、两枚、三枚 chip 的 Active Pool 卡片 | 同屏卡片高度稳定，网格不出现某一张异常增高 |
 | CT-CHIP-03 | Disabled Dock 对比 | 构造右侧 disabled 三 chip 卡片 | 右侧窄栏不出现两行 chip 导致高度跳变 |
 | CT-CHIP-04 | 移动视口检查 | 使用浏览器或 Playwright 截图检查 375px 页面 | chip 省略合理，无重叠、无横向溢出 |
@@ -204,6 +206,7 @@ chip 项：可收缩、内部省略、保留 title
 
 - 卡片 chip 是摘要层，不要求完整展示所有文字。
 - 解决根因必须约束 chip 行布局，不能只依赖缩短某一个当前文案。
-- `模型请求被限流` 可以在卡片层缩短为 `请求限流` 或 `模型限流`，详情和诊断仍保留完整解释。
+- 对真实 `HTTP 429 from model request`，`模型请求被限流` 可以在卡片层缩短为 `请求限流` 或 `模型限流`，详情和诊断仍保留完整解释。
+- 对 quota fetch `HTTP 401/403/request failed`，卡片、详情和诊断都不能继续使用“模型请求被限流”。
 - 本问题不要求新增后端状态字段。
 - 本问题不改变 Codex `429` 的后端归类规则，只修复其前端卡片摘要展示稳定性。
