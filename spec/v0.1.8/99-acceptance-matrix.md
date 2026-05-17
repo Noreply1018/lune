@@ -80,10 +80,12 @@
 | API-05 | 非法策略拒绝 | Pool 更新接口传 `round_robin` 或空值 | 返回 400；数据库保持原值 |
 | API-06 | 旧客户端兼容 | 更新 Pool label / enabled / priority 但不传策略 | 不把策略清空；保留原值或使用默认值 |
 | API-07 | 旧客户端更新后 cache 生效 | 旧客户端更新 Pool 其他字段后立即发请求 | 策略保持原值，cache 刷新后路由行为仍符合该策略 |
-| API-08 | 批量导入接口部分成功 | 上传两个合法 JSON 和一个非法 JSON | 合法项返回 created / updated；非法项返回 failed；HTTP 结果不泄露 token |
-| API-09 | 批量导入请求级失败 | 目标 Pool 不存在或 CPA auth dir 不可写 | 请求失败且不写入任何 auth file |
-| API-10 | 批量导入同账号幂等 | 上传已有 account key | 复用账号和 Pool member，不创建重复 DB row |
-| API-11 | 同批次重复账号 | 同一次请求上传两个同 account key 文件 | 第二项返回 skipped 或 duplicate_in_batch；最终只有一个账号 |
+| API-08 | 批量导入只读预检 | 上传两个合法 JSON 到 preview 接口 | 返回安全摘要和预计动作；不写 auth file、不创建或更新账号、不新增 Pool member；不触发 runtime reload 或分层刷新 |
+| API-09 | 批量导入接口部分成功 | 上传两个合法 JSON 和一个非法 JSON 到正式导入接口 | 合法项返回 created / updated；非法项返回 failed；HTTP 结果不泄露 token |
+| API-10 | 批量导入请求级失败 | 目标 Pool 不存在或 CPA auth dir 不可写 | 请求失败且不写入任何 auth file |
+| API-11 | 批量导入同账号幂等 | 上传已有 account key | 复用账号和 Pool member，不创建重复 DB row |
+| API-12 | 同批次重复账号 | 同一次请求上传两个同 account key 文件 | 第二项返回 skipped 或 duplicate_in_batch；最终只有一个账号 |
+| API-13 | 正式导入重新校验 | 预检后、确认导入前同账号状态发生变化 | 正式导入按最新状态返回结果，不信任预检预计动作 |
 
 ## Codex Quota Error 文案矩阵
 
@@ -125,9 +127,11 @@
 | UI-10 | 移动端卡片稳定 | 375px 视口截图或页面测试 | chip 不重叠、不横向溢出页面、不遮挡底部操作 |
 | UI-11 | 完整解释可达 | hover / title / 详情抽屉检查 | 被省略 chip 仍可查看完整原因，且不泄露敏感字段 |
 | UI-12 | 多文件导入入口 | Add Account 的 CPA / Codex 导入流程 | `Import auth JSON` 可以选择多个 `.json` 文件 |
-| UI-13 | 多文件安全预览 | 上传 Free / Go / Plus fixture | 只展示文件名、provider、计划、masked email、account id 摘要和动作，不展示完整 JSON |
-| UI-14 | 批量导入结果页 | 一批中包含 created / updated / skipped / failed | 每个文件都有独立结果和安全错误摘要 |
-| UI-15 | 部分失败可达 Pool | 一批部分成功后点击返回 Pool | 成功项在目标 Pool 可见；失败项不创建卡片 |
+| UI-13 | 多文件安全预检 | 上传 Free / Go / Plus fixture | 先展示文件名、provider、计划、masked email、account id 摘要和预计动作，不展示完整 JSON |
+| UI-14 | 预检确认前无写入 | 选择多个 `.json` 后停留在预检页 | 确认前不创建或更新账号、不写 auth file、不新增 Pool member，也不触发 runtime reload 或分层刷新 |
+| UI-15 | 确认后正式导入 | 在预检结果页点击确认导入 | 调用正式导入接口；结果页展示最终结果而不是沿用预计动作 |
+| UI-16 | 批量导入结果页 | 一批中包含 created / updated / skipped / failed | 每个文件都有独立结果和安全错误摘要 |
+| UI-17 | 部分失败可达 Pool | 一批部分成功后点击返回 Pool | 成功项在目标 Pool 可见；失败项不创建卡片 |
 
 ## 卡片 Chip 测试矩阵
 
@@ -208,14 +212,16 @@ CPA auth JSON 多账号导入最小容器验收覆盖：
 
 | 编号 | 场景 | 必须验证 |
 | --- | --- | --- |
-| CT-MJSON-01 | 两个合法 auth JSON 首次导入 | 两个 auth file 写入成功；两个账号创建并加入目标 Pool |
+| CT-MJSON-00 | 只读预检 | 预检页展示安全摘要和预计动作；auth dir、DB account、Pool member 均无新增或更新；runtime/auth index/refresh 队列无新增任务 |
+| CT-MJSON-01 | 两个合法 auth JSON 首次导入 | 确认导入后两个 auth file 写入成功；两个账号创建并加入目标 Pool |
 | CT-MJSON-02 | 新账号 + 已有账号混合导入 | 已有账号为 updated，新账号为 created；没有重复账号或 Pool member |
 | CT-MJSON-03 | 同批次重复账号 | 第二项 skipped 或 duplicate_in_batch；最终只有一个账号 |
 | CT-MJSON-04 | 部分失败 | 合法项成功；非法项失败；结果页展示部分失败；日志不泄露上传内容 |
 | CT-MJSON-05 | 防路径穿越 | 后端忽略用户文件名，目标路径仍在 `cpa_auth_dir` 内 |
 | CT-MJSON-06 | Runtime sync 与分层刷新 | Credential / Runtime Binding / Access / Quota / Models 进入可解释状态 |
 | CT-MJSON-07 | 覆盖失败回滚 | 新文件回滚；已有文件不丢失；前端显示安全错误 |
-| CT-MJSON-08 | 测试清理 | 测试容器和临时数据已删除 |
+| CT-MJSON-08 | 预检后状态变化 | 正式导入重新校验，返回 updated / skipped / failed 等最新结果，不盲信预检 |
+| CT-MJSON-09 | 测试清理 | 测试容器和临时数据已删除 |
 
 ## 最低验收标准
 

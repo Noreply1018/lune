@@ -50,10 +50,20 @@ Import auth JSON
 
 1. 用户选择目标 Pool。
 2. 用户选择一个或多个 `.json` 文件。
-3. 前端调用预检或导入接口，展示每个文件的安全摘要。
-4. 用户确认后批量导入。
+3. 前端调用只读预检接口，展示每个文件的安全摘要和预计动作。
+4. 用户确认后，前端调用正式批量导入接口。
 5. 结果页展示每个文件的最终状态。
 6. 用户可以返回目标 Pool，确认账号已经加入 Pool。
+
+前端流程必须是：
+
+```text
+选择文件 -> 安全预检 -> 确认导入 -> 结果页
+```
+
+安全预检只用于让用户在写入前确认将要处理的文件。预检不能写入 auth file、不能创建或更新账号、不能新增 Pool member、不能触发 CPA runtime reload，也不能把账号标记为可路由。
+
+预检结果不是最终导入结果。正式导入时后端必须重新执行完整校验、重复检测、身份冲突检测、写入安全检查和 Pool membership 检查，不能信任前端提交的预检结果。
 
 前端摘要只允许展示：
 
@@ -69,7 +79,29 @@ Import auth JSON
 
 ## 后端接口
 
-实现可以复用 v0.1.7 单文件接口并新增批量参数，也可以新增批量接口。批量接口语义如下：
+实现可以复用 v0.1.7 单文件接口并新增批量参数，也可以新增批量接口，但必须区分只读预检接口和正式导入接口。
+
+只读预检接口语义如下：
+
+```http
+POST /admin/api/accounts/cpa/import-json-batch/preview
+Content-Type: multipart/form-data
+
+files=<auth json files>
+pool_id=<target pool id>
+```
+
+预检接口要求：
+
+- 单次最多文件数为 20 个。
+- 单文件大小沿用单文件导入限制，最大 256 KiB。
+- 总请求大小必须有上限，避免一次上传过多凭据。
+- 每个文件都按 v0.1.7 单文件规则做只读校验。
+- 返回每个文件的安全摘要、重复检测结果和预计动作。
+- 不写入 auth file，不创建或更新账号，不新增 Pool member，不触发 runtime reload，不触发分层刷新。
+- 请求级条件失败时返回安全错误，例如 Pool 不存在、CPA service 未配置；响应不得包含完整 auth JSON。
+
+正式批量导入接口语义如下：
 
 ```http
 POST /admin/api/accounts/cpa/import-json-batch
@@ -85,7 +117,7 @@ enabled=<optional bool, default true>
 - 单次最多文件数为 20 个。
 - 单文件大小沿用单文件导入限制，最大 256 KiB。
 - 总请求大小必须有上限，避免一次上传过多凭据。
-- 每个文件都按 v0.1.7 单文件规则校验。
+- 每个文件都按 v0.1.7 单文件规则重新校验，不能复用或信任前端预检结果。
 - 任一文件失败不得阻断其他文件导入，除非请求级条件失败，例如 Pool 不存在、CPA service 未配置、auth dir 不可写。
 - 响应按文件返回安全结果，不返回完整 auth JSON。
 
@@ -215,6 +247,7 @@ Models
 ### 单元与集成测试
 
 - 批量上传两个合法 Codex auth JSON，分别创建账号并加入目标 Pool。
+- 批量预检两个合法 Codex auth JSON，只返回安全摘要和预计动作，不写入 auth file、不创建账号、不加入 Pool。
 - 批量上传一个新账号和一个已有账号，结果分别为 `created` 和 `updated`。
 - 同批次上传两个相同 account key，只处理第一份，第二份标记为 `skipped` 或 `duplicate_in_batch`。
 - 批量中一个合法、一个缺少 `refresh_token`，合法项成功，非法项失败且不影响合法项。
@@ -223,6 +256,7 @@ Models
 - unsupported provider 被拒绝。
 - 用户上传文件名包含 `../` 时，后端不使用用户文件名生成目标路径。
 - 目标 Pool 不存在时，请求级失败，不写入任何 auth file。
+- 预检后、确认导入前状态变化时，正式导入重新校验并按最新状态返回 `created` / `updated` / `skipped` / `failed`。
 - 覆盖已有 auth file 后 upsert 失败时恢复旧文件和旧账号快照。
 - 导入成功后触发 refresh，Access / Quota / Models 至少进入 completed / pending / error 的可解释状态。
 - 后端响应和日志不包含 token 字段值。
@@ -230,7 +264,9 @@ Models
 ### 前端测试
 
 - Add Account 的 CPA 分支 `Import auth JSON` 支持选择多个 `.json` 文件。
+- 选择多个 `.json` 文件后先展示安全预检结果，确认前不创建账号、不写入 auth file。
 - 多文件预览只展示安全摘要，不展示完整 JSON。
+- 用户确认后才调用正式导入接口；导入结果页展示最终结果而不是沿用预检预计动作。
 - 批量结果页按文件展示 `created`、`updated`、`skipped`、`failed`。
 - 部分失败时，成功项仍显示为成功，并可前往目标 Pool 查看。
 - 同批次重复账号有明确提示，不创建重复卡片。
@@ -245,6 +281,7 @@ Models
 
 | 编号 | 场景 | 操作 | 期望 |
 | --- | --- | --- | --- |
+| CT-MJSON-00 | 只读预检 | Add Account 选择 `Import auth JSON`，一次选择两个 fixture，仅停留在预检结果页 | 展示安全摘要和预计动作；auth dir、DB account、Pool member 均无新增或更新；runtime/auth index/refresh 队列无新增任务 |
 | CT-MJSON-01 | 两个合法 auth JSON 首次导入 | Add Account 选择 `Import auth JSON`，一次上传两个 fixture，选择 Pool | 两个 auth file 写入成功；两个账号创建并加入 Pool；Pool 页面可见 |
 | CT-MJSON-02 | 新账号 + 已有账号混合导入 | 再次上传一个已有账号和一个新账号 | 已有账号为 `updated`，新账号为 `created`；没有重复 DB account 或 Pool member |
 | CT-MJSON-03 | 同批次重复账号 | 一次上传两个同 account key fixture | 第一项成功，第二项 `skipped` 或 `duplicate_in_batch`；最终只有一个账号 |
@@ -252,7 +289,8 @@ Models
 | CT-MJSON-05 | 防路径穿越 | 上传 filename 为 `../../x.json` 的文件 | 后端忽略用户文件名，目标路径仍在 `cpa_auth_dir` 内 |
 | CT-MJSON-06 | Runtime sync 与分层刷新 | 导入后等待 CPA management auth-files 和 refresh | Credential / Runtime Binding / Access / Quota / Models 进入可解释状态 |
 | CT-MJSON-07 | 覆盖失败回滚 | 模拟 upsert 或 pool add 失败 | 新文件回滚；已有文件不丢失；前端显示安全错误 |
-| CT-MJSON-08 | 测试清理 | 完成上述验收 | 删除测试容器和临时数据目录或 volume |
+| CT-MJSON-08 | 预检后状态变化 | 预检显示新账号后，在确认前另一路径先导入同账号，再点击确认导入 | 正式导入重新校验，返回 updated / skipped / failed 等最新结果，不盲信预检 |
+| CT-MJSON-09 | 测试清理 | 完成上述验收 | 删除测试容器和临时数据目录或 volume |
 
 仅修改本规格文档时不执行容器测试；实现代码进入 v0.1.8 后必须执行。
 
