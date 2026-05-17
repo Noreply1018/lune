@@ -1,0 +1,300 @@
+# 04. CPA 分层可路由模型与 Codex Free 接入
+
+状态：规划中。本文定义 v0.1.8 必须实现的 CPA 账号分层可路由模型，重点解决 Codex Free / Go 账号可以接入、可以被正确判定可路由、可以显示计划与额度的问题。
+
+来源：2026-05-17 对当前 Lune CPA 账号生命周期、Codex subscription / quota / router / 前端展示逻辑的代码审计，以及用户确认 v0.1.8 需要支持 Free 账号正常接入和路由。OpenAI 当前官方说明中，Codex 包含在 ChatGPT Free / Go / Plus / Pro / Business / Enterprise 等计划中，其中 Free / Go 属于限时包含；因此 Lune 不能继续把 Codex CPA 可用性等同于 paid subscription active。
+
+## 问题
+
+当前实现把 Codex CPA 账号是否可路由和 `cpa_subscription_status='active'` 绑定：
+
+```text
+Codex CPA 可路由必须 subscription active
+```
+
+这在只考虑 Plus / Pro 的阶段可以工作，但引入 Free / Go 后不再成立：
+
+- Free / Go 是计划身份，不一定有 `chatgpt_subscription_active_until`。
+- 缺少 subscription active until 不代表 Codex access 不可用。
+- Free 可能只有短窗口额度，没有周额度；现有前端固定假设 `5h + 7d` 两个窗口。
+- quota 查询失败、quota blocked、access ineligible 和 serving cooldown 是不同语义，不能合并为同一个“账号不可用”。
+- 前端当前已经有 `free` subscription status 类型，但其语义是红色“订阅不可用”，这会误导用户。
+
+v0.1.8 必须把 CPA 可路由规则从零散字段判断升级为统一的分层判定模型。
+
+## 分层模型
+
+CPA 账号普通流量可路由性由以下层级按顺序判定：
+
+```text
+Account / Pool
+Credential
+Runtime Binding
+Access
+Quota
+Serving
+Models
+```
+
+每层都必须输出稳定机器语义：
+
+```text
+status: pass | warn | block | pending | unknown
+reason: stable machine code
+message: human readable summary
+source: auth_file | cpa_management | wham_usage | model_request | config | store
+checked_at
+```
+
+最终聚合规则：
+
+```text
+block -> 不可路由
+pending / unknown -> 默认不可路由，除非该层策略明确允许 fail-open
+warn -> 可路由但产生 penalty
+pass -> 正常
+```
+
+v0.1.8 最低闭环要求后端新增统一评估函数或等价共享逻辑：
+
+```go
+EvaluateAccountRoutability(account, options) RoutabilityDecision
+```
+
+返回值至少包含：
+
+```go
+type RoutabilityDecision struct {
+    Routable bool
+    Penalty int
+    BlockingLayer string
+    BlockingReason string
+    Layers []RoutabilityLayer
+}
+```
+
+router、Pool routable count、Route summary 和 Diagnostics 必须使用同一套规则或有测试锁定的等价规则，不能继续由 Go router、SQL 和前端 TypeScript 各自维护冲突判断。
+
+## Access 与 Subscription 拆分
+
+v0.1.8 必须引入 Codex access / entitlement 概念，不能继续把 subscription 当作唯一 gate。
+
+推荐新增字段：
+
+```sql
+cpa_access_status TEXT NOT NULL DEFAULT 'unknown'
+cpa_access_reason TEXT NOT NULL DEFAULT ''
+cpa_access_last_error TEXT NOT NULL DEFAULT ''
+cpa_access_checked_at TEXT NOT NULL DEFAULT ''
+```
+
+允许状态：
+
+| 状态 | 语义 | 路由影响 |
+| --- | --- | --- |
+| `eligible` | 账号具备该 CPA provider 的普通模型使用资格 | pass |
+| `limited` | 账号具备资格，但当前权益或策略受限，需要结合 quota 判断 | warn 或 block，由 quota 决定 |
+| `ineligible` | 账号明确不具备该 provider 使用资格 | block |
+| `pending` | access 证据正在同步或探查中 | block |
+| `error` | access 探查失败，但没有明确不可用证据 | warn 或 block，取决于最近模型成功证据 |
+| `unknown` | 没有可信 access 证据 | block |
+
+`cpa_subscription_*` 字段继续保留，但语义收窄：
+
+```text
+cpa_subscription_* 只表示 paid subscription 元数据
+cpa_access_* 表示 Codex / CPA provider 是否可用
+```
+
+Paid plan 的 `subscription active` 可以推导 `access_status=eligible`；Free / Go 不能依赖 subscription，需要使用 quota 或模型请求证据。
+
+## Codex Access 证据
+
+Codex `access_status=eligible` 可以由以下证据推导：
+
+1. `chatgpt_subscription_active_until` 存在且未过期。
+2. `wham/usage` 返回成功，并且没有 `allowed=false`、`limit_reached=true`、`blocked=true` 等明确拒绝。
+3. 最近一次普通模型请求成功。
+4. CPA management 明确返回该账号具备 Codex access。
+
+Codex `access_status=ineligible` 可以由以下证据推导：
+
+1. access / entitlement 接口明确返回无权限。
+2. `wham/usage` 或模型请求返回明确“plan unsupported / not eligible / access denied”类安全摘要。
+3. paid subscription 已过期且没有 Free / Go 可用证据。
+
+以下情况不得推导为 `ineligible`：
+
+- quota blocked。
+- 模型请求 429。
+- quota fetch HTTP 401 / 403。
+- quota fetch request failed。
+- subscription metadata pending。
+
+这些情况应分别落入 quota、credential、runtime 或 access error / pending，而不是“没有资格”。
+
+## Quota 语义
+
+Quota 只表达当前额度与限流状态，不表达计划身份或 access 资格。
+
+推荐状态：
+
+| 状态 | 语义 | 路由影响 |
+| --- | --- | --- |
+| `ok` | 最近 quota 快照未显示阻断 | pass |
+| `limited` | 已接近或处于临界状态，但未明确阻断 | warn |
+| `blocked` | quota 明确阻断或真实模型请求明确额度/限流阻断 | block |
+| `error` | quota 查询失败或裸 429 证据 | warn 或 block，取决于 error kind |
+| `pending` | quota 正在同步 | warn |
+| `unknown` | 没有 quota 快照 | warn |
+
+v0.1.8 可以先复用现有 `cpa_quota_status`，但 UI 和路由必须区分：
+
+- `HTTP 429 from model request`：模型请求层限流证据，普通路由阻断。
+- 明确 quota / rate-limit / limit reached 文案：quota blocked，普通路由阻断。
+- quota fetch HTTP 401 / 403：额度接口鉴权失败，不能等同模型限流。
+- quota fetch request failed / 502 / timeout：额度查询失败，不能等同模型限流。
+
+Free / Go quota 展示必须按实际返回窗口动态渲染，不能固定假设一定有 `5h` 和 `7d` 两个窗口。没有周额度窗口时，不渲染假的 7d pending bar。
+
+## Codex Free / Go 路由规则
+
+Codex Free / Go 账号可路由条件：
+
+```text
+account enabled
+pool member enabled
+credential pass 或 warn
+runtime binding pass
+access_status=eligible 或 limited
+quota 未 block
+serving 未 block
+模型匹配或模型未知兜底
+```
+
+`plan_type=free` 本身不够成为可路由证据；它只是计划身份。Free 账号必须通过 `wham/usage` 成功、普通模型请求成功或 CPA management 明确 access 证据进入 `access_status=eligible`。
+
+Free / Go 的常见状态解释：
+
+| 输入状态 | 期望判定 |
+| --- | --- |
+| plan free，wham/usage allowed，quota 未阻断 | 可路由 |
+| plan free，wham/usage 只有 primary window | 可路由，UI 只展示实际窗口 |
+| plan free，无 subscription active until，access 未验证 | 不可路由，显示 access 待确认 |
+| plan free，模型请求成功但 quota fetch 失败 | 可路由但 quota warn |
+| plan free，模型请求 429 | quota / serving 阻断 |
+| plan free，明确 access denied | access ineligible，阻断 |
+
+## Refresh 流程
+
+CPA 账号刷新应按以下顺序收敛：
+
+1. 读取 auth file 和 CPA management auth index。
+2. 更新 credential 状态。
+3. 更新 runtime binding / auth index 状态。
+4. 解析并保存 `plan_type`。
+5. 刷新 access：
+   - paid plan：subscription active 可推导 access eligible。
+   - Free / Go / unknown：用 `wham/usage` 或轻量模型证据推导 access。
+6. 刷新 quota，并保存原始 snapshot 与安全派生 meta。
+7. 刷新模型列表。
+
+`wham/usage` 同时可以提供 access 证据和 quota 证据，但持久化时必须拆成两个维度。
+
+## UI 表现
+
+账号卡片和详情抽屉必须把计划身份、access 和 quota 分开展示。
+
+卡片摘要：
+
+```text
+Codex · Free
+Access 可用
+Quota 5h xx% 剩余
+```
+
+Paid 账号示例：
+
+```text
+Codex · Plus
+30 天后到期
+5h / 7d quota bars
+```
+
+Free 账号示例：
+
+```text
+Codex · Free
+5h quota bar
+```
+
+不允许：
+
+```text
+Free -> 红色“订阅不可用”
+Free -> 因无 7d 窗口显示周额度 pending
+quota fetch 401 -> 模型请求被限流
+```
+
+详情抽屉 Diagnostics 主维度：
+
+```text
+Credential
+Runtime Binding
+Access
+Quota
+Serving
+Models
+```
+
+`Subscription` 只作为 paid plan 的 Access 细节出现，不再作为所有 Codex CPA 的主诊断 gate。
+
+## 测试与验收
+
+### 单元与集成测试
+
+- router 测试：Codex Free + access eligible + quota ok 可以路由。
+- router 测试：Codex Free + access unknown 不可路由。
+- router 测试：Codex Free + quota blocked 不可路由。
+- router 测试：Codex Plus + subscription active 推导 access eligible。
+- router 测试：Codex Plus + subscription expired 且无 Free / quota / model success 证据时不可路由。
+- health 测试：没有 `chatgpt_subscription_active_until` 的 Free auth file 不写成订阅异常。
+- health 测试：wham/usage success 可以写入 access eligible。
+- health 测试：wham/usage allowed=false 写入 quota blocked，不写 access ineligible。
+- gateway 测试：模型请求成功可以清除旧模型请求 429 evidence，并可作为 access eligible 证据。
+- gateway 测试：模型请求 429 写 quota / serving 阻断，不写 access ineligible。
+
+### 前端测试
+
+- AccountCard：Free 显示为 `Codex · Free` 或等价计划 chip，不能显示红色“订阅不可用”。
+- AccountCard：Free 只有 primary quota window 时只显示一条窗口。
+- AccountDetailSheet：Diagnostics 包含 Access 维度。
+- AccountDetailSheet：Subscription 仅作为 paid plan access 细节，不作为 Free 的阻断主项。
+- quota parser：支持只有 primary window 的 snapshot。
+- route summary：Free + access eligible 显示可路由，不被 subscription unknown 阻断。
+
+### 容器验收
+
+实现后必须使用新启动测试容器完成验收，不能复用正在运行的旧版本容器。
+
+最小 fake CPA 矩阵：
+
+| 编号 | 场景 | 期望 |
+| --- | --- | --- |
+| CT-FREE-01 | Free auth JSON，无 subscription active until，wham/usage allowed，只有 primary window | 账号可路由；卡片显示 Free 和单窗口额度 |
+| CT-FREE-02 | Free auth JSON，wham/usage allowed=false | access 不写 ineligible；quota blocked；普通路由跳过 |
+| CT-FREE-03 | Free auth JSON，quota fetch 401，模型请求成功 | access eligible；quota warn；普通路由可用但降权 |
+| CT-FREE-04 | Free auth JSON，普通模型请求 429 | quota / serving 阻断；不写 access ineligible |
+| CT-FREE-05 | Plus auth JSON，subscription active | access eligible；保持现有 paid 行为 |
+| CT-FREE-06 | Plus auth JSON，subscription expired，无其他可用证据 | access ineligible；普通路由跳过 |
+| CT-FREE-07 | UI 移动端和桌面 | Free 计划 chip、quota 单窗口、Access 诊断无重叠 |
+| CT-FREE-08 | 测试清理 | 测试容器和临时数据已删除 |
+
+## 已确认口径
+
+- Free / Go 是计划身份，不是异常状态。
+- `subscription active` 不是 Codex CPA 的通用可路由必要条件。
+- Access 和 quota 必须拆开；quota blocked 不代表账号没有 Codex access。
+- Free 可路由必须有 access evidence，不能只看 `plan_type=free`。
+- Free quota UI 必须按实际窗口动态展示，不能伪造 7d 窗口。
+- router、Pool count、Route summary 和 Diagnostics 必须共享分层规则或由测试保证等价。

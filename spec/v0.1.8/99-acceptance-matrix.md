@@ -2,13 +2,14 @@
 
 ## 目标
 
-本文件只做 v0.1.8 最终核对。Pool 路由策略详细设计以 `01-pool-routing-policy.md` 为准；Codex quota error 文案分层以 `02-codex-quota-error-labeling.md` 为准；Pool 账号卡片 chip 高度稳定以 `03-account-card-chip-height-stability.md` 为准。避免路由语义、quota 诊断文案、卡片 chip 展示、UI 切换和测试口径分散后出现冲突版本。
+本文件只做 v0.1.8 最终核对。Pool 路由策略详细设计以 `01-pool-routing-policy.md` 为准；Codex quota error 文案分层以 `02-codex-quota-error-labeling.md` 为准；Pool 账号卡片 chip 高度稳定以 `03-account-card-chip-height-stability.md` 为准；CPA 分层可路由模型以 `04-cpa-routability-layer-model.md` 为准；CPA auth JSON 多账号导入以 `05-cpa-auth-json-multi-import.md` 为准。避免路由语义、quota 诊断文案、卡片 chip 展示、导入语义、UI 切换和测试口径分散后出现冲突版本。
 
 ## 本轮验证状态
 
 - 已完成：v0.1.8 路由策略规格沉淀。
 - 已完成：只读审计正在运行的 `lune-0.1.7` 容器中 Codex CPA quota `HTTP 401` 被误展示为“模型请求被限流”的问题。审计结论为：账号 `1` 和 `4` 当前是 quota 辅助接口 `HTTP 401`，真实模型请求和自检为 `200/healthy`；根因为前端把所有 `cpa_quota_status='error'` 都映射成模型请求限流。
 - 已完成：只读审计正在运行的 `lune-0.1.7` 容器中 Pool 账号卡片 chip 换行异常。审计结论为：`AccountCard` 的 chip 容器允许 `flex-wrap`，三 chip 组合 `今日 N / N 天后到期 / 模型请求被限流` 在 `15.5rem` 最小列宽下会换行撑高卡片；该运行态案例中的限流文案本身还受到 quota fetch `HTTP 401` 误归类影响，但高度异常的根因是前端 chip 行缺少单行约束。
+- 已完成：从 draft 中收束 CPA auth JSON 多账号导入范围。v0.1.8 只做多文件上传、幂等更新、部分失败和导入结果审计，不做目录扫描或压缩包导入。
 - 未执行容器测试：本轮只新增规格文档，没有修改运行时、构建、发布、启动脚本或运行配置。
 - 待实现后必须完成：单元测试、API 测试、前端测试、新容器验收和测试容器清理。
 
@@ -21,7 +22,7 @@
 | MUST-01 | Pool 级 `routing_policy` 数据字段 | 没有持久化字段就无法让用户按 Pool 控制策略 | 默认 `health_first`；支持 `ordered`；迁移旧数据；非法值拒绝 |
 | MUST-02 | `health_first` 延续健康优先意图 | 默认策略不能破坏健康优先心智，但必须修正模型兜底边界 | 保持模型匹配 + penalty 分层，同层级按 position；明确不支持请求模型的账号不得被兜底选中 |
 | MUST-03 | `ordered` 排序优先 | 用户明确需要优先使用排在前面的轻降级账号 | 按 position 选择第一个可接普通流量且模型匹配的账号；轻降级不自动后置 |
-| MUST-04 | 硬阻断不可绕过 | 排序优先不能变成强行打不可用账号 | 禁用、凭据、quota blocked、Codex `HTTP 429 from model request` evidence、subscription、runtime binding、cooldown/error、模型明确不支持均跳过 |
+| MUST-04 | 硬阻断不可绕过 | 排序优先不能变成强行打不可用账号 | 禁用、凭据、access ineligible/pending/unknown、quota blocked、Codex `HTTP 429 from model request` evidence、runtime binding、cooldown/error、模型明确不支持均跳过 |
 | MUST-05 | retry 遵守策略 | 请求失败后的重试不能回到旧策略 | 排除已尝试账号后按当前 Pool 策略继续选择 |
 | MUST-06 | Pool API 读写策略 | UI 需要可保存、可刷新、可恢复 | `GET /pools`、`GET /pools/{id}` 和更新接口包含策略字段 |
 | MUST-07 | Pool 详情页策略切换按钮 | 用户指定入口位于“自检 Pool”右侧 | 单按钮切换；文案为 `健康优先` / `排序优先`；两种颜色不同 |
@@ -32,6 +33,9 @@
 | MUST-12 | 卡片 chip 单行摘要布局 | v0.1.7 真实容器已出现三 chip 换行导致卡片高度不一致 | chip 行不换行；溢出省略；长文案不撑高卡片 |
 | MUST-13 | 卡片主问题短文案 | `模型请求被限流` 等长文案会放大换行风险 | 卡片层允许短文案；详情和诊断保留完整解释 |
 | MUST-14 | 卡片高度视觉回归 | 单靠代码审查无法确认不同视口下无重叠 | 覆盖桌面、窄桌面、平板、手机截图或等价视觉检查 |
+| MUST-15 | CPA auth JSON 多账号导入 | 多账号迁移不应重复执行单文件流程 | Add Account 支持多文件 `.json` 导入；逐项校验；部分成功；同账号幂等更新 |
+| MUST-16 | 批量导入结果审计 | 批量导入必须可复核且不能泄露凭据 | 结果页和审计摘要展示 created / updated / skipped / failed / pending；不记录 token 或完整 JSON |
+| MUST-17 | 导入后分层刷新 | 导入成功不能直接等于账号可路由 | 导入后触发 Credential / Runtime Binding / Access / Quota / Models 刷新；状态可解释 |
 
 ## 路由策略测试矩阵
 
@@ -44,7 +48,7 @@
 | RP-05 | 排序优先不绕过 member disabled | 账号 1 member disabled，账号 2 正常，策略为 `ordered` | 普通请求 | 跳过账号 1，选择账号 2 |
 | RP-06 | 排序优先不绕过 needs_login | 账号 1 CPA `needs_login`，账号 2 正常，策略为 `ordered` | 普通请求 | 跳过账号 1，选择账号 2 |
 | RP-07 | 排序优先不绕过 quota blocked | 账号 1 CPA `cpa_quota_status='blocked'`，账号 2 正常，策略为 `ordered` | 普通请求 | 跳过账号 1，选择账号 2 |
-| RP-08 | 排序优先不绕过 subscription 非 active | 账号 1 Codex CPA subscription 为 `expired` 或 `unknown`，账号 2 正常，策略为 `ordered` | 普通请求 | 跳过账号 1，选择账号 2 |
+| RP-08 | 排序优先不绕过 access 非可用 | 账号 1 Codex CPA access 为 `ineligible` / `pending` / `unknown`，账号 2 正常，策略为 `ordered` | 普通请求 | 跳过账号 1，选择账号 2 |
 | RP-09 | 排序优先不绕过 serving cooldown | 账号 1 `serving_status='cooldown'` 且未过期，账号 2 正常，策略为 `ordered` | 普通请求 | 跳过账号 1，选择账号 2 |
 | RP-10 | 排序优先允许 cooldown 过期账号 | 账号 1 cooldown 已过期，账号 2 正常，策略为 `ordered` | 普通请求 | 选择账号 1 |
 | RP-11 | 排序优先不绕过明确模型不支持 | 账号 1 模型列表为 `gpt-a`，请求 `gpt-b`；账号 2 支持 `gpt-b` | 普通请求 | 跳过账号 1，选择账号 2 |
@@ -59,9 +63,11 @@
 | RP-20 | retry 遵守 ordered | 账号 1 轻降级且排第一，上游返回 retryable 失败；账号 2 正常 | 普通非流式请求 | 第一次尝试账号 1，重试选择账号 2 |
 | RP-21 | retry 遵守 health_first | 账号 1 轻降级，账号 2 正常且失败，账号 3 正常 | 普通非流式请求 | 第一次尝试账号 2，重试选择账号 3；正常账号耗尽后才考虑账号 1 |
 | RP-22 | 强制账号不被策略改写 | 请求带 `X-Lune-Account-Id` 指向账号 1，策略为任意 | 普通或诊断请求 | 只尝试账号 1；失败后不切换其他账号 |
-| RP-23 | runtime binding blocker 后续可用账号 | 账号 1 CPA 可路由字段正常但 provider pinning 不支持，账号 2 直连或可绑定 CPA 正常，策略为 `ordered` | 普通请求 | 跳过账号 1，选择账号 2 |
+| RP-23 | runtime binding blocker 后位可用账号 | 账号 1 CPA 可路由字段正常但 provider pinning 不支持，账号 2 直连或可绑定 CPA 正常，策略为 `ordered` | 普通请求 | 跳过账号 1，选择账号 2 |
 | RP-24 | runtime binding 全池阻断 | 全池只有 provider pinning 不支持的 CPA 可路由账号，策略为 `ordered` | 普通请求 | 返回 `runtime_auth_binding_unavailable` 或等价 runtime binding 错误，不静默转发 |
 | RP-25 | Codex 模型请求 429 evidence 阻断 | 账号 1 `cpa_quota_status='error'` 且 last error 以 `HTTP 429 from model request` 开头，账号 2 正常，策略为 `ordered` | 普通请求 | 跳过账号 1，选择账号 2 |
+| RP-26 | Free access 允许路由 | 账号 1 Codex Free，access 由 wham/model success 证实可用，quota 未阻断，账号 2 正常 | 普通请求 | 账号 1 可被路由 |
+| RP-27 | Free access 未证实不路由 | 账号 1 Codex Free，无 subscription active until，access 仍 unknown，账号 2 正常 | 普通请求 | 跳过账号 1，选择账号 2 |
 
 ## API 测试矩阵
 
@@ -74,6 +80,10 @@
 | API-05 | 非法策略拒绝 | Pool 更新接口传 `round_robin` 或空值 | 返回 400；数据库保持原值 |
 | API-06 | 旧客户端兼容 | 更新 Pool label / enabled / priority 但不传策略 | 不把策略清空；保留原值或使用默认值 |
 | API-07 | 旧客户端更新后 cache 生效 | 旧客户端更新 Pool 其他字段后立即发请求 | 策略保持原值，cache 刷新后路由行为仍符合该策略 |
+| API-08 | 批量导入接口部分成功 | 上传两个合法 JSON 和一个非法 JSON | 合法项返回 created / updated；非法项返回 failed；HTTP 结果不泄露 token |
+| API-09 | 批量导入请求级失败 | 目标 Pool 不存在或 CPA auth dir 不可写 | 请求失败且不写入任何 auth file |
+| API-10 | 批量导入同账号幂等 | 上传已有 account key | 复用账号和 Pool member，不创建重复 DB row |
+| API-11 | 同批次重复账号 | 同一次请求上传两个同 account key 文件 | 第二项返回 skipped 或 duplicate_in_batch；最终只有一个账号 |
 
 ## Codex Quota Error 文案矩阵
 
@@ -87,6 +97,17 @@
 | QE-06 | quota unknown | `cpa_quota_status='unknown'`，无 quota snapshot | 打开账号卡片与 Diagnostics | 显示“额度未知”；不得显示“模型请求被限流” |
 | QE-07 | 旧 snapshot + 新 fetch error | 存在 `codex_quota_json` 旧成功快照，同时 `cpa_quota_status='error'` + `HTTP 401` | 打开 Diagnostics | 展示历史 quota snapshot，同时主问题说明最新额度查询失败 |
 | QE-08 | 三处 UI 一致 | 同一账号处于 `HTTP 401` quota error | 对比卡片 chip、Route 摘要、Diagnostics Quota | 三处都不出现“模型请求被限流” |
+| QE-09 | quota 时间字段 | 最近一次成功后又发生 fetch `HTTP 401` | 打开 Diagnostics | 展示最近尝试时间、最近成功时间和最新错误摘要 |
+
+## Access 语义矩阵
+
+| 编号 | 场景 | 验收方式 | 必须验证 |
+| --- | --- | --- | --- |
+| AC-01 | Free access 证实可用 | fake CPA Free 账号 wham/usage 成功，模型请求成功 | access 进入 `eligible`，账号可路由 |
+| AC-02 | Free access 未证实 | fake CPA Free 账号无 subscription active until，wham/usage 未跑通 | access 为 `unknown` 或 `pending`，账号不路由 |
+| AC-03 | Free access 明确拒绝 | fake CPA 返回 plan unsupported / access denied | access 为 `ineligible`，账号不路由 |
+| AC-04 | Paid subscription active | Plus 账号有未过期 active until | access 可由 subscription 推导为 `eligible` |
+| AC-05 | Paid subscription expired 无其他证据 | Plus 账号 expired，wham/model success 均无 | access 不可直接推导为 eligible |
 
 ## UI 测试矩阵
 
@@ -103,6 +124,10 @@
 | UI-09 | Disabled Dock 窄栏稳定 | Pool 详情页面测试 | 右侧 disabled 卡片三 chip 时不出现异常增高 |
 | UI-10 | 移动端卡片稳定 | 375px 视口截图或页面测试 | chip 不重叠、不横向溢出页面、不遮挡底部操作 |
 | UI-11 | 完整解释可达 | hover / title / 详情抽屉检查 | 被省略 chip 仍可查看完整原因，且不泄露敏感字段 |
+| UI-12 | 多文件导入入口 | Add Account 的 CPA / Codex 导入流程 | `Import auth JSON` 可以选择多个 `.json` 文件 |
+| UI-13 | 多文件安全预览 | 上传 Free / Go / Plus fixture | 只展示文件名、provider、计划、masked email、account id 摘要和动作，不展示完整 JSON |
+| UI-14 | 批量导入结果页 | 一批中包含 created / updated / skipped / failed | 每个文件都有独立结果和安全错误摘要 |
+| UI-15 | 部分失败可达 Pool | 一批部分成功后点击返回 Pool | 成功项在目标 Pool 可见；失败项不创建卡片 |
 
 ## 卡片 Chip 测试矩阵
 
@@ -135,6 +160,8 @@
 | LOG-03 | 记录重试次数 | 触发一次 retry | `attempt_count` 能反映实际尝试次数 |
 | LOG-04 | 解释跳过原因 | 排第一账号硬阻断 | 诊断或日志能说明主要跳过原因 |
 | LOG-05 | 不泄露敏感信息 | 触发凭据、quota、runtime 错误，本地测试和容器日志均复核 | 日志不包含完整 token、auth file、request body 或 prompt |
+| LOG-06 | 批量导入审计摘要 | 执行一次多账号 JSON 导入 | 审计摘要包含 batch id、目标 Pool、created / updated / skipped / failed count 和每项安全摘要 |
+| LOG-07 | 批量导入日志脱敏 | 导入失败、重复、runtime sync pending 各触发一次 | 日志和 toast 不包含 refresh token、access token、id token 或完整 auth JSON |
 
 ## 真实容器测试口径
 
@@ -177,6 +204,19 @@ Codex quota error 文案最小容器验收覆盖：
 | CT-CHIP-04 | 移动视口检查 | 375px 页面截图无重叠、无横向溢出 |
 | CT-CHIP-05 | 测试清理 | chip 验收测试容器和临时数据已删除 |
 
+CPA auth JSON 多账号导入最小容器验收覆盖：
+
+| 编号 | 场景 | 必须验证 |
+| --- | --- | --- |
+| CT-MJSON-01 | 两个合法 auth JSON 首次导入 | 两个 auth file 写入成功；两个账号创建并加入目标 Pool |
+| CT-MJSON-02 | 新账号 + 已有账号混合导入 | 已有账号为 updated，新账号为 created；没有重复账号或 Pool member |
+| CT-MJSON-03 | 同批次重复账号 | 第二项 skipped 或 duplicate_in_batch；最终只有一个账号 |
+| CT-MJSON-04 | 部分失败 | 合法项成功；非法项失败；结果页展示部分失败；日志不泄露上传内容 |
+| CT-MJSON-05 | 防路径穿越 | 后端忽略用户文件名，目标路径仍在 `cpa_auth_dir` 内 |
+| CT-MJSON-06 | Runtime sync 与分层刷新 | Credential / Runtime Binding / Access / Quota / Models 进入可解释状态 |
+| CT-MJSON-07 | 覆盖失败回滚 | 新文件回滚；已有文件不丢失；前端显示安全错误 |
+| CT-MJSON-08 | 测试清理 | 测试容器和临时数据已删除 |
+
 ## 最低验收标准
 
 - Pool 有明确 `health_first` / `ordered` 两种策略。
@@ -185,6 +225,8 @@ Codex quota error 文案最小容器验收覆盖：
 - 排序优先下，硬阻断账号仍然不可接普通流量。
 - Codex `HTTP 429 from model request` evidence 属于硬阻断或等价阻断证据，排序优先不能绕过。
 - 模型明确不支持时不会因为排序靠前或健康层级更高而被选中。
+- Free / Go 账号可以在 access 证实后作为普通可路由账号进入池内调度。
+- Free / Go 的计划 chip 需要在卡片和详情中可见。
 - retry 按当前策略继续选择下一个账号。
 - Pool 详情页可以在“自检 Pool”右侧通过单按钮切换策略。
 - 策略切换有明确颜色区分，不新增复杂说明。
@@ -196,6 +238,11 @@ Codex quota error 文案最小容器验收覆盖：
 - Active Pool 和 Disabled Dock 常见卡片组合高度稳定。
 - 长 chip 可以在卡片摘要层省略，但完整解释仍可通过 title、tooltip 或详情抽屉查看。
 - 卡片修复不能引入标题、配额条、信号条、底部时间或按钮重叠。
+- CPA auth JSON 支持多文件导入，且同账号幂等更新。
+- 批量导入允许部分成功、部分失败，结果页逐项可解释。
+- 批量导入不支持目录扫描、压缩包或整库迁移。
+- 导入成功后必须触发分层刷新，不能直接把账号标记为可路由。
+- 批量导入响应、日志和审计摘要不得泄露 token 或完整 auth JSON。
 - 新容器验收完成并清理测试容器。
 
 ## 已确认口径
@@ -207,8 +254,12 @@ Codex quota error 文案最小容器验收覆盖：
 - 不新增随机、轮询、成本优先或额度消耗优先策略。
 - v0.1.8 不纳入 Activity 图表完整 retry path 展示；retry 过程必须能通过日志或诊断载体复核。
 - `cpa_quota_status='error'` 不是“模型请求被限流”的充分条件，必须结合 `cpa_quota_last_error`。
+- `subscription active` 不是 Codex CPA 的通用可路由必要条件。
+- Access 和 quota 必须拆开解释，不能把 Free 显示成订阅异常。
 - v0.1.8 不强制新增 quota error 数据库枚举；可先用安全摘要派生 UI meta。
 - 卡片 chip 是摘要层，不要求完整展示所有文字。
 - 修复 chip 高度异常必须约束布局根因，不能只依赖缩短某一个当前文案。
 - 对真实 `HTTP 429 from model request`，`模型请求被限流` 可以在卡片层缩短为 `请求限流` 或 `模型限流`，详情和诊断仍保留完整解释。
 - 对 quota fetch `HTTP 401/403/request failed`，卡片、详情和诊断都不能继续使用“模型请求被限流”。
+- v0.1.8 只纳入多文件 auth JSON 导入，不纳入目录扫描。
+- 导入成功不等于账号可路由；可路由性由 `04-cpa-routability-layer-model.md` 的分层模型决定。

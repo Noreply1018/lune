@@ -4,6 +4,8 @@
 
 来源：用户确认当前账号池存在人工排序，但现有路由会把部分“降级但可用”的账号自动后置。用户希望在某些 Pool 中先使用被标记为“降级”的账号，只要该账号仍可接普通流量。
 
+本文的策略切换必须建立在 `04-cpa-routability-layer-model.md` 的分层可路由模型之上。`ordered` 只改变轻降级账号与正常账号之间的优先级，不重新定义 Credential、Runtime Binding、Access、Quota、Serving 或 Models 的硬阻断语义。
+
 ## 问题
 
 现有版本的账号选择逻辑是隐式健康优先：
@@ -124,7 +126,8 @@ pools.routing_policy TEXT NOT NULL DEFAULT 'health_first'
 - CPA `cpa_credential_status` 为 `needs_login`、`refresh_failed`、`runtime_pending`、`runtime_error`、`unknown` 或空值。
 - CPA `cpa_quota_status='blocked'`。
 - Codex CPA `cpa_quota_status='error'` 且 `cpa_quota_last_error` 以 `HTTP 429 from model request` 开头。
-- Codex CPA `cpa_subscription_status` 不是 `active`。
+- CPA access 状态为 `ineligible`、`pending`、`unknown` 或等价硬阻断状态。
+- Paid Codex CPA subscription 已过期且没有 Free / Go / quota / model success 等 access 可用证据。
 - 账号模型列表明确存在，且不包含请求模型。
 
 ## 模型匹配
@@ -219,7 +222,7 @@ request log、diagnostic response 或结构化调试日志必须提供可复核�
 最低可解释要求：
 
 - route-level 失败能区分 `no_healthy_account`、`model_not_on_account`、`runtime_auth_binding_unavailable`、`pool_disabled`。
-- 账号被跳过时，诊断页或调试日志能解释是硬阻断、模型不匹配、冷却、凭据、quota、subscription 还是 runtime binding。
+- 账号被跳过时，诊断页或调试日志能解释是硬阻断、模型不匹配、冷却、凭据、access、quota、subscription paid detail 还是 runtime binding。
 - v0.1.8 不纳入 Activity 图表的完整 retry path 展示；Activity 可以继续展示最终路由账号，但日志或诊断载体必须能复核 retry 选择过程。
 
 ## 测试与验收

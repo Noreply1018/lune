@@ -140,7 +140,17 @@ Diagnostics 的 Quota 区域至少展示：
 - `cpa_quota_status` 原始值。
 - `cpa_quota_last_error` 安全摘要。
 - 最近 quota 检查时间。
+- 最近 quota 尝试时间、最近成功时间和最近错误摘要；字段可以复用现有存储或新增 `quota_last_attempt_at`、`quota_last_success_at`、`quota_last_error` 等等价字段。
 - 如果存在 `codex_quota_json`，继续展示 quota snapshot；snapshot 不应覆盖更晚的真实模型请求 `429` evidence。
+
+当存在旧成功快照和较新的 fetch error 时，UI 必须同时表达：
+
+```text
+最新额度查询失败
+上次成功快照来自 <time>
+```
+
+不得只展示旧 snapshot 而隐藏最新失败，也不得只展示失败而让用户无法判断是否仍有历史 quota 数据可参考。
 
 ## 路由语义
 
@@ -171,6 +181,7 @@ Diagnostics 的 Quota 区域至少展示：
 - 前端测试：`cpa_quota_status='error'` + `cpa_quota_last_error='request failed'` 显示“额度查询失败”。
 - 前端测试：`cpa_quota_status='unknown'` 显示“额度未知”。
 - 前端测试：卡片 chip、Route 摘要和 Diagnostics Quota 维度对同一账号给出一致文案。
+- 前端测试：旧 quota snapshot + 较新 `HTTP 401` fetch error 时，Diagnostics 同时展示“最新查询失败”和“上次成功快照时间”。
 
 ### API / 后端测试
 
@@ -181,6 +192,8 @@ Diagnostics 的 Quota 区域至少展示：
 - 其他 error 派生为 `quota_fetch_failed`。
 - `blocked` 派生为 `quota_blocked`。
 - `unknown` 派生为 `quota_unknown`。
+- quota 刷新失败会更新最近尝试时间和安全错误摘要，不覆盖旧成功快照的成功时间。
+- quota 刷新成功会更新最近成功时间，并清理或降级展示旧 fetch error。
 
 如果实现只在前端派生，后端测试不是必须项，但必须保留现有 gateway `429` evidence 测试，防止 v0.1.7 的真实模型请求 `429` 修复回退。
 
