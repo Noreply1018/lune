@@ -79,8 +79,8 @@ if ! grep -q '[^[:space:]]' "$output_file"; then
   exit 1
 fi
 
-blocked_pattern='未发布|发布流程进行中|待完成|后续再完成|以后再处理|TODO|FIXME'
-if grep -En "$blocked_pattern" "$output_file" >&2; then
+blocked_pattern='未发布|发布流程进行中|待完成|待补充|占位|后续再完成|以后再处理|TODO|FIXME|TBD|coming soon'
+if grep -Ein "$blocked_pattern" "$output_file" >&2; then
   echo "error: CHANGELOG.md release section [$version] still contains placeholder or unfinished release text" >&2
   exit 1
 fi
