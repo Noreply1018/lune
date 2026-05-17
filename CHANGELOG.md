@@ -10,7 +10,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ## [0.1.8] - 2026-05-17
 
-状态：发布候选。代码实现、自动化测试、真实容器验收矩阵和 subagent 严格审计已完成；提交后创建并推送 `v0.1.8` tag，由 GitHub Actions Release workflow 发布 GHCR / Docker Hub 多架构镜像。
+状态：已发布。代码实现、自动化测试、真实容器验收矩阵、subagent 严格审计、发布文档提交、`v0.1.8` tag、GHCR / Docker Hub 多架构镜像推送和 Docker Hub 描述同步均已完成。
 
 ### Pool 路由策略
 
