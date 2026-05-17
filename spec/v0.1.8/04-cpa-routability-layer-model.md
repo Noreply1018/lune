@@ -117,6 +117,14 @@ Codex `access_status=eligible` 可以由以下证据推导：
 3. 最近一次普通模型请求成功。
 4. CPA management 明确返回该账号具备 Codex access。
 
+证据优先级采用“强证据优先”，不是“最新一次探测覆盖一切”：
+
+```text
+明确 access denied / plan unsupported > 明确 wham/usage allowed > 最近模型请求成功 > paid subscription active > pending / unknown / transient error
+```
+
+已经确认 `eligible` 的账号，后续短暂 quota / access 探测失败时不立刻降级为 `unknown` 或 `ineligible`。只有明确拒绝证据才能把 `eligible` 打回 `ineligible`。`quota blocked`、模型请求 `429`、quota fetch `401/403/request failed` 都不能把 access 改成 `ineligible`。
+
 Codex `access_status=ineligible` 可以由以下证据推导：
 
 1. access / entitlement 接口明确返回无权限。
@@ -201,32 +209,92 @@ CPA 账号刷新应按以下顺序收敛：
 
 `wham/usage` 同时可以提供 access 证据和 quota 证据，但持久化时必须拆成两个维度。
 
+### 首次接入 Free / Go
+
+Free / Go 账号首次添加采用混合流程：
+
+```text
+1. 先创建 / 更新账号和 auth file。
+2. 初始 access 显示为待确认。
+3. 后台异步执行一次 `wham/usage` 探测。
+4. wham/usage 成功且未明确 blocked -> access eligible，并保存 quota snapshot。
+5. wham/usage 明确 blocked -> access 不写 ineligible，quota 写 blocked。
+6. wham/usage 401 / 403 / request failed / 5xx -> access 保持 pending/unknown/error，quota 显示查询失败；不判死账号。
+7. 后续真实模型请求成功，可以把 access 提升为 eligible。
+```
+
+首次接入后不自动发真实模型请求。原因是 Free 额度很少，自动 probe 可能消耗用户未预期的额度。真实模型请求成功只作为后续自然证据。
+
+### 刷新节奏与降级
+
+Access 和 quota 均采用缓存 + 定期刷新 + 失败退避：
+
+- 不在每次普通请求前刷新 access 或 quota。
+- `eligible` 可以继续路由，直到出现明确拒绝、quota blocked、模型请求 429、serving cooldown/error 或其他硬阻断。
+- 短暂探测失败只更新错误摘要和 checked_at，不立刻清空已有 eligible 结论。
+- 失败重试应使用退避策略，避免 quota / access 探测失败时持续打 CPA management。
+- 具体刷新间隔和退避周期由实现阶段确定，但必须在测试矩阵中固定并覆盖。
+
 ## UI 表现
 
-账号卡片和详情抽屉必须把计划身份、access 和 quota 分开展示。
+账号卡片和详情抽屉必须把计划身份、access 和 quota 分开展示。Free 不新增第三种卡片形态，继续使用现有 Codex CPA 卡片。
 
-卡片摘要：
-
-```text
-Codex · Free
-Access 可用
-Quota 5h xx% 剩余
-```
-
-Paid 账号示例：
+卡片结构：
 
 ```text
-Codex · Plus
-30 天后到期
-5h / 7d quota bars
+左上：来源，例如 Codex
+右上：[Plan chip] [健康 chip]
+中间：quota bars
+底部：[今日 N] [主问题 chip]
 ```
 
-Free 账号示例：
+底部 chip 不再显示 subscription 到期。Plus / Pro 到期信息转移到详情页 header、Access 细节或 Diagnostics，不再挤占卡片底部摘要。
+
+Plan chip 规则：
+
+| 计划 | chip 文案 | 颜色语义 |
+| --- | --- | --- |
+| Free | `Free` | 中性或青绿色，不使用红色 |
+| Go | `Go` | 中性或青绿色 |
+| Plus | `Plus` | 蓝紫 / 月相紫 |
+| Pro | `Pro` | 深紫或强调色 |
+| Unknown | `Unknown` | 灰色 |
+
+Plus / Pro quota 示例：
 
 ```text
-Codex · Free
-5h quota bar
+5h    [bar]    81%
+7d    [bar]    64%
 ```
+
+Free quota 示例：
+
+```text
+5h    [bar]    81%
+Plan  短周期额度  无周额度
+```
+
+Free 只有一个真实 quota window 时，第二行固定显示 `Plan  短周期额度  无周额度`，用于保持所有 Codex 卡片高度一致，但不伪造 7d 窗口。如果未来 Free 返回第二个真实窗口，则显示真实窗口，不强行显示“无周额度”。
+
+Free quota 尚未查到时，第一行显示 pending / unknown bar，第二行仍显示：
+
+```text
+Plan  短周期额度  无周额度
+```
+
+底部主问题 chip 只在有问题时出现，例如：
+
+```text
+Access 待确认
+Access 不可用
+额度查询失败
+额度受限
+请求限流
+需要重登
+Binding
+```
+
+如果账号可路由且没有主问题，不显示 `Access 可用` chip。可用性由健康 chip 和 quota 区域表达。
 
 不允许：
 
@@ -234,6 +302,7 @@ Codex · Free
 Free -> 红色“订阅不可用”
 Free -> 因无 7d 窗口显示周额度 pending
 quota fetch 401 -> 模型请求被限流
+卡片底部继续显示“30 天后到期”这类 subscription chip
 ```
 
 详情抽屉 Diagnostics 主维度：
@@ -261,13 +330,18 @@ Models
 - health 测试：没有 `chatgpt_subscription_active_until` 的 Free auth file 不写成订阅异常。
 - health 测试：wham/usage success 可以写入 access eligible。
 - health 测试：wham/usage allowed=false 写入 quota blocked，不写 access ineligible。
+- health 测试：Free 首次导入后 access 先为 pending/unknown，并异步 wham/usage 探测。
+- health 测试：eligible 后一次 wham/usage 401/403/request failed 不立刻降级为 ineligible。
+- health 测试：明确 access denied / plan unsupported 才写入 ineligible。
 - gateway 测试：模型请求成功可以清除旧模型请求 429 evidence，并可作为 access eligible 证据。
 - gateway 测试：模型请求 429 写 quota / serving 阻断，不写 access ineligible。
 
 ### 前端测试
 
-- AccountCard：Free 显示为 `Codex · Free` 或等价计划 chip，不能显示红色“订阅不可用”。
-- AccountCard：Free 只有 primary quota window 时只显示一条窗口。
+- AccountCard：右上角健康 chip 左侧显示 plan chip；Free 为中性或青绿色，不能显示红色“订阅不可用”。
+- AccountCard：底部 chip 只显示 `今日 N` 和主问题，不再显示到期 chip。
+- AccountCard：Free 只有 primary quota window 时，第二行显示 `Plan  短周期额度  无周额度`。
+- AccountCard：Free quota pending 时仍保持两行高度，第二行显示 `Plan  短周期额度  无周额度`。
 - AccountDetailSheet：Diagnostics 包含 Access 维度。
 - AccountDetailSheet：Subscription 仅作为 paid plan access 细节，不作为 Free 的阻断主项。
 - quota parser：支持只有 primary window 的 snapshot。
@@ -289,6 +363,8 @@ Models
 | CT-FREE-06 | Plus auth JSON，subscription expired，无其他可用证据 | access ineligible；普通路由跳过 |
 | CT-FREE-07 | UI 移动端和桌面 | Free 计划 chip、quota 单窗口、Access 诊断无重叠 |
 | CT-FREE-08 | 测试清理 | 测试容器和临时数据已删除 |
+| CT-FREE-09 | Free quota 只有 primary window | 卡片中间区域两行高度稳定，第二行为 `Plan  短周期额度  无周额度` |
+| CT-FREE-10 | Free quota pending | 第一行为 pending，第二行为 `Plan  短周期额度  无周额度`，卡片高度与 Plus 一致 |
 
 ## 已确认口径
 
@@ -296,5 +372,8 @@ Models
 - `subscription active` 不是 Codex CPA 的通用可路由必要条件。
 - Access 和 quota 必须拆开；quota blocked 不代表账号没有 Codex access。
 - Free 可路由必须有 access evidence，不能只看 `plan_type=free`。
-- Free quota UI 必须按实际窗口动态展示，不能伪造 7d 窗口。
+- Free 首次接入先待确认，后台异步 `wham/usage` 探测；不自动打真实模型请求。
+- 已确认 eligible 的账号遇到短暂探测失败时先保留可用结论，不立刻降级。
+- Free quota UI 必须按实际窗口动态展示，不能伪造 7d 窗口；只有一个窗口时第二行显示 `Plan  短周期额度  无周额度`。
+- 卡片底部不再显示 subscription 到期 chip；计划身份使用右上角 plan chip。
 - router、Pool count、Route summary 和 Diagnostics 必须共享分层规则或由测试保证等价。

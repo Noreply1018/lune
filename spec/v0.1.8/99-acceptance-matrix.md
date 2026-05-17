@@ -33,9 +33,13 @@
 | MUST-12 | 卡片 chip 单行摘要布局 | v0.1.7 真实容器已出现三 chip 换行导致卡片高度不一致 | chip 行不换行；溢出省略；长文案不撑高卡片 |
 | MUST-13 | 卡片主问题短文案 | `模型请求被限流` 等长文案会放大换行风险 | 卡片层允许短文案；详情和诊断保留完整解释 |
 | MUST-14 | 卡片高度视觉回归 | 单靠代码审查无法确认不同视口下无重叠 | 覆盖桌面、窄桌面、平板、手机截图或等价视觉检查 |
-| MUST-15 | CPA auth JSON 多账号导入 | 多账号迁移不应重复执行单文件流程 | Add Account 支持多文件 `.json` 导入；逐项校验；部分成功；同账号幂等更新 |
-| MUST-16 | 批量导入结果审计 | 批量导入必须可复核且不能泄露凭据 | 结果页和审计摘要展示 created / updated / skipped / failed / pending；不记录 token 或完整 JSON |
-| MUST-17 | 导入后分层刷新 | 导入成功不能直接等于账号可路由 | 导入后触发 Credential / Runtime Binding / Access / Quota / Models 刷新；状态可解释 |
+| MUST-15 | Codex plan chip | Free / Go / Plus 必须一眼可见且不能与健康状态混淆 | 右上角显示 Plan chip + 健康 chip；Free 不使用红色 |
+| MUST-16 | Free quota 等高展示 | Free 只有短周期额度也要保持卡片高度一致 | 第二行显示 `Plan  短周期额度  无周额度`；不伪造 7d 窗口 |
+| MUST-17 | Free access 首次异步探测 | 添加后不能直接判死，也不能消耗真实模型额度 | 初始待确认；后台 wham/usage 探测；不自动发模型请求 |
+| MUST-18 | Access 短暂失败不立即降级 | 偶发探测失败不能让已确认账号来回抖动 | eligible 后遇到 401/403/request failed 保留 eligible，只有明确拒绝才 ineligible |
+| MUST-19 | CPA auth JSON 多账号导入 | 多账号迁移不应重复执行单文件流程 | Add Account 支持多文件 `.json` 导入；逐项校验；部分成功；同账号幂等更新 |
+| MUST-20 | 批量导入结果审计 | 批量导入必须可复核且不能泄露凭据 | 结果页和审计摘要展示导入主状态 created / updated / skipped / failed，并单独展示 runtime sync 状态；不记录 token 或完整 JSON |
+| MUST-21 | 导入后分层刷新 | 导入成功不能直接等于账号可路由 | 导入后触发 Credential / Runtime Binding / Access / Quota / Models 刷新；状态可解释 |
 
 ## 路由策略测试矩阵
 
@@ -84,8 +88,10 @@
 | API-09 | 批量导入接口部分成功 | 上传两个合法 JSON 和一个非法 JSON 到正式导入接口 | 合法项返回 created / updated；非法项返回 failed；HTTP 结果不泄露 token |
 | API-10 | 批量导入请求级失败 | 目标 Pool 不存在或 CPA auth dir 不可写 | 请求失败且不写入任何 auth file |
 | API-11 | 批量导入同账号幂等 | 上传已有 account key | 复用账号和 Pool member，不创建重复 DB row |
-| API-12 | 同批次重复账号 | 同一次请求上传两个同 account key 文件 | 第二项返回 skipped 或 duplicate_in_batch；最终只有一个账号 |
+| API-12 | 同批次重复账号 | 同一次请求上传两个同 account key 文件 | 第二项返回 `status='skipped'`，并用 `error_code='duplicate_in_batch'` 或等价安全错误摘要说明原因；最终只有一个账号 |
 | API-13 | 正式导入重新校验 | 预检后、确认导入前同账号状态发生变化 | 正式导入按最新状态返回结果，不信任预检预计动作 |
+| API-14 | runtime sync 独立状态 | 导入成功但 runtime auth index 尚未确认 | item 保持 `status='created'` 或 `updated`，并返回 `runtime_sync='pending'`；不得返回 `status='pending_runtime_sync'` |
+| API-15 | runtime sync 枚举边界 | 构造 synced / pending / failed / not_applicable 四种 runtime sync 结果 | 四种值只出现在 runtime_sync 字段；item 主 status 仍只为 created / updated / skipped / failed |
 
 ## Codex Quota Error 文案矩阵
 
@@ -110,6 +116,9 @@
 | AC-03 | Free access 明确拒绝 | fake CPA 返回 plan unsupported / access denied | access 为 `ineligible`，账号不路由 |
 | AC-04 | Paid subscription active | Plus 账号有未过期 active until | access 可由 subscription 推导为 `eligible` |
 | AC-05 | Paid subscription expired 无其他证据 | Plus 账号 expired，wham/model success 均无 | access 不可直接推导为 eligible |
+| AC-06 | Free 首次导入混合探测 | 导入 Free auth JSON | 初始 Access 待确认；后台只做 wham/usage；不自动发模型请求 |
+| AC-07 | eligible 后短暂失败 | 账号已有 access eligible，后续 wham/usage 返回 401/403/request failed | access 保持 eligible；quota 显示查询失败或 warn |
+| AC-08 | quota blocked 不改 access | Free wham/usage 返回 allowed=false / limit_reached=true | quota blocked；access 不写 ineligible |
 
 ## UI 测试矩阵
 
@@ -130,8 +139,13 @@
 | UI-13 | 多文件安全预检 | 上传 Free / Go / Plus fixture | 先展示文件名、provider、计划、masked email、account id 摘要和预计动作，不展示完整 JSON |
 | UI-14 | 预检确认前无写入 | 选择多个 `.json` 后停留在预检页 | 确认前不创建或更新账号、不写 auth file、不新增 Pool member，也不触发 runtime reload 或分层刷新 |
 | UI-15 | 确认后正式导入 | 在预检结果页点击确认导入 | 调用正式导入接口；结果页展示最终结果而不是沿用预计动作 |
-| UI-16 | 批量导入结果页 | 一批中包含 created / updated / skipped / failed | 每个文件都有独立结果和安全错误摘要 |
+| UI-16 | 批量导入结果页 | 一批中包含 created / updated / skipped / failed | 每个文件都有独立导入主状态、runtime sync 状态和安全错误摘要 |
 | UI-17 | 部分失败可达 Pool | 一批部分成功后点击返回 Pool | 成功项在目标 Pool 可见；失败项不创建卡片 |
+| UI-18 | runtime pending 展示 | 导入主状态为 created / updated，runtime_sync 为 pending | 页面显示“等待 runtime 同步”或等价文案，同时保留 created / updated 主状态 |
+| UI-19 | Plan chip 位置 | Codex CPA 卡片 | 右上角健康 chip 左侧显示 Free / Plus / Pro / Unknown plan chip |
+| UI-20 | 底部 chip 简化 | Codex CPA 卡片 | 底部只显示 `今日 N` 和主问题，不再显示到期 chip |
+| UI-21 | Free quota 第二行 | Free 账号只有 primary window | quota 区第二行显示 `Plan  短周期额度  无周额度` |
+| UI-22 | Free quota pending 等高 | Free 账号 quota 未同步 | 第一行 pending，第二行仍显示 `Plan  短周期额度  无周额度`，高度与 Plus 一致 |
 
 ## 卡片 Chip 测试矩阵
 
@@ -139,12 +153,13 @@
 
 | 编号 | 场景 | 准备 | 操作 | 期望 |
 | --- | --- | --- | --- | --- |
-| CHIP-01 | v0.1.7 缺陷组合 | `今日 5`、`30 天后到期`、`额度查询失败` | 渲染 Active Pool 卡片 | chip 行保持一行，卡片高度稳定 |
-| CHIP-02 | 长请求量 | `今日 999.9k`、`7 天内到期`、`Binding 未确认` | 渲染最小列宽卡片 | 长 chip 内部省略，不换行 |
+| CHIP-01 | v0.1.7 缺陷组合迁移 | 旧数据原本会生成 `今日 5 / 30 天后到期 / 额度查询失败` | 渲染 Active Pool 卡片 | 新版本显示为 plan chip + 健康 chip + `今日 5 / 额度查询失败`，高度稳定 |
+| CHIP-02 | 长请求量 | 右上 plan + 健康，底部 `今日 999.9k`、`Binding 未确认` | 渲染最小列宽卡片 | 长 chip 内部省略，不换行 |
 | CHIP-03 | 旧长文案兼容 | 主问题仍为 `模型请求被限流` | 渲染卡片 | 即使文案未缩短，也不撑高卡片 |
 | CHIP-04 | 单 chip 对照 | 一张卡片只有 `今日 0`，另一张三 chip | 同屏渲染 | 单 chip 与三 chip 卡片高度稳定 |
 | CHIP-05 | Disabled Dock | disabled 账号三 chip | 渲染右侧停泊区 | 窄栏不出现两行 chip |
 | CHIP-06 | 详情可解释 | chip 被省略 | hover chip 或打开详情抽屉 | 完整原因可读，且无 token / auth JSON / prompt 泄露 |
+| CHIP-07 | Free 等高说明行 | Free 账号只有一条 quota window | 渲染 Active Pool 卡片 | 第二行显示 `Plan  短周期额度  无周额度`，高度与 Plus 一致 |
 
 ## 视觉回归矩阵
 
@@ -164,7 +179,7 @@
 | LOG-03 | 记录重试次数 | 触发一次 retry | `attempt_count` 能反映实际尝试次数 |
 | LOG-04 | 解释跳过原因 | 排第一账号硬阻断 | 诊断或日志能说明主要跳过原因 |
 | LOG-05 | 不泄露敏感信息 | 触发凭据、quota、runtime 错误，本地测试和容器日志均复核 | 日志不包含完整 token、auth file、request body 或 prompt |
-| LOG-06 | 批量导入审计摘要 | 执行一次多账号 JSON 导入 | 审计摘要包含 batch id、目标 Pool、created / updated / skipped / failed count 和每项安全摘要 |
+| LOG-06 | 批量导入审计摘要 | 执行一次多账号 JSON 导入 | 审计摘要包含 batch id、目标 Pool、created / updated / skipped / failed count、runtime_sync 计数和每项安全摘要 |
 | LOG-07 | 批量导入日志脱敏 | 导入失败、重复、runtime sync pending 各触发一次 | 日志和 toast 不包含 refresh token、access token、id token 或完整 auth JSON |
 
 ## 真实容器测试口径
@@ -202,11 +217,21 @@ Codex quota error 文案最小容器验收覆盖：
 
 | 编号 | 场景 | 必须验证 |
 | --- | --- | --- |
-| CT-CHIP-01 | 0.1.7 缺陷数据复现 | `今日 N / N 天后到期 / 额度查询失败` 在新版本中不再换行撑高 |
+| CT-CHIP-01 | 0.1.7 缺陷数据复现 | 旧三 chip 状态在新版本中迁移为 plan chip + 健康 chip + 两枚底部 chip，不再换行撑高 |
 | CT-CHIP-02 | 多账号同屏对比 | 一枚、两枚、三枚 chip 卡片同屏高度稳定 |
 | CT-CHIP-03 | Disabled Dock 对比 | 右侧 disabled 三 chip 卡片不出现高度跳变 |
 | CT-CHIP-04 | 移动视口检查 | 375px 页面截图无重叠、无横向溢出 |
 | CT-CHIP-05 | 测试清理 | chip 验收测试容器和临时数据已删除 |
+
+Free access / quota 最小容器验收覆盖：
+
+| 编号 | 场景 | 必须验证 |
+| --- | --- | --- |
+| CT-FREE-01 | Free 首次导入 | 初始显示 Access 待确认；后台只执行 wham/usage；不自动发模型请求 |
+| CT-FREE-02 | Free wham/usage allowed + primary window | access eligible；普通路由可用；卡片显示 Free plan chip 和 `Plan  短周期额度  无周额度` |
+| CT-FREE-03 | Free wham/usage 401/403/request failed | access 不被写为 ineligible；quota 显示查询失败；已有 eligible 不立刻降级 |
+| CT-FREE-04 | Free wham/usage blocked | quota blocked；access 不写 ineligible；普通路由跳过 |
+| CT-FREE-05 | Free 模型请求成功 | 可以作为 access eligible 自然证据 |
 
 CPA auth JSON 多账号导入最小容器验收覆盖：
 
@@ -215,13 +240,15 @@ CPA auth JSON 多账号导入最小容器验收覆盖：
 | CT-MJSON-00 | 只读预检 | 预检页展示安全摘要和预计动作；auth dir、DB account、Pool member 均无新增或更新；runtime/auth index/refresh 队列无新增任务 |
 | CT-MJSON-01 | 两个合法 auth JSON 首次导入 | 确认导入后两个 auth file 写入成功；两个账号创建并加入目标 Pool |
 | CT-MJSON-02 | 新账号 + 已有账号混合导入 | 已有账号为 updated，新账号为 created；没有重复账号或 Pool member |
-| CT-MJSON-03 | 同批次重复账号 | 第二项 skipped 或 duplicate_in_batch；最终只有一个账号 |
+| CT-MJSON-03 | 同批次重复账号 | 第二项 `status='skipped'` 且原因是 `duplicate_in_batch`；最终只有一个账号 |
 | CT-MJSON-04 | 部分失败 | 合法项成功；非法项失败；结果页展示部分失败；日志不泄露上传内容 |
 | CT-MJSON-05 | 防路径穿越 | 后端忽略用户文件名，目标路径仍在 `cpa_auth_dir` 内 |
 | CT-MJSON-06 | Runtime sync 与分层刷新 | Credential / Runtime Binding / Access / Quota / Models 进入可解释状态 |
 | CT-MJSON-07 | 覆盖失败回滚 | 新文件回滚；已有文件不丢失；前端显示安全错误 |
 | CT-MJSON-08 | 预检后状态变化 | 正式导入重新校验，返回 updated / skipped / failed 等最新结果，不盲信预检 |
-| CT-MJSON-09 | 测试清理 | 测试容器和临时数据已删除 |
+| CT-MJSON-09 | runtime pending 双状态 | runtime auth index 尚未确认 | item 主状态仍为 created / updated；runtime_sync 为 pending；页面不把 pending_runtime_sync 当主状态 |
+| CT-MJSON-10 | runtime sync 枚举边界 | synced / pending / failed / not_applicable 只出现在 runtime_sync 字段；item 主 status 仍只为 created / updated / skipped / failed |
+| CT-MJSON-11 | 测试清理 | 测试容器和临时数据已删除 |
 
 ## 最低验收标准
 
@@ -233,6 +260,9 @@ CPA auth JSON 多账号导入最小容器验收覆盖：
 - 模型明确不支持时不会因为排序靠前或健康层级更高而被选中。
 - Free / Go 账号可以在 access 证实后作为普通可路由账号进入池内调度。
 - Free / Go 的计划 chip 需要在卡片和详情中可见。
+- Free 首次接入后后台异步 wham/usage 探测，不自动发真实模型请求。
+- 已确认 eligible 的账号遇到短暂探测失败时不立刻降级。
+- Free 只有短周期 quota 时，卡片第二行显示 `Plan  短周期额度  无周额度`。
 - retry 按当前策略继续选择下一个账号。
 - Pool 详情页可以在“自检 Pool”右侧通过单按钮切换策略。
 - 策略切换有明确颜色区分，不新增复杂说明。
@@ -262,6 +292,8 @@ CPA auth JSON 多账号导入最小容器验收覆盖：
 - `cpa_quota_status='error'` 不是“模型请求被限流”的充分条件，必须结合 `cpa_quota_last_error`。
 - `subscription active` 不是 Codex CPA 的通用可路由必要条件。
 - Access 和 quota 必须拆开解释，不能把 Free 显示成订阅异常。
+- Free / Go 是计划身份，不是异常状态；计划身份显示在右上 plan chip。
+- 卡片底部不再显示 subscription 到期 chip。
 - v0.1.8 不强制新增 quota error 数据库枚举；可先用安全摘要派生 UI meta。
 - 卡片 chip 是摘要层，不要求完整展示所有文字。
 - 修复 chip 高度异常必须约束布局根因，不能只依赖缩短某一个当前文案。

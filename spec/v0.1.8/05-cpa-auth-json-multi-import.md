@@ -25,7 +25,7 @@ v0.1.8 需要把单文件导入扩展成受控的多文件导入，但不能扩�
 - 每个文件独立校验、独立生成安全摘要、独立导入。
 - 支持同一批次内部分成功、部分失败。
 - 支持同账号幂等更新，不创建重复 Lune 账号。
-- 支持导入结果页展示 `created`、`updated`、`skipped`、`failed`、`pending_runtime_sync`。
+- 支持导入结果页展示导入主状态 `created`、`updated`、`skipped`、`failed`，并单独展示 runtime sync 状态。
 - 支持安全审计摘要，不记录完整 token 或完整 auth JSON。
 
 本功能不覆盖：
@@ -121,7 +121,7 @@ enabled=<optional bool, default true>
 - 任一文件失败不得阻断其他文件导入，除非请求级条件失败，例如 Pool 不存在、CPA service 未配置、auth dir 不可写。
 - 响应按文件返回安全结果，不返回完整 auth JSON。
 
-响应必须至少包含以下安全结果结构：
+响应必须至少包含以下安全结果结构。`status` 只表达导入主结果；`runtime_sync` 单独表达 CPA runtime auth index / metadata 是否已同步：
 
 ```json
 {
@@ -152,6 +152,8 @@ enabled=<optional bool, default true>
 
 响应不得返回完整 `account_key`。需要跨日志或 UI 对齐同一账号时，返回 hash 或短摘要。
 
+`summary.pending_runtime_sync` 是从 item 的 `runtime_sync='pending'` 派生出来的计数，不是 item 的主 `status`。例如新账号已创建但 runtime 尚未同步时，item 应返回 `status='created'` 且 `runtime_sync='pending'`。
+
 ## 导入语义
 
 每个文件按以下步骤处理：
@@ -164,7 +166,7 @@ enabled=<optional bool, default true>
 6. 检测磁盘和数据库中已有 account key。
 7. 对新账号执行原子写入、CPA reload、账号 upsert、加入目标 Pool、异步 refresh。
 8. 对已有账号执行幂等更新，复用同一个 Lune account，并确保加入目标 Pool。
-9. 对同批次重复文件，默认只处理第一份，同批次中排在后面的同 key 项标记为 `skipped` 或 `duplicate_in_batch`。
+9. 对同批次重复文件，默认只处理第一份；同批次中排在后面的同 key 项主状态必须为 `skipped`，重复原因写入 `error_code='duplicate_in_batch'` 或等价安全错误摘要。
 10. 对单项失败执行单项回滚，不影响同批次其他项。
 
 同账号重复导入必须遵守：
@@ -177,7 +179,9 @@ enabled=<optional bool, default true>
 
 ## 结果状态
 
-批量导入结果至少支持以下状态：
+批量导入结果必须拆成两个维度：导入主状态和 runtime sync 状态。
+
+导入主状态只允许以下四个值：
 
 | 状态 | 语义 |
 | --- | --- |
@@ -185,7 +189,17 @@ enabled=<optional bool, default true>
 | `updated` | 已有 account key 被安全更新，Lune account 复用，并已加入目标 Pool |
 | `skipped` | 文件未导入，通常是同批次重复或用户确认前选择跳过 |
 | `failed` | 文件导入失败，未写入最终 auth file，或已回滚 |
-| `pending_runtime_sync` | 文件和账号已写入，但 CPA runtime auth index / metadata 尚未确认 |
+
+Runtime sync 状态只允许以下四个值：
+
+| 状态 | 语义 |
+| --- | --- |
+| `synced` | CPA runtime auth index / metadata 已确认看到该 auth file |
+| `pending` | 文件和账号已写入，但 CPA runtime auth index / metadata 尚未确认 |
+| `failed` | runtime reload、auth index 同步或 metadata 确认失败 |
+| `not_applicable` | 该 item 没有 runtime 同步动作，例如 `skipped` 或请求级失败 |
+
+结果页可以把 `runtime_sync='pending'` 展示为“等待 runtime 同步”或等价文案，但不得把 `pending_runtime_sync` 当作 item 的主 `status`，以免遮蔽该文件本身是 `created` 还是 `updated`。
 
 单项错误必须可行动：
 
@@ -211,8 +225,9 @@ v0.1.8 必须为批量导入保留安全审计摘要。审计摘要可以落在�
 - target pool id / label。
 - item count。
 - created / updated / skipped / failed count。
+- runtime_sync 的 synced / pending / failed / not_applicable count；如果需要汇总展示，可派生 `pending_runtime_sync` 计数。
 - 每个 item 的 provider、plan type、masked email、account id suffix 或 hash。
-- 每个 item 的结果状态和安全错误摘要。
+- 每个 item 的导入主状态、runtime sync 状态和安全错误摘要。
 - runtime reload / auth index sync 结果。
 - refresh model / quota / access 的 pending / success / error 摘要。
 
@@ -248,8 +263,10 @@ Models
 
 - 批量上传两个合法 Codex auth JSON，分别创建账号并加入目标 Pool。
 - 批量预检两个合法 Codex auth JSON，只返回安全摘要和预计动作，不写入 auth file、不创建账号、不加入 Pool。
+- 导入成功但 runtime 尚未确认时，item 返回 `status='created'` 或 `status='updated'`，同时返回 `runtime_sync='pending'`，不得返回 `status='pending_runtime_sync'`。
 - 批量上传一个新账号和一个已有账号，结果分别为 `created` 和 `updated`。
-- 同批次上传两个相同 account key，只处理第一份，第二份标记为 `skipped` 或 `duplicate_in_batch`。
+- 同批次上传两个相同 account key，只处理第一份；第二份返回 `status='skipped'`，并用 `error_code='duplicate_in_batch'` 或等价安全错误摘要说明原因。
+- `runtime_sync` 只允许 `synced`、`pending`、`failed`、`not_applicable`，这些值不得出现在 item 主 `status` 中。
 - 批量中一个合法、一个缺少 `refresh_token`，合法项成功，非法项失败且不影响合法项。
 - 上传 `.login-sessions.json` 被拒绝，不写入 auth file，不创建账号。
 - 上传数组 JSON、空对象、非 JSON 被拒绝。
@@ -267,7 +284,8 @@ Models
 - 选择多个 `.json` 文件后先展示安全预检结果，确认前不创建账号、不写入 auth file。
 - 多文件预览只展示安全摘要，不展示完整 JSON。
 - 用户确认后才调用正式导入接口；导入结果页展示最终结果而不是沿用预检预计动作。
-- 批量结果页按文件展示 `created`、`updated`、`skipped`、`failed`。
+- 批量结果页按文件展示导入主状态 `created`、`updated`、`skipped`、`failed`，并单独展示 runtime sync 状态。
+- runtime sync pending 时，结果页显示“等待 runtime 同步”或等价文案，但仍保留该 item 的导入主状态。
 - 部分失败时，成功项仍显示为成功，并可前往目标 Pool 查看。
 - 同批次重复账号有明确提示，不创建重复卡片。
 - Free / Go / Plus 计划在导入预览和结果页显示为计划身份，不显示为订阅异常。
@@ -284,13 +302,15 @@ Models
 | CT-MJSON-00 | 只读预检 | Add Account 选择 `Import auth JSON`，一次选择两个 fixture，仅停留在预检结果页 | 展示安全摘要和预计动作；auth dir、DB account、Pool member 均无新增或更新；runtime/auth index/refresh 队列无新增任务 |
 | CT-MJSON-01 | 两个合法 auth JSON 首次导入 | Add Account 选择 `Import auth JSON`，一次上传两个 fixture，选择 Pool | 两个 auth file 写入成功；两个账号创建并加入 Pool；Pool 页面可见 |
 | CT-MJSON-02 | 新账号 + 已有账号混合导入 | 再次上传一个已有账号和一个新账号 | 已有账号为 `updated`，新账号为 `created`；没有重复 DB account 或 Pool member |
-| CT-MJSON-03 | 同批次重复账号 | 一次上传两个同 account key fixture | 第一项成功，第二项 `skipped` 或 `duplicate_in_batch`；最终只有一个账号 |
+| CT-MJSON-03 | 同批次重复账号 | 一次上传两个同 account key fixture | 第一项成功，第二项 `status='skipped'` 且原因是 `duplicate_in_batch`；最终只有一个账号 |
 | CT-MJSON-04 | 部分失败 | 一次上传一个合法 JSON 和一个缺 token JSON | 合法项成功；非法项失败；结果页展示部分失败；日志不泄露上传内容 |
 | CT-MJSON-05 | 防路径穿越 | 上传 filename 为 `../../x.json` 的文件 | 后端忽略用户文件名，目标路径仍在 `cpa_auth_dir` 内 |
 | CT-MJSON-06 | Runtime sync 与分层刷新 | 导入后等待 CPA management auth-files 和 refresh | Credential / Runtime Binding / Access / Quota / Models 进入可解释状态 |
 | CT-MJSON-07 | 覆盖失败回滚 | 模拟 upsert 或 pool add 失败 | 新文件回滚；已有文件不丢失；前端显示安全错误 |
 | CT-MJSON-08 | 预检后状态变化 | 预检显示新账号后，在确认前另一路径先导入同账号，再点击确认导入 | 正式导入重新校验，返回 updated / skipped / failed 等最新结果，不盲信预检 |
-| CT-MJSON-09 | 测试清理 | 完成上述验收 | 删除测试容器和临时数据目录或 volume |
+| CT-MJSON-09 | runtime pending 双状态 | runtime auth index 尚未确认 | item 主状态仍为 created / updated；runtime_sync 为 pending；页面不把 pending_runtime_sync 当主状态 |
+| CT-MJSON-10 | runtime sync 枚举边界 | 构造 synced / pending / failed / not_applicable 四种 runtime sync 结果 | 四种值只出现在 runtime_sync 字段；item 主 status 仍只为 created / updated / skipped / failed |
+| CT-MJSON-11 | 测试清理 | 完成上述验收 | 删除测试容器和临时数据目录或 volume |
 
 仅修改本规格文档时不执行容器测试；实现代码进入 v0.1.8 后必须执行。
 

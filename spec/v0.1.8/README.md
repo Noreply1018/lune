@@ -27,19 +27,23 @@
 2. `cpa_subscription_status` 只表达 paid subscription 元数据，不能继续作为 Codex CPA 的唯一 access gate。
 3. Free / Go 是计划身份，不是异常状态；Free / Go 的 Codex access 由 `wham/usage` 成功、模型请求成功或 CPA management 明确权益证据判定。
 4. Quota blocked 不等于 access ineligible；前者表示当前额度或限流阻断，后者表示账号不具备该 provider 使用资格。
-5. 默认策略必须延续现有“健康优先”的调度意图；v0.1.8 同时修正模型兜底边界，明确不支持请求模型的账号不得被兜底选中。
-6. Pool 中的账号拖拽顺序需要有清晰语义：健康优先下是同健康层级内的顺序；排序优先下是主要调度顺序。
-7. “排序优先”只影响可接普通流量账号之间的选择顺序，不绕过硬阻断状态。
-8. 降级需要分层：轻降级可以继续接流量；硬阻断必须跳过。
-9. 路由结果必须可解释。用户把账号排第一却没有被选中时，UI / 日志需要能说明跳过原因。
-10. 重试必须沿用当前 Pool 的路由策略，并排除已尝试失败的账号。
-11. UI 控件要克制：在现有“自检 Pool”右侧增加策略切换按钮，不新增大段说明或新的复杂面板。
-12. Quota 快照、quota 辅助接口失败和真实模型请求限流必须分层展示；前端不能只根据 `cpa_quota_status='error'` 推断“模型请求被限流”。
-13. Pool 账号卡片 chip 是摘要层，不要求完整铺开所有文字；优先保证网格高度稳定和扫描效率。
-14. 卡片 chip 行必须稳定为单行摘要；完整解释应放在 title、tooltip、详情抽屉或诊断区。
-15. 解决 chip 高度异常必须约束布局根因，不能只依赖缩短某一个当前文案。
-16. CPA auth JSON 多账号导入必须以 v0.1.7 单文件导入的安全边界为基础；多文件只扩大批处理能力，不扩大到目录扫描、压缩包或整库迁移。
-17. 导入成功不等于账号可路由；导入后的 Credential、Runtime Binding、Access、Quota、Serving 和 Models 仍必须由分层刷新流程确认。
+5. Free / Go 首次接入后先显示 Access 待确认，并由后台异步执行 `wham/usage` 探测；不自动发真实模型请求消耗用户额度。
+6. 已确认 eligible 的账号遇到短暂 access / quota 探测失败时先保留可用结论，只有明确拒绝证据才能降级为 ineligible。
+7. 默认策略必须延续现有“健康优先”的调度意图；v0.1.8 同时修正模型兜底边界，明确不支持请求模型的账号不得被兜底选中。
+8. Pool 中的账号拖拽顺序需要有清晰语义：健康优先下是同健康层级内的顺序；排序优先下是主要调度顺序。
+9. “排序优先”只影响可接普通流量账号之间的选择顺序，不绕过硬阻断状态。
+10. 降级需要分层：轻降级可以继续接流量；硬阻断必须跳过。
+11. 路由结果必须可解释。用户把账号排第一却没有被选中时，UI / 日志需要能说明跳过原因。
+12. 重试必须沿用当前 Pool 的路由策略，并排除已尝试失败的账号。
+13. UI 控件要克制：在现有“自检 Pool”右侧增加策略切换按钮，不新增大段说明或新的复杂面板。
+14. Quota 快照、quota 辅助接口失败和真实模型请求限流必须分层展示；前端不能只根据 `cpa_quota_status='error'` 推断“模型请求被限流”。
+15. Pool 账号卡片 chip 是摘要层，不要求完整铺开所有文字；优先保证网格高度稳定和扫描效率。
+16. 卡片右上角显示 Plan chip + 健康 chip；底部 chip 只显示 `今日 N` 和主问题，不再显示 subscription 到期。
+17. Free 只有短周期额度时，quota 第二行显示 `Plan  短周期额度  无周额度`，用于保持与 Plus 卡片一致的高度。
+18. 卡片 chip 行必须稳定为单行摘要；完整解释应放在 title、tooltip、详情抽屉或诊断区。
+19. 解决 chip 高度异常必须约束布局根因，不能只依赖缩短某一个当前文案。
+20. CPA auth JSON 多账号导入必须以 v0.1.7 单文件导入的安全边界为基础；多文件只扩大批处理能力，不扩大到目录扫描、压缩包或整库迁移。
+21. 导入成功不等于账号可路由；导入后的 Credential、Runtime Binding、Access、Quota、Serving 和 Models 仍必须由分层刷新流程确认。
 
 ## 已确认口径
 
@@ -49,7 +53,11 @@
 - `ordered` 不允许绕过硬阻断：禁用、member 禁用、凭据不可用、runtime binding 不可用、access ineligible / pending / unknown、quota blocked、Codex 模型请求 429 阻断证据、serving cooldown 未过期、serving error、明确不支持模型都必须跳过。
 - Codex CPA 的 `subscription active` 是 paid plan 的 access 证据之一，不是 Free / Go 的必要条件。
 - Codex Free / Go 账号在 `access_status=eligible` 且 quota / serving 未阻断时，可以作为普通可路由账号。
-- Free / Go 卡片展示应为计划 chip，例如 `Codex · Free`，不得把 Free 显示成红色“订阅不可用”。
+- Free / Go 首次接入后后台异步执行 `wham/usage` 探测；不自动发真实模型请求。
+- 已确认 eligible 的账号遇到短暂探测失败时不立刻降级为 ineligible。
+- Free / Go 卡片在右上角显示计划 chip，例如 `Free` / `Go`，不得把 Free 显示成红色“订阅不可用”。
+- 卡片底部不再显示 subscription 到期 chip；底部只保留 `今日 N` 和主问题。
+- Free 只有一个 quota window 时，第二行显示 `Plan  短周期额度  无周额度`。
 - 模型匹配在两种策略下都不能被破坏；明确不支持请求模型的账号不得因为排序靠前或健康层级更高而被选中。
 - 如果没有任何账号明确声明支持该模型，可以继续使用模型列表为空或未知的账号作为兼容兜底。
 - UI 在现有“自检 Pool”右侧增加一个切换按钮：点一下切到“健康优先”，再点一下切到“排序优先”，两种状态颜色不同。
@@ -61,7 +69,7 @@
 - 卡片 chip 行采用单行、不换行、溢出省略的摘要口径。
 - `模型请求被限流` 可以在卡片层缩短为 `请求限流` 或 `模型限流`；详情页和诊断区保留完整解释。
 - `Import auth JSON` 支持一次选择多个 `.json` 文件；同账号幂等更新，不创建重复账号或重复 Pool member。
-- 批量导入允许部分成功、部分失败；结果页必须逐项展示 `created`、`updated`、`skipped`、`failed` 或 `pending_runtime_sync`。
+- 批量导入允许部分成功、部分失败；结果页必须逐项展示导入主状态 `created`、`updated`、`skipped`、`failed`，并单独展示 runtime sync 状态；`pending_runtime_sync` 只能作为 runtime pending 的汇总计数或展示标签，不作为 item 主状态。
 - v0.1.8 不纳入旧 Lune 数据目录扫描、目录上传或压缩包导入。
 
 ## 版本边界

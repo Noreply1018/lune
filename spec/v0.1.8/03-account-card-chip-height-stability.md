@@ -101,7 +101,7 @@ repeat(auto-fill, minmax(15.5rem, 1fr))
 
 ## 改进策略
 
-v0.1.8 应把账号卡片 chip 区域收敛为稳定单行摘要，同时保留完整解释入口。
+v0.1.8 应把账号卡片 chip 区域收敛为稳定单行摘要，同时保留完整解释入口。Codex Free / Go 支持进入后，计划身份不再占用底部 chip，而是在右上角健康 chip 左侧单独展示。
 
 采用组合方案：
 
@@ -109,13 +109,15 @@ v0.1.8 应把账号卡片 chip 区域收敛为稳定单行摘要，同时保留�
 2. chip 行加 `overflow-hidden`，保证不会撑高卡片。
 3. 每个 chip 使用 `min-w-0 truncate` 或等价约束，允许单个 chip 内部省略。
 4. 保留 `title={chip.detail}`，让完整原因可通过 hover 查看。
-5. 对真实 `HTTP 429 from model request` 的高频较长文案做卡片级短文案收敛，例如把 `模型请求被限流` 缩短为 `请求限流` 或 `模型限流`；quota fetch `HTTP 401/403/request failed` 仍必须使用额度查询失败类文案。
-6. 详情抽屉和诊断区保留完整表述，不把卡片短文案作为唯一信息源。
+5. 移除卡片底部 subscription 到期 chip；底部只保留 `今日 N` 和主问题 chip。
+6. 对真实 `HTTP 429 from model request` 的高频较长文案做卡片级短文案收敛，例如把 `模型请求被限流` 缩短为 `请求限流` 或 `模型限流`；quota fetch `HTTP 401/403/request failed` 仍必须使用额度查询失败类文案。
+7. 详情抽屉和诊断区保留完整表述，不把卡片短文案作为唯一信息源。
 
 最低实现口径：
 
 ```text
-chip 行：单行、不换行、溢出隐藏
+右上角：Plan chip + 健康 chip
+底部 chip 行：今日 N + 主问题；单行、不换行、溢出隐藏
 chip 项：可收缩、内部省略、保留 title
 文案：卡片显示短文案；详情页显示完整解释
 ```
@@ -128,10 +130,43 @@ chip 项：可收缩、内部省略、保留 title
 
 - 同一 Active Pool 网格中，常见一到三枚 chip 组合不再导致卡片高度不一致。
 - chip 区域只占一行。
-- 三枚 chip 同时存在时，优先完整展示短 chip，较长 chip 可省略。
+- 右上角显示 plan chip 和健康 chip；底部 chip 只显示请求量与主问题。
+- 底部两枚 chip 同时存在时，优先完整展示短 chip，较长 chip 可省略。
 - 被省略的 chip 仍能通过 tooltip / title 或详情抽屉看到完整原因。
 - Disabled Dock 卡片使用同一 chip 行约束，避免窄侧栏里出现高度跳变。
 - 卡片底部操作按钮、更新时间和信号条不被 chip 挤压、覆盖或推离预期位置。
+
+Codex plan chip：
+
+| 计划 | chip 文案 | 颜色语义 |
+| --- | --- | --- |
+| Free | `Free` | 中性或青绿色，不使用红色 |
+| Go | `Go` | 中性或青绿色 |
+| Plus | `Plus` | 蓝紫 / 月相紫 |
+| Pro | `Pro` | 深紫或强调色 |
+| Unknown | `Unknown` | 灰色 |
+
+Codex quota 区域必须保持固定两行高度。Plus / Pro 使用实际窗口：
+
+```text
+5h    [bar]    81%
+7d    [bar]    64%
+```
+
+Free 只有短周期窗口时使用说明行补齐高度：
+
+```text
+5h    [bar]    81%
+Plan  短周期额度  无周额度
+```
+
+Free quota 尚未查到时，第一行为 pending / unknown，第二行仍为：
+
+```text
+Plan  短周期额度  无周额度
+```
+
+如果未来 Free 返回第二个真实窗口，则展示真实窗口，不强行显示“无周额度”。
 
 卡片文案口径：
 
@@ -143,6 +178,8 @@ chip 项：可收缩、内部省略、保留 title
 | Serving cooldown 且无 quota evidence | 服务冷却中 | 冷却中 |
 | Credential needs login | 需要重新登录 | 需要重登 |
 | Runtime binding issue | Binding 未确认 | Binding |
+| Access pending / unknown | Access 待确认 | Access 待确认 |
+| Access ineligible | Access 不可用 | Access 不可用 |
 
 卡片短文案只用于摘要层。详情抽屉、诊断区、错误详情和日志摘要仍应使用完整中文说明。
 
@@ -162,23 +199,25 @@ chip 项：可收缩、内部省略、保留 title
 
 | 编号 | 场景 | 准备 | 操作 | 期望 |
 | --- | --- | --- | --- | --- |
-| CHIP-UI-01 | 三枚短 chip：真实 429 | `今日 0`、`30 天后到期`、`请求限流` | 渲染 Active Pool 卡片 | chip 行保持一行，卡片高度不超过同类卡片 |
-| CHIP-UI-01A | 三枚短 chip：quota fetch 失败 | `今日 0`、`30 天后到期`、`额度查询失败` | 渲染 Active Pool 卡片 | chip 行保持一行，卡片高度不超过同类卡片 |
-| CHIP-UI-02 | 三枚长 chip | `今日 999.9k`、`7 天内到期`、`Binding 未确认` | 渲染最小列宽卡片 | chip 行不换行；长 chip 内部省略；底部按钮不被挤压 |
+| CHIP-UI-01 | 两枚底部 chip：真实 429 | 右上 `Plus` + 健康，底部 `今日 0`、`请求限流` | 渲染 Active Pool 卡片 | chip 行保持一行，卡片高度不超过同类卡片 |
+| CHIP-UI-01A | 两枚底部 chip：quota fetch 失败 | 右上 `Plus` + 健康，底部 `今日 0`、`额度查询失败` | 渲染 Active Pool 卡片 | chip 行保持一行，卡片高度不超过同类卡片 |
+| CHIP-UI-02 | 长 chip | 右上 plan + 健康，底部 `今日 999.9k`、`Binding 未确认` | 渲染最小列宽卡片 | chip 行不换行；长 chip 内部省略；底部按钮不被挤压 |
 | CHIP-UI-03 | 旧长文案兼容 | 主问题仍为 `模型请求被限流` | 渲染卡片 | 即使长文案未缩短，布局也不换行撑高 |
-| CHIP-UI-04 | 单枚 chip | 只有 `今日 0` | 与三枚 chip 卡片同屏 | 卡片高度保持稳定，不因 chip 数量少产生异常塌陷 |
-| CHIP-UI-05 | Disabled Dock 窄栏 | disabled 账号带三枚 chip | 渲染右侧停泊区 | chip 行不换行；卡片不出现异常增高 |
-| CHIP-UI-06 | 移动端窄屏 | 视口宽度 375px | 打开 Pool 详情页 | chip 不换行、不重叠；文字省略合理 |
+| CHIP-UI-04 | 单枚底部 chip | 只有 `今日 0` | 与两枚 chip 卡片同屏 | 卡片高度保持稳定，不因 chip 数量少产生异常塌陷 |
+| CHIP-UI-05 | Disabled Dock 窄栏 | disabled 账号带 plan chip、健康 chip 和两枚底部 chip | 渲染右侧停泊区 | chip 行不换行；卡片不出现异常增高 |
+| CHIP-UI-06 | 移动端窄屏 | 视口宽度 375px | 打开 Pool 详情页 | plan chip、健康 chip 和底部 chip 不换行、不重叠；文字省略合理 |
 | CHIP-UI-07 | hover / title | chip 被省略 | hover chip 或检查 DOM title | 可看到完整 detail；不泄露敏感字段 |
+| CHIP-UI-08 | Free 单窗口 quota | Free 账号只有 5h quota window | 渲染 Codex 卡片 | 第二行显示 `Plan  短周期额度  无周额度`，卡片高度与 Plus 一致 |
+| CHIP-UI-09 | Free quota pending | Free 账号 quota 尚未同步 | 渲染 Codex 卡片 | 第一行 pending，第二行为 `Plan  短周期额度  无周额度` |
 
 ### 视觉回归矩阵
 
 | 编号 | 视口 | 数据组合 | 必须验证 |
 | --- | --- | --- | --- |
-| VR-CHIP-01 | 1440px 桌面 | Active Pool 四张卡片，chip 数量分别为 1 / 2 / 3 / 3 | 网格卡片高度一致或符合设计固定高度；chip 只占一行 |
-| VR-CHIP-02 | 1024px 窄桌面 | 三枚 chip + 长账号名 | 标题 truncate、chip truncate、按钮区无重叠 |
+| VR-CHIP-01 | 1440px 桌面 | Active Pool 四张卡片，底部 chip 数量分别为 1 / 2 / 2 / 2，右上均有 plan + 健康 | 网格卡片高度一致或符合设计固定高度；chip 只占一行 |
+| VR-CHIP-02 | 1024px 窄桌面 | 两枚底部 chip + 长账号名 | 标题 truncate、chip truncate、按钮区无重叠 |
 | VR-CHIP-03 | 768px 平板 | Active Pool 单列或双列布局 | chip 不换行撑高；卡片间距稳定 |
-| VR-CHIP-04 | 375px 手机 | 三枚 chip + 最长主问题 | 无文本溢出页面边界；无按钮遮挡 |
+| VR-CHIP-04 | 375px 手机 | plan chip + 健康 chip + 两枚底部 chip + 最长主问题 | 无文本溢出页面边界；无按钮遮挡 |
 
 ### 容器验收矩阵
 
@@ -186,15 +225,17 @@ chip 项：可收缩、内部省略、保留 title
 
 | 编号 | 场景 | 验收方式 | 必须验证 |
 | --- | --- | --- | --- |
-| CT-CHIP-01 | 0.1.7 真实缺陷数据复现 | 使用隔离数据目录导入或构造三 chip Codex CPA 账号 | 修正后的组合 `今日 N / N 天后到期 / 额度查询失败` 在新版本中不再换行撑高 |
-| CT-CHIP-02 | 多账号同屏对比 | 构造一枚、两枚、三枚 chip 的 Active Pool 卡片 | 同屏卡片高度稳定，网格不出现某一张异常增高 |
-| CT-CHIP-03 | Disabled Dock 对比 | 构造右侧 disabled 三 chip 卡片 | 右侧窄栏不出现两行 chip 导致高度跳变 |
+| CT-CHIP-01 | 0.1.7 缺陷数据迁移 | 使用隔离数据目录导入或构造旧三 chip Codex CPA 账号 | 新版本显示为 plan chip + 健康 chip + `今日 N / 额度查询失败`，不再换行撑高 |
+| CT-CHIP-02 | 多账号同屏对比 | 构造一枚、两枚底部 chip 的 Active Pool 卡片，以及 Free / Plus quota 卡片 | 同屏卡片高度稳定，网格不出现某一张异常增高 |
+| CT-CHIP-03 | Disabled Dock 对比 | 构造右侧 disabled 账号，包含 plan chip、健康 chip 和两枚底部 chip | 右侧窄栏不出现两行 chip 导致高度跳变 |
 | CT-CHIP-04 | 移动视口检查 | 使用浏览器或 Playwright 截图检查 375px 页面 | chip 省略合理，无重叠、无横向溢出 |
 | CT-CHIP-05 | 测试清理 | 验收完成后检查 Docker 状态和临时数据 | 测试容器、临时数据目录或 volume 已删除 |
 
 ## 最低验收标准
 
 - Pool 账号卡片 chip 区域不能因为三枚 chip 自动换到第二行。
+- 卡片右上角显示 plan chip + 健康 chip；底部只显示请求量与主问题。
+- Free 只有短周期额度时，第二行显示 `Plan  短周期额度  无周额度`，并与 Plus 卡片保持高度一致。
 - Active Pool 常见卡片组合高度稳定。
 - Disabled Dock 窄栏卡片不因 chip 换行异常增高。
 - 长文案在卡片摘要层可以省略，但完整解释仍可在 title、tooltip 或详情抽屉中查看。
@@ -205,6 +246,9 @@ chip 项：可收缩、内部省略、保留 title
 ## 已确认口径
 
 - 卡片 chip 是摘要层，不要求完整展示所有文字。
+- 计划身份不再作为底部 chip；Codex CPA 卡片右上角显示 plan chip。
+- 底部 subscription 到期 chip 从卡片移除；到期信息保留到详情页或 Diagnostics。
+- Free 账号无周额度不是异常；卡片 quota 第二行显示 `Plan  短周期额度  无周额度`。
 - 解决根因必须约束 chip 行布局，不能只依赖缩短某一个当前文案。
 - 对真实 `HTTP 429 from model request`，`模型请求被限流` 可以在卡片层缩短为 `请求限流` 或 `模型限流`，详情和诊断仍保留完整解释。
 - 对 quota fetch `HTTP 401/403/request failed`，卡片、详情和诊断都不能继续使用“模型请求被限流”。
