@@ -73,9 +73,8 @@
 - 已决策：直连账号 `Advanced` 区域收敛到 `Account ID`、`Source Kind`、`Runtime Base URL`、`API Key` 脱敏状态、`Discovery Health`、`Route Badge`、`Serving Status`、`Failure Count`、`Cooldown Until`、`Last Checked`、`Last Error` 等排障字段。
 - 已决策：诊断页不展示完整 token 或完整请求内容。
 - 已决策：直连账号不保留完整 `Raw` 区域；只保留脱敏、筛选后的 `Advanced` 排障字段。
-- 已决策：`Route` 与 `Serving` 不合并为单一维度；后续只能做视觉紧凑化，不能改变两者语义。
+- 已决策：`Route` 与 `Serving` 不合并为单一维度，不能改变两者语义。
 
-## 后续非阻塞项
+## 已决策边界
 
 - v0.1.7 当前不新增独立于 `Playground` 的连接测试入口；账号级直测仍使用 `Playground`。
-- `Connection` 区块补充轻量 `GET /models` 连接测试已移入 `spec/draft/10-v0.1.7-deferred-followups.md`，不进入 v0.1.7 阻塞范围。

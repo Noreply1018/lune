@@ -112,7 +112,7 @@ http://127.0.0.1:7788/admin
 如果你使用固定版本，建议拉取类似：
 
 ```text
-noreply1018/lune:0.1.6
+noreply1018/lune:0.1.7
 ```
 
 ## 服务器 / Compose 运行
@@ -182,7 +182,8 @@ cp .env.example .env
 
 | 变量 | 用途 | 默认值 |
 |---|---|---|
-| `LUNE_CPA_AUTH_DIR` | CPA 凭据文件目录 | Docker: `/app/data/cpa-auth` |
+| `LUNE_CPA_FILES_DIR` | CPA 凭据文件目录 | Docker: `/app/data/cpa-auth` |
+| `LUNE_CPA_AUTH_DIR` | CPA 凭据文件目录兼容别名；新部署建议使用 `LUNE_CPA_FILES_DIR` | 无 |
 | `LUNE_CPA_BASE_URL` | Lune 连接 CPA 的地址 | Docker: `http://127.0.0.1:8317` |
 | `LUNE_CPA_API_KEY` | Lune 使用的 CPA API Key | 同 `CPA_API_KEY` |
 | `LUNE_CPA_MANAGEMENT_KEY` | Lune 访问 CPA 管理 API 的密钥 | `lune-cpa-management-dev` |
@@ -195,7 +196,7 @@ cp .env.example .env
 
 默认 Compose 只把管理端口绑定到 `127.0.0.1`。Docker Desktop 手动 Run 时也建议只在本机使用，不要把 `7788` 暴露到公网或不可信局域网。
 
-如果你需要远程访问，请至少设置 `LUNE_ADMIN_TOKEN`，并通过可信反向代理、VPN 或防火墙限制访问来源。当前版本为了本机 Docker Desktop 体验，会信任 loopback 和私有网络来源；更严格的远程访问认证策略已放入后续版本计划。
+如果你需要远程访问，请至少设置 `LUNE_ADMIN_TOKEN`，并通过可信反向代理、VPN 或防火墙限制访问来源。当前版本为了本机 Docker Desktop 体验，会信任 loopback 和私有网络来源；更严格的远程访问认证策略已另行规划。
 
 ## Docker 与 CPA 服务
 
@@ -208,6 +209,7 @@ CPA 是 Lune 默认镜像内置的运行时能力。镜像内的 `CLIProxyAPI` �
 - CPA 配置由入口脚本根据环境变量自动生成，无需维护 `cpa-config.yaml`
 - embedded CPA 自动设置 `LUNE_CPA_PROVIDER_PINNING_SUPPORTED=1`；外部 CPA 默认视为不支持 pinning
 - entrypoint 会监督 embedded CPA 子进程，CPA 异常退出时容器会失败而不是静默继续运行
+- `LUNE_CPA_FILES_DIR` 是当前推荐的 CPA 凭据目录变量；旧的 `LUNE_CPA_AUTH_DIR` 仍作为兼容别名可用
 - 默认只挂载一个数据卷到 `/app/data`，SQLite、CPA 凭据和网关临时文件都在这个目录下
 - 双方通过容器内 `/app/data/cpa-auth` 目录交换凭据文件：Lune 直接对接 OpenAI Device Code 登录后将凭据写入该目录，CPA 服务热加载自动识别
 - 网关请求体默认上限为 100MB，超过 8MB 的请求会写入 `/app/data/tmp` 用于重试重放，避免全部常驻内存

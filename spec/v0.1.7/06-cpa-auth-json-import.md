@@ -224,7 +224,7 @@ Runtime sync: confirmed / pending / error
 - 已实现 `POST /admin/api/accounts/cpa/import-json`，支持 multipart 单文件导入、校验、写入、upsert、加入 Pool、runtime reload、异步刷新和失败回滚。
 - 已补充失败回滚测试：新文件失败回滚；已有账号覆盖导入失败时恢复旧 auth file 和账号快照。
 
-## 后续非阻塞项
+## 已决策边界
 
-- 批量导入多个 auth JSON 已移入 `spec/draft/10-v0.1.7-deferred-followups.md`，不进入 v0.1.7 阻塞范围。
-- “从旧 Lune 数据目录扫描导入”的高级运维工具已移入 `spec/draft/10-v0.1.7-deferred-followups.md`，不进入 v0.1.7 阻塞范围。
+- v0.1.7 的 Add Account auth JSON 导入只支持单文件导入。
+- v0.1.7 不把 `.login-sessions.json`、批量导入或整库迁移纳入导入入口。

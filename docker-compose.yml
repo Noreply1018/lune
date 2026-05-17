@@ -1,7 +1,7 @@
 services:
   lune:
     build: .
-    image: lune:v0.1.6-local
+    image: lune:v0.1.7-local
     container_name: lune
     restart: unless-stopped
     stop_grace_period: 30s
@@ -11,7 +11,7 @@ services:
       LUNE_PORT: "${LUNE_PORT:-7788}"
       LUNE_DATA_DIR: "/app/data"
       LUNE_ADMIN_TOKEN: "${LUNE_ADMIN_TOKEN:-}"
-      LUNE_CPA_AUTH_DIR: "/app/data/cpa-auth"
+      LUNE_CPA_FILES_DIR: "/app/data/cpa-auth"
       LUNE_GATEWAY_TMP_DIR: "/app/data/tmp"
       LUNE_CPA_BASE_URL: "http://127.0.0.1:8317"
       LUNE_CPA_API_KEY: "${CPA_API_KEY:-sk-cpa-default}"

@@ -2,7 +2,7 @@
 
 ## 状态
 
-状态：实现、测试、真实容器矩阵、最终 `gpt-5.5` subagent 严格审计和发布阻塞提交均已完成，等待正式 tag 发布公开镜像。
+状态：已发布。实现、测试、真实容器矩阵、最终 `gpt-5.5` subagent 严格审计、发布阻塞提交、`v0.1.7` tag 和公开镜像发布均已完成。
 
 本文件记录 v0.1.7 发布阻塞项的可复核证据。测试容器和临时目录按项目规则已清理，因此审计时不应依赖 `docker ps -a` 中的已删除容器残留。
 
@@ -168,14 +168,15 @@ docker run -d \
 - 已新增测试：`TestImportCpaAuthJSONRestoresExistingAccountAndFileWhenPoolAddFails`。
 - 已补齐：裸 `429`、quota snapshot 分层、cooldown 过期后阻断的真实容器矩阵证据。
 - 第二轮复审指出证据未落到仓库文档中，本文件用于补齐可复核证据入口。
-- 后续复审指出 `too many requests` 不等同于真正裸 `429`；已补充 `lune-v017-ct429-bare` 空 body 429 容器证据。
+- 复审指出 `too many requests` 不等同于真正裸 `429`；已补充 `lune-v017-ct429-bare` 空 body 429 容器证据。
 - 最终 `gpt-5.5` subagent 严格审计已通过，发布阻塞改动已提交为 `a216d38 Complete v0.1.7 release blockers`。
+- `v0.1.7` tag 已触发 Release workflow，GHCR / Docker Hub 多架构镜像和 Docker Hub 描述同步已成功完成；workflow warning 清理已转入 `main` 的发布流程维护提交。
 
-## 当前清理状态
+## 发布时清理快照
 
-最终核对时：
+发布前最终核对时：
 
-- `docker ps` 仅剩旧容器 `lune-0.1.6` 和 `lune-0.1.5`。
+- 发布测试容器均已删除；当时运行中的长期容器不作为 v0.1.7 测试残留判断依据。
 - 未占用测试端口 `17790`、`17791`、`19091`。
 - 未占用测试端口 `17792`、`19092`。
 - 上述 `/tmp/lune-v017-*` 测试目录均已删除。

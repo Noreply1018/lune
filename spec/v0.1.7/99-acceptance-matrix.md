@@ -13,7 +13,7 @@
 
 ## v0.1.7 必须完成范围审计
 
-以下事项已经审计为 v0.1.7 发布阻塞范围，不能再作为后续非阻塞项处理：
+以下事项已经审计为 v0.1.7 发布阻塞范围：
 
 | 编号 | 必须完成项 | 审计结论 | 最低闭环 |
 | --- | --- | --- | --- |
@@ -100,7 +100,7 @@
 - 账号不可用时，UI/API 给出具体阻断层，不能把所有 503 都表述成同一个“账号不可用”。
 - Codex CPA 账号真实请求返回 `429` 时，状态归类不能停留在 generic cooldown；必须把 quota snapshot 与 real request evidence 分层展示。
 
-## 已确认口径与后续项
+## 已确认口径
 
 已确认不再反复讨论的口径：
 
@@ -113,17 +113,5 @@
 - 连接信息保存成功后只刷新账号详情数据，不自动触发完整健康刷新；保存动作不等同于连接成功。
 - Codex 裸 `HTTP 429` 在 UI 上命名为“模型请求被限流”；带 `quota`、`rate limit`、`limit reached` 文案的 `429` 显示为“额度 / 限流问题”。
 - Runtime pinning 诊断作为管理员排障灯，放在 Settings 的 CPA runtime 区块，优先展示一句 `Provider pinning: enabled / disabled / unknown`，避免在首版展示过多容器 env / PID / 子进程细节。
-
-已经移入 `spec/draft/10-v0.1.7-deferred-followups.md`，不进入 v0.1.7 阻塞范围：
-
-- 直连账号保存后自动触发完整健康刷新。
-- 直连 `Connection` 区块轻量 `GET /models` 测试入口。
-- Pool token 替换成功后自动收起 reveal 状态。
-- 完整 runtime diagnostics API。
-- 新增更细 quota state，例如 `limited`。
-- 更接近真实 Codex runtime 的专用 fake CPA 容器端到端场景。
-- auth JSON 批量导入和旧 Lune 数据目录扫描导入。
-
-后续实现时需要注意：
 
 - Settings CPA runtime 区块增加 pinning 状态时，前端排布要克制：不要把状态塞成大卡片，也不要挤压现有 CPA runtime 操作；优先做成同区块内的一行状态或紧凑 badge。

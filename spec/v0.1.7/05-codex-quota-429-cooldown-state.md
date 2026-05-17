@@ -216,12 +216,7 @@ Routing impact: cooldown until 2026-05-16 07:53:51
 - 已确认 v0.1.6 gateway 只把 `429` 归入 retryable serving failure，不会同步写入 `cpa_quota_status`。
 - 已在 v0.1.7 实现中修复：普通 Codex CPA 模型请求 `429` 同时写入 serving cooldown 与 `HTTP 429 from model request` quota/rate-limit evidence；quota snapshot 成功刷新不会覆盖模型请求 evidence。
 
-## 后续非阻塞项
-
-- 更接近真实 Codex runtime 的专用 fake CPA 容器端到端场景已移入 `spec/draft/10-v0.1.7-deferred-followups.md`；v0.1.7 仍必须完成可重复的 mock upstream / fake CPA 验收矩阵。
-- 新增更细 quota state（例如 `limited`）已移入 `spec/draft/10-v0.1.7-deferred-followups.md`；v0.1.7 当前保守复用 `blocked` / `error` 并记录 evidence。
-
-## 后续非阻塞说明
+## 已决策边界
 
 v0.1.7 采用保守产品口径：普通 Codex 模型请求遇到 `429` 时，Lune 同时记录短期 `serving cooldown` 和一条 quota / rate-limit 证据；裸 `429` 不直接说“额度已用尽”，只有错误内容明确指向 quota / rate limit 时才提升为更强的额度问题。
 

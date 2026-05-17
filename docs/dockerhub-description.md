@@ -50,6 +50,8 @@ The Lune image includes the CPA runtime by default, so no separate CPA image or 
 
 A single Docker volume mounted at `/app/data` stores SQLite data, CPA auth files, and gateway temporary replay files.
 
+The current CPA credential directory environment variable is `LUNE_CPA_FILES_DIR`; older `LUNE_CPA_AUTH_DIR` deployments remain supported as a compatibility alias.
+
 Gateway request bodies default to a 100 MB limit. Requests above 8 MB are replayed from disk for retries instead of being kept entirely in memory.
 
 By default the production compose file pulls from GHCR:

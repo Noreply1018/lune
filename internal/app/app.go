@@ -73,8 +73,15 @@ func LoadConfig() Config {
 	if v := os.Getenv("LUNE_DATA_DIR"); v != "" {
 		cfg.DataDir = v
 	}
-	if v := os.Getenv("LUNE_CPA_AUTH_DIR"); v != "" {
-		cfg.CpaAuthDir = v
+	cpaFilesDir := os.Getenv("LUNE_CPA_FILES_DIR")
+	legacyCpaAuthDir := os.Getenv("LUNE_CPA_AUTH_DIR")
+	// Keep legacy overrides working when the image default LUNE_CPA_FILES_DIR is present.
+	if legacyCpaAuthDir != "" && cpaFilesDir == "/app/data/cpa-auth" {
+		cfg.CpaAuthDir = legacyCpaAuthDir
+	} else if cpaFilesDir != "" {
+		cfg.CpaAuthDir = cpaFilesDir
+	} else if legacyCpaAuthDir != "" {
+		cfg.CpaAuthDir = legacyCpaAuthDir
 	}
 	if v := os.Getenv("LUNE_CPA_BASE_URL"); v != "" {
 		cfg.CpaBaseURL = v

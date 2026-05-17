@@ -4,9 +4,18 @@
 
 Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本，但在默认体验、部署方式、配置形态还没有完全稳定前，minor 版本可能会调整产品边界。
 
+## [未发布]
+
+### 发布流程与文档维护
+
+- Release workflow 升级到声明 Node 24 runtime 的 action 版本，并启用 `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`，消除 Node.js 20 action runtime 弃用提醒。
+- Docker Hub 同步短描述收敛到 100 bytes 以内，避免发布时被 Docker Hub 截断。
+- Docker 镜像默认 CPA 凭据目录变量改为 `LUNE_CPA_FILES_DIR`，避免 BuildKit 把目录变量误判为 secret；`LUNE_CPA_AUTH_DIR` 保留为兼容别名。
+- README、Docker Hub 描述、Compose 示例和 `.env.example` 已同步新的 CPA 凭据目录变量口径。
+
 ## [0.1.7] - 2026-05-16
 
-状态：待正式发布。代码实现、测试矩阵、隔离容器 smoke、`gpt-5.5` subagent 严格审计和发布阻塞提交均已完成；公开镜像发布由 `v0.1.7` tag 触发。
+状态：已发布。代码实现、测试矩阵、隔离容器 smoke、`gpt-5.5` subagent 严格审计、发布阻塞提交、`v0.1.7` tag、GHCR / Docker Hub 多架构镜像推送和 Docker Hub 描述同步均已完成。
 
 ### 账号详情与直连诊断
 

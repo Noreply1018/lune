@@ -22,12 +22,19 @@ stop_children() {
 run_embedded_cpa() {
   : "${CPA_PORT:=8317}"
   : "${CPA_API_KEY:=sk-cpa-default}"
-  : "${LUNE_CPA_AUTH_DIR:=/app/data/cpa-auth}"
+  default_cpa_files_dir="/app/data/cpa-auth"
+  # Keep legacy overrides working when the image default LUNE_CPA_FILES_DIR is present.
+  if [ -n "${LUNE_CPA_AUTH_DIR:-}" ] && [ "${LUNE_CPA_FILES_DIR:-}" = "$default_cpa_files_dir" ]; then
+    LUNE_CPA_FILES_DIR="$LUNE_CPA_AUTH_DIR"
+  fi
+  : "${LUNE_CPA_FILES_DIR:=${LUNE_CPA_AUTH_DIR:-/app/data/cpa-auth}}"
+  LUNE_CPA_AUTH_DIR="$LUNE_CPA_FILES_DIR"
   : "${LUNE_CPA_MANAGEMENT_KEY:=lune-cpa-management-dev}"
   : "${LUNE_CPA_API_KEY:=$CPA_API_KEY}"
   : "${LUNE_CPA_BASE_URL:=http://127.0.0.1:${CPA_PORT}}"
 
   export CPA_API_KEY
+  export LUNE_CPA_FILES_DIR
   export LUNE_CPA_AUTH_DIR
   export LUNE_CPA_MANAGEMENT_KEY
   export LUNE_CPA_API_KEY
