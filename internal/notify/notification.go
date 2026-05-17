@@ -70,6 +70,21 @@ func EventTypes() []EventType {
 			},
 		},
 		{
+			Event:               "cpa_import_batch",
+			Label:               "CPA auth JSON 批量导入",
+			DefaultSeverity:     "info",
+			DefaultBodyTemplate: `CPA auth JSON 批量导入 {{ .Vars.batch_id }}：created={{ .Vars.created }} updated={{ .Vars.updated }} skipped={{ .Vars.skipped }} failed={{ .Vars.failed }} runtime_pending={{ .Vars.runtime_pending }} runtime_failed={{ .Vars.runtime_failed }}`,
+			SampleVars: map[string]any{
+				"batch_id":        "import-123",
+				"created":         2,
+				"updated":         1,
+				"skipped":         1,
+				"failed":          0,
+				"runtime_pending": 2,
+				"runtime_failed":  0,
+			},
+		},
+		{
 			Event:               "test",
 			Label:               "测试消息",
 			DefaultSeverity:     "info",

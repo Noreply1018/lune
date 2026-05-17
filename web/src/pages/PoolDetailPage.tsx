@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, KeyRound, ShieldCheck } from "lucide-react";
+import { Check, Copy, KeyRound, ListOrdered, ShieldCheck } from "lucide-react";
 import AccountCard from "@/components/AccountCard";
 import AccountDetailSheet from "@/components/AccountDetailSheet";
 import CodexSetupDialog from "@/components/CodexSetupDialog";
@@ -72,6 +72,7 @@ export default function PoolDetailPage() {
   const [selfChecking, setSelfChecking] = useState(false);
   const [flashMap, setFlashMap] = useState<Record<number, FlashState>>({});
   const [refreshingAccountIds, setRefreshingAccountIds] = useState<Set<number>>(() => new Set());
+  const [routingPolicySaving, setRoutingPolicySaving] = useState(false);
   const loadSeqRef = useRef(0);
   const hasLoadedRef = useRef(false);
   const flashTimersRef = useRef<Map<number, number>>(new Map());
@@ -277,6 +278,27 @@ export default function PoolDetailPage() {
       toast(err instanceof Error ? err.message : "账号状态更新失败", "error");
     } finally {
       refreshData();
+    }
+  }
+
+  async function toggleRoutingPolicy() {
+    if (!pool || routingPolicySaving) return;
+    const next = pool.routing_policy === "ordered" ? "health_first" : "ordered";
+    setRoutingPolicySaving(true);
+    try {
+      await api.put(`/pools/${poolId}`, {
+        label: pool.label,
+        priority: pool.priority,
+        enabled: pool.enabled,
+        routing_policy: next,
+      });
+      toast(next === "ordered" ? "已切换为排序优先" : "已切换为健康优先");
+      refreshData();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "路由策略更新失败", "error");
+      load();
+    } finally {
+      setRoutingPolicySaving(false);
     }
   }
 
@@ -572,6 +594,20 @@ export default function PoolDetailPage() {
             >
               <ShieldCheck className="size-3.5" />
               {selfChecking ? "自检中" : "自检 Pool"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={toggleRoutingPolicy}
+              disabled={routingPolicySaving}
+              className={
+                pool.routing_policy === "ordered"
+                  ? "rounded-full border-lunar-300/70 bg-lunar-100/80 text-lunar-700 hover:bg-lunar-100 hover:text-lunar-800"
+                  : "rounded-full border-status-green/45 bg-status-green/10 text-status-green hover:bg-status-green/18 hover:text-status-green"
+              }
+            >
+              <ListOrdered className="size-3.5" />
+              {pool.routing_policy === "ordered" ? "排序优先" : "健康优先"}
             </Button>
           </>
         }

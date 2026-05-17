@@ -25,6 +25,8 @@ const (
 	accountErrorDiscoveryGrace     = 5 * time.Minute
 	maxConcurrency                 = 10
 	codexSubscriptionFetchInterval = 6 * time.Hour
+	codexQuotaBackoffBase          = 5 * time.Minute
+	codexQuotaBackoffMax           = time.Hour
 	defaultCpaHealthAttempts       = 10
 	defaultCpaHealthRetryDelay     = 500 * time.Millisecond
 	defaultAuthIndexAttempts       = 10
@@ -853,6 +855,11 @@ func (c *Checker) fetchCodexQuotas(ctx context.Context) {
 				continue
 			}
 		}
+		if acc.CpaQuotaBackoffUntil != "" {
+			if t, err := time.Parse("2006-01-02 15:04:05", acc.CpaQuotaBackoffUntil); err == nil && t.After(time.Now().UTC()) {
+				continue
+			}
+		}
 		targets = append(targets, acc)
 	}
 	if len(targets) == 0 {
@@ -1022,17 +1029,20 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 			status = "blocked"
 		}
 		_ = c.store.UpdateAccountCodexQuotaStatus(acc.ID, status, msg, checkedAt)
+		_ = c.store.UpdateAccountCodexQuotaBackoff(acc.ID, nextCodexQuotaBackoffUntil(acc.CpaQuotaBackoffCount, time.Now().UTC()), acc.CpaQuotaBackoffCount+1)
 		c.cache.Invalidate()
 		return fmt.Errorf("%s", msg)
 	}
 	body := strings.TrimSpace(resp.Body)
 	if body == "" {
 		_ = c.store.UpdateAccountCodexQuotaStatus(acc.ID, "error", "empty quota response", checkedAt)
+		_ = c.store.UpdateAccountCodexQuotaBackoff(acc.ID, nextCodexQuotaBackoffUntil(acc.CpaQuotaBackoffCount, time.Now().UTC()), acc.CpaQuotaBackoffCount+1)
 		return fmt.Errorf("empty quota response")
 	}
 	var sanity map[string]any
 	if err := json.Unmarshal([]byte(body), &sanity); err != nil {
 		_ = c.store.UpdateAccountCodexQuotaStatus(acc.ID, "error", "invalid quota JSON", checkedAt)
+		_ = c.store.UpdateAccountCodexQuotaBackoff(acc.ID, nextCodexQuotaBackoffUntil(acc.CpaQuotaBackoffCount, time.Now().UTC()), acc.CpaQuotaBackoffCount+1)
 		return fmt.Errorf("invalid quota JSON: %w", err)
 	}
 
@@ -1040,13 +1050,34 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 	if err := c.store.UpdateAccountCodexQuota(acc.ID, body, fetchedAt); err != nil {
 		return fmt.Errorf("persist quota: %w", err)
 	}
-	if quotaSnapshotBlocked(sanity) {
+	blocked := quotaSnapshotBlocked(sanity)
+	if !blocked {
+		if err := c.store.UpdateAccountCpaAccessStatus(acc.ID, "eligible", "wham_usage_allowed", "", time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("persist access status: %w", err)
+		}
+	}
+	if blocked {
 		if err := c.store.UpdateAccountCodexQuotaStatus(acc.ID, "blocked", "quota blocked by upstream", checkedAt); err != nil {
 			return fmt.Errorf("persist quota status: %w", err)
 		}
 	}
 	c.cache.Invalidate()
 	return nil
+}
+
+func nextCodexQuotaBackoffUntil(failures int, now time.Time) string {
+	if failures < 0 {
+		failures = 0
+	}
+	delay := codexQuotaBackoffBase
+	for i := 0; i < failures; i++ {
+		delay *= 2
+		if delay >= codexQuotaBackoffMax {
+			delay = codexQuotaBackoffMax
+			break
+		}
+	}
+	return now.Add(delay).UTC().Format("2006-01-02 15:04:05")
 }
 
 func quotaSnapshotBlocked(raw map[string]any) bool {

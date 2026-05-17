@@ -21,7 +21,6 @@ import {
   getAccountHealth,
   getCpaCredentialMeta,
   getCpaQuotaErrorMeta,
-  getExpiryMeta,
   getRouteHealth,
   hasRuntimeBindingIssue,
 } from "@/lib/lune";
@@ -54,26 +53,28 @@ function compactCredentialLabel(label: string) {
   return label === "需要重新登录" ? "需要重登" : label;
 }
 
-function getSubscriptionChip(
-  account: PoolMember["account"],
-  expiry: ReturnType<typeof getExpiryMeta>,
-  isCodexCpa: boolean,
-): CardChip | null {
+function getPlanChip(account: PoolMember["account"], isCodexCpa: boolean): CardChip | null {
   if (!account || !isCodexCpa) return null;
+  const plan = String(account.cpa_plan_type || "").trim();
+  if (plan) {
+    return { label: plan[0].toUpperCase() + plan.slice(1), tone: "binding" };
+  }
   switch (account.cpa_subscription_status || "unknown") {
     case "active":
-      return expiry ? { label: expiry.label, tone: expiry.tone } : null;
-    case "expired":
-      return { label: "已过期", detail: account.cpa_subscription_last_error, tone: "danger" };
+      return { label: "Plus", tone: "binding" };
     case "free":
-      return { label: "Free", detail: account.cpa_subscription_last_error, tone: "danger" };
-    case "pending":
-      return { label: "订阅刷新中", detail: account.cpa_subscription_last_error, tone: "processing" };
-    case "error":
-      return { label: "订阅获取失败", detail: account.cpa_subscription_last_error, tone: "warning" };
+      return { label: "Free", tone: "binding" };
     default:
-      return { label: "订阅未知", detail: account.cpa_subscription_last_error, tone: "warning" };
+      return { label: "Plan 未知", tone: "processing" };
   }
+}
+
+function compactQuotaChip(chip: CardChip | null): CardChip | null {
+  if (!chip) return null;
+  if (chip.label === "模型请求被限流") {
+    return { ...chip, label: "请求限流" };
+  }
+  return chip;
 }
 
 function getMainIssueChip(
@@ -178,17 +179,12 @@ export default function AccountCard({
   );
   const isCodexCpa =
     account?.source_kind === "cpa" && account.cpa_provider.toLowerCase() === "codex";
-  const expiry = getExpiryMeta(
-    isCodexCpa
-      ? account?.cpa_subscription_expires_at ?? null
-      : account?.cpa_expired_at ?? null,
-  );
   const credential = account ? getCpaCredentialMeta(account) : null;
   const quotaError = account ? getCpaQuotaErrorMeta(account) : null;
   const requestChip: CardChip = { label: `今日 ${compact(requests)}` };
-  const subscriptionChip = getSubscriptionChip(account, expiry, isCodexCpa);
+  const planChip = getPlanChip(account, isCodexCpa);
   const mainIssueChip = getMainIssueChip(account, credential, quotaError);
-  const cardChips = [requestChip, subscriptionChip, mainIssueChip].filter(
+  const cardChips = [requestChip, compactQuotaChip(mainIssueChip)].filter(
     (chip): chip is CardChip => Boolean(chip),
   );
   const codexQuotaStale = codexQuota ? isQuotaStale(account?.codex_quota_fetched_at) : false;
@@ -282,7 +278,18 @@ export default function AccountCard({
               </h3>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-0.5">
+          <div className="flex min-w-0 shrink-0 items-center gap-0.5">
+            {planChip ? (
+              <span
+                className={cn(
+                  "max-w-[4.75rem] truncate rounded-full px-2 py-0.5 text-[10.5px]",
+                  chipClass(planChip.tone),
+                )}
+                title={planChip.detail || planChip.label}
+              >
+                {planChip.label}
+              </span>
+            ) : null}
             <StatusBadge status={routeHealth} />
           </div>
         </div>
@@ -295,12 +302,12 @@ export default function AccountCard({
           <DirectAccountSignal requests={requests} successRate={successRate} />
         ) : null}
 
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-moon-500">
+        <div className="flex min-w-0 flex-nowrap items-center gap-1.5 overflow-hidden text-[11px] text-moon-500">
           {cardChips.map((chip, index) => (
             <span
               key={`${chip.label}-${index}`}
               className={cn(
-                "max-w-full truncate rounded-full px-2 py-0.5",
+                "min-w-0 max-w-[8.5rem] shrink truncate rounded-full px-2 py-0.5",
                 index === 0 ? "bg-moon-100/80 text-moon-500" : chipClass(chip.tone),
               )}
               title={chip.detail}

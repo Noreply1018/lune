@@ -28,13 +28,19 @@ type Account struct {
 	CpaSubscriptionFetchedAt string `json:"cpa_subscription_fetched_at,omitempty"`
 	CpaSubscriptionLastError string `json:"cpa_subscription_last_error,omitempty"`
 	CpaSubscriptionStatus    string `json:"cpa_subscription_status,omitempty"`
+	CpaAccessStatus          string `json:"cpa_access_status,omitempty"`
+	CpaAccessReason          string `json:"cpa_access_reason,omitempty"`
+	CpaAccessLastError       string `json:"cpa_access_last_error,omitempty"`
+	CpaAccessCheckedAt       string `json:"cpa_access_checked_at,omitempty"`
 
 	// codex quota snapshot (updated by health loop)
-	CodexQuotaJSON      string `json:"codex_quota_json,omitempty"`
-	CodexQuotaFetchedAt string `json:"codex_quota_fetched_at,omitempty"`
-	CpaQuotaStatus      string `json:"cpa_quota_status,omitempty"`
-	CpaQuotaLastError   string `json:"cpa_quota_last_error,omitempty"`
-	CpaQuotaCheckedAt   string `json:"cpa_quota_checked_at,omitempty"`
+	CodexQuotaJSON       string `json:"codex_quota_json,omitempty"`
+	CodexQuotaFetchedAt  string `json:"codex_quota_fetched_at,omitempty"`
+	CpaQuotaStatus       string `json:"cpa_quota_status,omitempty"`
+	CpaQuotaLastError    string `json:"cpa_quota_last_error,omitempty"`
+	CpaQuotaCheckedAt    string `json:"cpa_quota_checked_at,omitempty"`
+	CpaQuotaBackoffUntil string `json:"cpa_quota_backoff_until,omitempty"`
+	CpaQuotaBackoffCount int    `json:"cpa_quota_backoff_count,omitempty"`
 
 	// serving circuit breaker state (updated by gateway traffic)
 	ServingStatus string `json:"serving_status,omitempty"`
@@ -73,12 +79,13 @@ type AccountRuntime struct {
 }
 
 type Pool struct {
-	ID        int64  `json:"id"`
-	Label     string `json:"label"`
-	Priority  int    `json:"priority"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID            int64  `json:"id"`
+	Label         string `json:"label"`
+	Priority      int    `json:"priority"`
+	Enabled       bool   `json:"enabled"`
+	RoutingPolicy string `json:"routing_policy"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 
 	// aggregated fields (populated at response time)
 	AccountCount         int      `json:"account_count"`
@@ -141,6 +148,7 @@ type RequestLog struct {
 	RuntimeAccountKey    string `json:"runtime_account_key"`
 	RuntimeBindingStatus string `json:"runtime_binding_status"`
 	RuntimeBindingReason string `json:"runtime_binding_reason"`
+	RouteTrace           string `json:"route_trace,omitempty"`
 	CreatedAt            string `json:"created_at"`
 }
 

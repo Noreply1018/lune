@@ -41,8 +41,8 @@ export function CodexQuotaBarsCompact({
 }) {
   return (
     <div className={cn("space-y-1", stale && "opacity-60")}>
-      <CompactRow label="5h" window={quota.primary} stale={stale} />
-      <CompactRow label="7d" window={quota.secondary} stale={stale} />
+      <CompactRow label="短" window={quota.primary} stale={stale} />
+      {quota.secondary ? <CompactRow label="周" window={quota.secondary} stale={stale} /> : <UnavailableCompactRow label="周" text="无周额度" />}
     </div>
   );
 }
@@ -50,8 +50,8 @@ export function CodexQuotaBarsCompact({
 export function CodexQuotaBarsPendingCompact() {
   return (
     <div className="space-y-1" title="额度正在同步后补齐">
-      <PendingCompactRow label="5h" />
-      <PendingCompactRow label="7d" />
+      <PendingCompactRow label="短" />
+      <UnavailableCompactRow label="周" text="无周额度" />
     </div>
   );
 }
@@ -62,6 +62,16 @@ function PendingCompactRow({ label }: { label: string }) {
       <span className="w-5 shrink-0 text-moon-400">{label}</span>
       <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-moon-200/55" />
       <span className="w-9 shrink-0 text-right text-moon-350">--</span>
+    </div>
+  );
+}
+
+function UnavailableCompactRow({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="flex items-center gap-2 text-[11px] tabular-nums" title="当前计划未返回周额度窗口">
+      <span className="w-5 shrink-0 text-moon-400">{label}</span>
+      <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-moon-200/35" />
+      <span className="w-16 shrink-0 text-right text-moon-350">{text}</span>
     </div>
   );
 }
@@ -135,7 +145,14 @@ export function CodexQuotaBarsFull({
       ) : null}
 
       <WindowRow label="5h 窗口" window={quota.primary} stale={stale} />
-      <WindowRow label="7 天窗口" window={quota.secondary} stale={stale} />
+      {quota.secondary ? (
+        <WindowRow label="7 天窗口" window={quota.secondary} stale={stale} />
+      ) : (
+        <div className="flex items-center justify-between gap-2 rounded-[0.9rem] bg-moon-100/55 px-3 py-2 text-[12px] text-moon-500">
+          <span className="font-medium text-moon-600">7 天窗口</span>
+          <span>当前计划无周额度</span>
+        </div>
+      )}
 
       {quota.credits?.hasCredits ? (
         <div className="flex items-center justify-between gap-2 border-t border-moon-200/50 pt-2.5 text-[12px] text-moon-500">

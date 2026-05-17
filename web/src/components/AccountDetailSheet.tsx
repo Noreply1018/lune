@@ -1110,7 +1110,7 @@ function quotaStatusLabel(status: string): string {
     case "pending":
       return "额度刷新中";
     case "error":
-      return "模型请求被限流";
+      return "额度查询失败";
     default:
       return "额度未知";
   }

@@ -21,7 +21,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 19
+const v3SchemaVersion = 22
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS pools (
     label      TEXT NOT NULL UNIQUE,
     priority   INTEGER NOT NULL DEFAULT 0,
     enabled    INTEGER NOT NULL DEFAULT 1,
+    routing_policy TEXT NOT NULL DEFAULT 'health_first',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -76,11 +77,17 @@ CREATE TABLE IF NOT EXISTS accounts (
     cpa_subscription_fetched_at TEXT NOT NULL DEFAULT '',
     cpa_subscription_last_error TEXT NOT NULL DEFAULT '',
     cpa_subscription_status TEXT NOT NULL DEFAULT 'unknown',
+    cpa_access_status TEXT NOT NULL DEFAULT 'unknown',
+    cpa_access_reason TEXT NOT NULL DEFAULT '',
+    cpa_access_last_error TEXT NOT NULL DEFAULT '',
+    cpa_access_checked_at TEXT NOT NULL DEFAULT '',
     codex_quota_json    TEXT NOT NULL DEFAULT '',
     codex_quota_fetched_at TEXT NOT NULL DEFAULT '',
     cpa_quota_status TEXT NOT NULL DEFAULT 'unknown',
     cpa_quota_last_error TEXT NOT NULL DEFAULT '',
     cpa_quota_checked_at TEXT NOT NULL DEFAULT '',
+    cpa_quota_backoff_until TEXT NOT NULL DEFAULT '',
+    cpa_quota_backoff_count INTEGER NOT NULL DEFAULT 0,
     serving_status TEXT NOT NULL DEFAULT 'healthy',
     failure_count INTEGER NOT NULL DEFAULT 0,
     last_failure_at TEXT NOT NULL DEFAULT '',
@@ -158,6 +165,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
     runtime_account_key TEXT NOT NULL DEFAULT '',
     runtime_binding_status TEXT NOT NULL DEFAULT '',
     runtime_binding_reason TEXT NOT NULL DEFAULT '',
+    route_trace TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -235,6 +243,7 @@ INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_templa
     ('cpa_credential_error', 1, '账号 {{ .Vars.account_label }} 的 CPA 登录态失效：{{ .Vars.last_error }}。请重新登录。'),
     ('account_error',     1, '账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}'),
     ('cpa_service_error', 1, 'CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}'),
+    ('cpa_import_batch',  1, 'CPA auth JSON 批量导入 {{ .Vars.batch_id }}：created={{ .Vars.created }} updated={{ .Vars.updated }} skipped={{ .Vars.skipped }} failed={{ .Vars.failed }} runtime_pending={{ .Vars.runtime_pending }} runtime_failed={{ .Vars.runtime_failed }}'),
     ('test',              1, '这是一条用于验证渠道可达性的真实消息，可忽略。');
 `
 
@@ -291,6 +300,15 @@ func (s *Store) migrateV3(dbPath string) error {
 		}
 		if err := s.ensureCpaAccountUniqueIndex(); err != nil {
 			return fmt.Errorf("repair CPA account unique index: %w", err)
+		}
+		if err := s.migratePoolRoutingPolicyColumn(); err != nil {
+			return fmt.Errorf("repair pool routing policy column: %w", err)
+		}
+		if err := s.migrateCpaAccessColumns(); err != nil {
+			return fmt.Errorf("repair CPA access columns: %w", err)
+		}
+		if err := s.migrateCpaQuotaBackoffColumns(); err != nil {
+			return fmt.Errorf("repair CPA quota backoff columns: %w", err)
 		}
 		return nil // already at latest
 	}
@@ -356,6 +374,21 @@ func (s *Store) migrateV3(dbPath string) error {
 		if ver < 19 {
 			if err := s.migrateRequestLogOperationalColumns(); err != nil {
 				return fmt.Errorf("migrate request log operational columns: %w", err)
+			}
+		}
+		if ver < 20 {
+			if err := s.migratePoolRoutingPolicyColumn(); err != nil {
+				return fmt.Errorf("migrate pool routing policy column: %w", err)
+			}
+		}
+		if ver < 21 {
+			if err := s.migrateCpaAccessColumns(); err != nil {
+				return fmt.Errorf("migrate CPA access columns: %w", err)
+			}
+		}
+		if ver < 22 {
+			if err := s.migrateCpaQuotaBackoffColumns(); err != nil {
+				return fmt.Errorf("migrate CPA quota backoff columns: %w", err)
 			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
@@ -752,6 +785,7 @@ func (s *Store) migrateRuntimeBindingLogColumns() error {
 		{"runtime_account_key", `ALTER TABLE request_logs ADD COLUMN runtime_account_key TEXT NOT NULL DEFAULT ''`},
 		{"runtime_binding_status", `ALTER TABLE request_logs ADD COLUMN runtime_binding_status TEXT NOT NULL DEFAULT ''`},
 		{"runtime_binding_reason", `ALTER TABLE request_logs ADD COLUMN runtime_binding_reason TEXT NOT NULL DEFAULT ''`},
+		{"route_trace", `ALTER TABLE request_logs ADD COLUMN route_trace TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, a := range adds {
 		has, err := s.hasColumn("request_logs", a.col)
@@ -818,6 +852,122 @@ func (s *Store) migrateRequestLogOperationalColumns() error {
 	return nil
 }
 
+func (s *Store) migratePoolRoutingPolicyColumn() error {
+	exists, err := s.tableExists("pools")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	has, err := s.hasColumn("pools", "routing_policy")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := s.db.Exec(`ALTER TABLE pools ADD COLUMN routing_policy TEXT NOT NULL DEFAULT 'health_first'`); err != nil {
+			return fmt.Errorf("add column routing_policy: %w", err)
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE pools SET routing_policy='health_first' WHERE routing_policy = '' OR routing_policy IS NULL`); err != nil {
+		return fmt.Errorf("backfill routing_policy: %w", err)
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "pools")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migrateCpaAccessColumns() error {
+	exists, err := s.tableExists("accounts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	adds := []struct{ col, ddl string }{
+		{"cpa_access_status", `ALTER TABLE accounts ADD COLUMN cpa_access_status TEXT NOT NULL DEFAULT 'unknown'`},
+		{"cpa_access_reason", `ALTER TABLE accounts ADD COLUMN cpa_access_reason TEXT NOT NULL DEFAULT ''`},
+		{"cpa_access_last_error", `ALTER TABLE accounts ADD COLUMN cpa_access_last_error TEXT NOT NULL DEFAULT ''`},
+		{"cpa_access_checked_at", `ALTER TABLE accounts ADD COLUMN cpa_access_checked_at TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, a := range adds {
+		has, err := s.hasColumn("accounts", a.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.col, err)
+		}
+	}
+	hasProvider, err := s.hasColumn("accounts", "cpa_provider")
+	if err != nil {
+		return err
+	}
+	hasSubscription, err := s.hasColumn("accounts", "cpa_subscription_status")
+	if err != nil {
+		return err
+	}
+	if hasProvider && hasSubscription {
+		if _, err := s.db.Exec(`
+			UPDATE accounts
+			SET cpa_access_status = CASE
+				WHEN lower(cpa_provider) = 'codex' AND lower(cpa_subscription_status) = 'active' THEN 'eligible'
+				WHEN lower(cpa_provider) = 'codex' AND lower(cpa_subscription_status) = 'expired' THEN 'ineligible'
+				WHEN lower(cpa_provider) = 'codex' AND lower(cpa_subscription_status) IN ('pending', 'unknown', 'free', 'error', '') THEN 'unknown'
+				ELSE cpa_access_status
+			END,
+			cpa_access_reason = CASE
+				WHEN lower(cpa_provider) = 'codex' AND lower(cpa_subscription_status) = 'active' AND cpa_access_reason = '' THEN 'subscription_active'
+				WHEN lower(cpa_provider) = 'codex' AND lower(cpa_subscription_status) = 'expired' AND cpa_access_reason = '' THEN 'subscription_expired'
+				ELSE cpa_access_reason
+			END
+			WHERE source_kind = 'cpa'
+			  AND (cpa_access_status = '' OR cpa_access_status = 'unknown')
+		`); err != nil {
+			return fmt.Errorf("backfill cpa_access_status: %w", err)
+		}
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "accounts")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migrateCpaQuotaBackoffColumns() error {
+	exists, err := s.tableExists("accounts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	adds := []struct{ col, ddl string }{
+		{"cpa_quota_backoff_until", `ALTER TABLE accounts ADD COLUMN cpa_quota_backoff_until TEXT NOT NULL DEFAULT ''`},
+		{"cpa_quota_backoff_count", `ALTER TABLE accounts ADD COLUMN cpa_quota_backoff_count INTEGER NOT NULL DEFAULT 0`},
+	}
+	for _, a := range adds {
+		has, err := s.hasColumn("accounts", a.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(a.ddl); err != nil {
+			return fmt.Errorf("add column %s: %w", a.col, err)
+		}
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "accounts")
+	s.schemaMu.Unlock()
+	return nil
+}
+
 func (s *Store) migrateCpaCredentialColumns() error {
 	exists, err := s.tableExists("accounts")
 	if err != nil {
@@ -851,6 +1001,13 @@ func (s *Store) migrateCpaCredentialColumns() error {
 		"账号 {{ .Vars.account_label }} 的 CPA 登录态失效：{{ .Vars.last_error }}。请重新登录。",
 	); err != nil {
 		return fmt.Errorf("seed CPA credential notification subscription: %w", err)
+	}
+	if _, err := s.db.Exec(
+		`INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_template) VALUES (?, 1, ?)`,
+		"cpa_import_batch",
+		"CPA auth JSON 批量导入 {{ .Vars.batch_id }}：created={{ .Vars.created }} updated={{ .Vars.updated }} skipped={{ .Vars.skipped }} failed={{ .Vars.failed }} runtime_pending={{ .Vars.runtime_pending }} runtime_failed={{ .Vars.runtime_failed }}",
+	); err != nil {
+		return fmt.Errorf("seed CPA import batch notification subscription: %w", err)
 	}
 
 	s.schemaMu.Lock()

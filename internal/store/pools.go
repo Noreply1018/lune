@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 const accountRoutableBaseWhereSQL = `a.enabled = 1
@@ -16,7 +17,10 @@ const accountRoutableBaseWhereSQL = `a.enabled = 1
 				AND lower(a.cpa_credential_status) NOT IN ('needs_login', 'refresh_failed', 'runtime_pending', 'runtime_error', 'unknown', '')
 				AND lower(a.cpa_quota_status) <> 'blocked'
 				AND NOT (lower(a.cpa_provider) = 'codex' AND lower(a.cpa_quota_status) = 'error' AND a.cpa_quota_last_error LIKE 'HTTP 429 from model request%')
-				AND (lower(a.cpa_provider) <> 'codex' OR lower(a.cpa_subscription_status) = 'active')
+				AND (
+					lower(a.cpa_provider) <> 'codex'
+					OR lower(a.cpa_access_status) = 'eligible'
+				)
 			)
 		)`
 
@@ -26,7 +30,7 @@ const routableAccountWhereSQL = `pm.enabled = 1 AND ` + accountRoutableWhereSQL
 
 func (s *Store) ListPools() ([]Pool, error) {
 	rows, err := s.db.Query(`
-		SELECT p.id, p.label, p.priority, p.enabled, p.created_at, p.updated_at,
+		SELECT p.id, p.label, p.priority, p.enabled, p.routing_policy, p.created_at, p.updated_at,
 			(SELECT COUNT(*)
 			 FROM pool_members pm
 			 JOIN accounts a ON a.id = pm.account_id
@@ -68,7 +72,7 @@ func (s *Store) ListPools() ([]Pool, error) {
 
 func (s *Store) GetPool(id int64) (*Pool, error) {
 	row := s.db.QueryRow(`
-		SELECT p.id, p.label, p.priority, p.enabled, p.created_at, p.updated_at,
+		SELECT p.id, p.label, p.priority, p.enabled, p.routing_policy, p.created_at, p.updated_at,
 			(SELECT COUNT(*)
 			 FROM pool_members pm
 			 JOIN accounts a ON a.id = pm.account_id
@@ -99,7 +103,7 @@ func (s *Store) GetPool(id int64) (*Pool, error) {
 
 func (s *Store) GetPoolByLabel(label string) (*Pool, error) {
 	row := s.db.QueryRow(`
-		SELECT p.id, p.label, p.priority, p.enabled, p.created_at, p.updated_at,
+		SELECT p.id, p.label, p.priority, p.enabled, p.routing_policy, p.created_at, p.updated_at,
 			(SELECT COUNT(*)
 			 FROM pool_members pm
 			 JOIN accounts a ON a.id = pm.account_id
@@ -194,6 +198,35 @@ func (s *Store) UpdatePool(id int64, label string, priority int, enabled bool) e
 		label, priority, enabled, id,
 	)
 	return err
+}
+
+func (s *Store) UpdatePoolWithRoutingPolicy(id int64, label string, priority int, enabled bool, routingPolicy string) error {
+	routingPolicy = NormalizeRoutingPolicy(routingPolicy)
+	if !ValidRoutingPolicy(routingPolicy) {
+		return fmt.Errorf("invalid routing policy: %s", routingPolicy)
+	}
+	_, err := s.db.Exec(
+		`UPDATE pools SET label=?, priority=?, enabled=?, routing_policy=?, updated_at=datetime('now') WHERE id=?`,
+		label, priority, enabled, routingPolicy, id,
+	)
+	return err
+}
+
+func NormalizeRoutingPolicy(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "health_first"
+	}
+	return value
+}
+
+func ValidRoutingPolicy(value string) bool {
+	switch value {
+	case "health_first", "ordered":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) EnablePool(id int64) error {
@@ -423,13 +456,14 @@ func scanPoolRowWithCounts(row rowScanner) (*Pool, error) {
 	var enabled int
 	var createdAt, updatedAt sql.NullString
 
-	err := row.Scan(&p.ID, &p.Label, &p.Priority, &enabled, &createdAt, &updatedAt,
+	err := row.Scan(&p.ID, &p.Label, &p.Priority, &enabled, &p.RoutingPolicy, &createdAt, &updatedAt,
 		&p.AccountCount, &p.HealthyAccountCount, &p.RoutableAccountCount)
 	if err != nil {
 		return nil, err
 	}
 
 	p.Enabled = enabled != 0
+	p.RoutingPolicy = NormalizeRoutingPolicy(p.RoutingPolicy)
 	if createdAt.Valid {
 		p.CreatedAt = createdAt.String
 	}

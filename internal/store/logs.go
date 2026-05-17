@@ -62,12 +62,12 @@ func (s *Store) InsertLog(l *RequestLog) error {
 			request_id, access_token_name, model_requested, model_actual, pool_id, account_id, account_label_snapshot,
 			status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success,
 			error_message, error_fingerprint, error_repeat_count, error_last_seen_at, source_kind, attempt_count, diagnostic,
-			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason, route_trace
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		l.RequestID, l.AccessTokenName, l.ModelRequested, l.ModelActual, l.PoolID, l.AccountID, accountLabelSnapshot,
 		l.StatusCode, l.LatencyMs, l.InputTokens, l.OutputTokens, l.Stream, l.RequestIP, l.Success,
 		l.ErrorMessage, l.ErrorFingerprint, l.ErrorRepeatCount, l.ErrorLastSeenAt, sourceKind, attempts, boolToInt(l.Diagnostic),
-		l.RuntimeAuthIndex, l.RuntimeAuthID, l.RuntimeAccountKey, l.RuntimeBindingStatus, l.RuntimeBindingReason,
+		l.RuntimeAuthIndex, l.RuntimeAuthID, l.RuntimeAccountKey, l.RuntimeBindingStatus, l.RuntimeBindingReason, sanitizeRequestLogError(l.RouteTrace),
 	)
 	return err
 }
@@ -111,6 +111,7 @@ func scanLogRow(rows *sql.Rows) (RequestLog, error) {
 		&l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP, &success,
 		&l.ErrorMessage, &l.ErrorFingerprint, &l.ErrorRepeatCount, &l.ErrorLastSeenAt, &l.SourceKind, &l.AttemptCount, &diagnostic,
 		&l.RuntimeAuthIndex, &l.RuntimeAuthID, &l.RuntimeAccountKey, &l.RuntimeBindingStatus, &l.RuntimeBindingReason,
+		&l.RouteTrace,
 		&l.CreatedAt,
 	); err != nil {
 		return l, err
@@ -137,7 +138,7 @@ func (s *Store) ListLogs(limit, offset int) ([]RequestLog, int, error) {
 		`SELECT id, request_id, access_token_name, model_requested, model_actual, pool_id, account_id,
 			status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success,
 			error_message, error_fingerprint, error_repeat_count, error_last_seen_at, source_kind, attempt_count, diagnostic,
-			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason,
+			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason, route_trace,
 			created_at
 		 FROM request_logs ORDER BY id DESC LIMIT ? OFFSET ?`,
 		limit, offset,
@@ -168,7 +169,7 @@ func (s *Store) ListLogsByPool(poolID int64, limit, offset int) ([]RequestLog, i
 		`SELECT id, request_id, access_token_name, model_requested, model_actual, pool_id, account_id,
 			status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success,
 			error_message, error_fingerprint, error_repeat_count, error_last_seen_at, source_kind, attempt_count, diagnostic,
-			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason,
+			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason, route_trace,
 			created_at
 		 FROM request_logs WHERE pool_id = ? ORDER BY id DESC LIMIT ? OFFSET ?`,
 		poolID, limit, offset,

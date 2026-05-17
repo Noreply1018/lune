@@ -19,14 +19,15 @@ ARG TARGETARCH
 ARG LUNE_VERSION=dev
 ARG LUNE_COMMIT=unknown
 ARG LUNE_BUILD_DATE=unknown
+ARG GOPROXY=https://proxy.golang.org,direct
 
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOPROXY=${GOPROXY} go mod download
 
 COPY . .
 COPY --from=frontend /internal/site/dist /app/internal/site/dist
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
+RUN GOPROXY=${GOPROXY} CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
     -ldflags "-X main.version=${LUNE_VERSION} -X main.commit=${LUNE_COMMIT} -X main.date=${LUNE_BUILD_DATE}" \
     -o /lune ./cmd/lune
 

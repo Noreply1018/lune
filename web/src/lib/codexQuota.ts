@@ -18,7 +18,7 @@ export interface QuotaCredits {
 
 export interface CodexQuota {
   primary: QuotaWindow;
-  secondary: QuotaWindow;
+  secondary: QuotaWindow | null;
   allowed: boolean;
   limitReached: boolean;
   credits: QuotaCredits | null;
@@ -41,7 +41,7 @@ export function parseCodexQuota(account: Account): CodexQuota | null {
   if (!rl) return null;
   const primary = parseWindow(rl.primary_window);
   const secondary = parseWindow(rl.secondary_window);
-  if (!primary || !secondary) return null;
+  if (!primary) return null;
 
   const creditsRaw = parsed.credits as Record<string, unknown> | undefined;
   const credits: QuotaCredits | null = creditsRaw

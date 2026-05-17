@@ -57,6 +57,7 @@ type ResultState = {
   poolLabel: string;
   label: string;
   source: string;
+  batch?: AuthJSONBatchResponse;
 };
 
 type PendingCpaFlow = {
@@ -80,15 +81,37 @@ type AuthJSONSummary = {
   disabled: boolean;
 };
 
-type AuthJSONImportResponse = {
-  account: Account;
-  account_key: string;
-  summary: AuthJSONSummary;
-  refresh: {
-    models: string;
-    quota: string;
-    subscription: string;
+type AuthJSONBatchItem = {
+  client_file_name: string;
+  status: "preview" | "created" | "updated" | "skipped" | "failed";
+  provider?: string;
+  plan_type?: string;
+  masked_email?: string;
+  account_key_hash?: string;
+  account_id_suffix?: string;
+  account_id?: number;
+  pool_member_id?: number;
+  runtime_sync?: "pending" | "synced" | "failed" | "not_applicable";
+  error_code?: string;
+  error_message?: string;
+  action?: string;
+};
+
+type AuthJSONBatchStage = "preview" | "imported";
+
+type AuthJSONBatchResponse = {
+  batch_id?: string;
+  pool_id: number;
+  summary: {
+    created: number;
+    updated: number;
+    skipped: number;
+    failed: number;
+    synced_runtime_sync: number;
+    pending_runtime_sync: number;
+    failed_runtime_sync: number;
   };
+  items: AuthJSONBatchItem[];
 };
 
 const EMPTY_DIRECT_FORM: DirectForm = {
@@ -364,9 +387,11 @@ export default function AddAccountDrawer() {
   const [restoredSession, setRestoredSession] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
   const [cpaEntryMode, setCpaEntryMode] = useState<CpaEntryMode>("login");
-  const [authJSONFile, setAuthJSONFile] = useState<File | null>(null);
+  const [authJSONFiles, setAuthJSONFiles] = useState<File[]>([]);
   const [authJSONSummary, setAuthJSONSummary] = useState<AuthJSONSummary | null>(null);
   const [authJSONError, setAuthJSONError] = useState<string | null>(null);
+  const [authJSONPreview, setAuthJSONPreview] = useState<AuthJSONBatchResponse | null>(null);
+  const [authJSONBatchStage, setAuthJSONBatchStage] = useState<AuthJSONBatchStage | null>(null);
 
   const currentStepMeta = STEP_META[step];
 
@@ -498,9 +523,10 @@ export default function AddAccountDrawer() {
       setNewPoolLabel("");
       setPoolLoadFailed(false);
       setCpaEntryMode("login");
-      setAuthJSONFile(null);
+      setAuthJSONFiles([]);
       setAuthJSONSummary(null);
       setAuthJSONError(null);
+      setAuthJSONPreview(null);
       if (pollRef.current) {
         window.clearTimeout(pollRef.current);
         pollRef.current = null;
@@ -647,6 +673,21 @@ export default function AddAccountDrawer() {
     return options.find((item) => item.value === value)?.label || value;
   }
 
+  function batchStatusLabel(item: AuthJSONBatchItem) {
+    if (item.status === "preview") return item.action || "待确认";
+    if (item.status === "created") return "已创建";
+    if (item.status === "updated") return "已更新";
+    if (item.status === "skipped") return "已跳过";
+    return "失败";
+  }
+
+  function runtimeSyncLabel(value?: AuthJSONBatchItem["runtime_sync"]) {
+    if (value === "synced") return "runtime 已同步";
+    if (value === "pending") return "等待 runtime 同步";
+    if (value === "failed") return "runtime 同步失败";
+    return "不适用";
+  }
+
   function chooseSourceKind(kind: Exclude<SourceKind, null>) {
     setSourceKind(kind);
     setProvider("");
@@ -677,6 +718,13 @@ export default function AddAccountDrawer() {
     setPools((current) => [...current, created]);
     setSelectedPoolId(String(created.id));
     return created.id;
+  }
+
+  function requireExistingPoolForPreview(): number {
+    if (selectedPoolId && selectedPoolId !== NEW_POOL_VALUE) {
+      return Number(selectedPoolId);
+    }
+    throw new Error("安全预检需要先选择已有 Pool；新 Pool 会在确认导入时创建。");
   }
 
   async function submitDirect() {
@@ -806,23 +854,26 @@ export default function AddAccountDrawer() {
     }
   }
 
-  async function chooseAuthJSONFile(file: File | null) {
-    setAuthJSONFile(file);
+  async function chooseAuthJSONFiles(files: File[]) {
+    setAuthJSONFiles(files);
     setAuthJSONSummary(null);
     setAuthJSONError(null);
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".json")) {
+    setAuthJSONPreview(null);
+    setAuthJSONBatchStage(null);
+    if (files.length === 0) return;
+    if (files.some((file) => !file.name.toLowerCase().endsWith(".json"))) {
       setAuthJSONError("请选择 JSON 文件");
       return;
     }
     try {
+      const file = files[0];
       const text = await file.text();
       const parsed = JSON.parse(text) as Record<string, unknown>;
       if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
         throw new Error("不是可识别的 CPA auth JSON");
       }
       if ("sessions" in parsed || file.name === ".login-sessions.json") {
-        throw new Error("请上传单个 auth JSON，不要上传 .login-sessions.json");
+        throw new Error("请上传 auth JSON，不要上传 .login-sessions.json");
       }
       const refreshToken = typeof parsed.refresh_token === "string" ? parsed.refresh_token : "";
       if (!refreshToken) {
@@ -855,34 +906,77 @@ export default function AddAccountDrawer() {
     }
   }
 
-  async function submitAuthJSONImport() {
+  function buildAuthJSONBatchForm(poolId: number) {
+    const form = new FormData();
+    form.set("pool_id", String(poolId));
+    form.set("enabled", "true");
+    for (const file of authJSONFiles) {
+      form.append("files", file);
+    }
+    return form;
+  }
+
+  async function previewAuthJSONImport() {
     if (!cpaService) {
       toast("内置 CPA 服务未就绪，请稍后重试或检查容器日志。", "error");
       return;
     }
-    if (!authJSONFile || authJSONError) {
+    if (authJSONFiles.length === 0 || authJSONError) {
       toast(authJSONError || "请先选择 auth JSON", "error");
       return;
     }
     setLoading(true);
     try {
+      const poolId = requireExistingPoolForPreview();
+      const preview = await api.postForm<AuthJSONBatchResponse>("/accounts/cpa/import-json-batch/preview", buildAuthJSONBatchForm(poolId));
+      setAuthJSONPreview(preview);
+      setAuthJSONBatchStage("preview");
+      if (preview.summary.failed > 0) {
+        toast("预检发现部分文件不可导入");
+      } else {
+        toast("预检完成，请确认导入");
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "预检失败", "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function confirmAuthJSONImport() {
+    if (!cpaService) {
+      toast("内置 CPA 服务未就绪，请稍后重试或检查容器日志。", "error");
+      return;
+    }
+    if (authJSONFiles.length === 0 || authJSONError) {
+      toast(authJSONError || "请先选择 auth JSON", "error");
+      return;
+    }
+    if (!authJSONPreview || authJSONBatchStage !== "preview") {
+      toast("请先完成安全预检", "error");
+      return;
+    }
+    setLoading(true);
+    try {
       const poolId = await ensurePool();
-      const form = new FormData();
-      form.set("file", authJSONFile);
-      form.set("pool_id", String(poolId));
-      form.set("enabled", "true");
-      const imported = await api.postForm<AuthJSONImportResponse>("/accounts/cpa/import-json", form);
-      await refreshAfterAccountCreate(imported.account?.id);
+      const imported = await api.postForm<AuthJSONBatchResponse>("/accounts/cpa/import-json-batch", buildAuthJSONBatchForm(poolId));
+      const firstSuccess = imported.items.find((item) => item.status === "created" || item.status === "updated");
+      if (firstSuccess?.account_id) {
+        await refreshAfterAccountCreate(firstSuccess.account_id);
+      }
       setResult({
         poolId,
         poolLabel: getPoolLabel(poolId),
-        label: imported.account?.label || imported.summary?.email || "CPA account",
-        source: `CPA · ${imported.summary?.provider || "codex"} · JSON`,
+        label: `${imported.summary.created + imported.summary.updated} 个账号`,
+        source: "CPA · codex · JSON batch",
+        batch: imported,
       });
       setStep(4);
-      setAuthJSONFile(null);
+      setAuthJSONFiles([]);
       setAuthJSONSummary(null);
       setAuthJSONError(null);
+      setAuthJSONPreview(imported);
+      setAuthJSONBatchStage("imported");
       toast("凭据已导入");
     } catch (err) {
       toast(err instanceof Error ? err.message : "导入失败", "error");
@@ -926,9 +1020,11 @@ export default function AddAccountDrawer() {
     setSelectedPoolId("");
     setNewPoolLabel("");
     setCpaEntryMode("login");
-    setAuthJSONFile(null);
+    setAuthJSONFiles([]);
     setAuthJSONSummary(null);
     setAuthJSONError(null);
+    setAuthJSONPreview(null);
+    setAuthJSONBatchStage(null);
     clearStoredCpaSession();
   }
 
@@ -1311,17 +1407,20 @@ export default function AddAccountDrawer() {
                       </span>
                       <span className="space-y-1">
                         <span className="block text-sm font-medium text-moon-800">
-                          {authJSONFile ? authJSONFile.name : "选择 Codex auth JSON"}
+                          {authJSONFiles.length > 0
+                            ? `${authJSONFiles.length} 个 JSON 文件`
+                            : "选择 Codex auth JSON"}
                         </span>
                         <span className="block text-sm text-moon-500">
-                          只支持单个 JSON 文件，不支持 .login-sessions.json。
+                          可选择多个 JSON 文件，不支持 .login-sessions.json。
                         </span>
                       </span>
                       <input
                         type="file"
                         accept="application/json,.json"
+                        multiple
                         className="sr-only"
-                        onChange={(event) => void chooseAuthJSONFile(event.target.files?.[0] ?? null)}
+                        onChange={(event) => void chooseAuthJSONFiles(Array.from(event.target.files ?? []))}
                       />
                     </label>
 
@@ -1347,6 +1446,27 @@ export default function AddAccountDrawer() {
                         </div>
                       </div>
                     ) : null}
+
+                    {authJSONPreview ? (
+                      <div className="space-y-3 rounded-[1.2rem] bg-white/72 px-4 py-4">
+                        <div className="flex items-center gap-2 text-sm font-medium text-moon-800">
+                          <FileJson className="size-4 text-lunar-700" />
+                          批量结果
+                        </div>
+                        <div className="space-y-2">
+                          {authJSONPreview.items.map((item) => (
+                            <div key={item.client_file_name} className="flex items-center justify-between gap-3 text-sm">
+                              <span className="truncate text-moon-700" title={item.client_file_name}>
+                                {item.client_file_name}
+                              </span>
+                              <span className="shrink-0 text-moon-400">
+                                {item.status === "preview" ? item.action || "待确认" : item.status}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </section>
@@ -1359,7 +1479,7 @@ export default function AddAccountDrawer() {
                     账号已添加
                   </h3>
                   <p className="mt-2 text-sm text-moon-500">
-                    这次接入已经完成，可以继续添加，或直接进入对应 Pool。
+                    这次接入已经写入，路由状态以账号健康、Access、额度和 runtime 同步结果为准。
                   </p>
                 </div>
 
@@ -1371,14 +1491,30 @@ export default function AddAccountDrawer() {
                     <div className="space-y-3">
                       <div>
                         <p className="text-sm font-medium text-moon-800">账号已添加</p>
-                        <p className="mt-1 text-sm text-moon-500">已完成接入，可以立即使用。</p>
+                        <p className="mt-1 text-sm text-moon-500">已完成写入，请在 Pool 中查看最终可路由状态。</p>
                       </div>
                       <div className="space-y-2 text-sm text-moon-600">
                         <p>接入方式：{result.source}</p>
                         <p>归属 Pool：{result.poolLabel}</p>
                         <p>账号标识：{result.label}</p>
-                        <p>状态：正常</p>
+                        {result.batch?.batch_id ? <p>批次：{result.batch.batch_id}</p> : null}
                       </div>
+                      {result.batch ? (
+                        <div className="space-y-2 border-t border-moon-200/60 pt-3">
+                          {result.batch.items.map((item) => (
+                            <div key={`${item.client_file_name}-${item.account_key_hash}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-sm">
+                              <span className="truncate text-moon-700" title={item.client_file_name}>
+                                {item.client_file_name}
+                              </span>
+                              <span className="text-moon-500">{batchStatusLabel(item)}</span>
+                              <span className="truncate text-xs text-moon-400">
+                                {item.masked_email || item.account_key_hash || item.error_message || "安全摘要不可用"}
+                              </span>
+                              <span className="text-xs text-moon-400">{runtimeSyncLabel(item.runtime_sync)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -1454,11 +1590,11 @@ export default function AddAccountDrawer() {
 
               {step === 3 && sourceKind === "cpa" && cpaEntryMode === "import" ? (
                 <Button
-                  onClick={submitAuthJSONImport}
-                  disabled={loading || !cpaService || !authJSONFile || Boolean(authJSONError)}
+                  onClick={authJSONBatchStage === "preview" ? confirmAuthJSONImport : previewAuthJSONImport}
+                  disabled={loading || !cpaService || authJSONFiles.length === 0 || Boolean(authJSONError)}
                 >
                   {loading ? <Loader2 className="size-4 animate-spin" /> : <FileJson className="size-4" />}
-                  Import credential
+                  {authJSONBatchStage === "preview" ? "确认导入" : "预检文件"}
                 </Button>
               ) : null}
 

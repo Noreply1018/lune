@@ -6,12 +6,11 @@
 
 ## 本轮验证状态
 
-- 已完成：v0.1.8 路由策略规格沉淀。
-- 已完成：只读审计正在运行的 `lune-0.1.7` 容器中 Codex CPA quota `HTTP 401` 被误展示为“模型请求被限流”的问题。审计结论为：账号 `1` 和 `4` 当前是 quota 辅助接口 `HTTP 401`，真实模型请求和自检为 `200/healthy`；根因为前端把所有 `cpa_quota_status='error'` 都映射成模型请求限流。
-- 已完成：只读审计正在运行的 `lune-0.1.7` 容器中 Pool 账号卡片 chip 换行异常。审计结论为：`AccountCard` 的 chip 容器允许 `flex-wrap`，三 chip 组合 `今日 N / N 天后到期 / 模型请求被限流` 在 `15.5rem` 最小列宽下会换行撑高卡片；该运行态案例中的限流文案本身还受到 quota fetch `HTTP 401` 误归类影响，但高度异常的根因是前端 chip 行缺少单行约束。
-- 已完成：从 draft 中收束 CPA auth JSON 多账号导入范围。v0.1.8 只做多文件上传、幂等更新、部分失败和导入结果审计，不做目录扫描或压缩包导入。
-- 未执行容器测试：本轮只新增规格文档，没有修改运行时、构建、发布、启动脚本或运行配置。
-- 待实现后必须完成：单元测试、API 测试、前端测试、新容器验收和测试容器清理。
+- 已完成：v0.1.8 路由策略、Codex quota 文案分层、账号卡片 chip 稳定、CPA 分层可路由、CPA auth JSON 多文件导入、route_trace 和 refresh 退避实现。
+- 已完成：`go test ./...`、`npm run build`、Docker 镜像构建和新容器真实验收。
+- 已完成：新容器 `lune-v018-test` 使用隔离数据目录和 `127.0.0.1:23333` 端口完成验收；旧容器 `lune-0.1.7` 与 `lune-0.1.5` 未被触碰。
+- 已完成：验收后删除 `lune-v018-test`、`lune-upstream-first`、`lune-upstream-second`、`lune-v018-net` 和临时数据目录。
+- 证据汇总见 `100-implementation-evidence.md`。
 
 ## v0.1.8 必须完成范围审计
 

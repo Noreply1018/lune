@@ -280,7 +280,7 @@ func (s *Store) GetUsage(f UsageFilter) ([]RequestLog, int, error) {
 	query := `SELECT rl.id, rl.request_id, rl.access_token_name, rl.model_requested, rl.model_actual, rl.pool_id, rl.account_id,
 		COALESCE(a.label, rl.account_label_snapshot, '') AS account_label, rl.status_code, rl.latency_ms, rl.input_tokens, rl.output_tokens,
 		rl.stream, rl.request_ip, rl.success, rl.error_message, rl.error_fingerprint, rl.error_repeat_count, rl.error_last_seen_at, rl.source_kind, rl.attempt_count, rl.diagnostic,
-		rl.runtime_auth_index, rl.runtime_auth_id, rl.runtime_account_key, rl.runtime_binding_status, rl.runtime_binding_reason,
+		rl.runtime_auth_index, rl.runtime_auth_id, rl.runtime_account_key, rl.runtime_binding_status, rl.runtime_binding_reason, rl.route_trace,
 		rl.created_at
 		FROM request_logs rl
 		LEFT JOIN accounts a ON a.id = rl.account_id
@@ -302,6 +302,7 @@ func (s *Store) GetUsage(f UsageFilter) ([]RequestLog, int, error) {
 			&l.AccountLabel, &l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP,
 			&success, &l.ErrorMessage, &l.ErrorFingerprint, &l.ErrorRepeatCount, &l.ErrorLastSeenAt, &l.SourceKind, &l.AttemptCount, &diagnostic,
 			&l.RuntimeAuthIndex, &l.RuntimeAuthID, &l.RuntimeAccountKey, &l.RuntimeBindingStatus, &l.RuntimeBindingReason,
+			&l.RouteTrace,
 			&l.CreatedAt,
 		); err != nil {
 			return nil, 0, err

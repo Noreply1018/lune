@@ -404,6 +404,9 @@ func TestRefreshAccountWaitsForCpaAuthIndex(t *testing.T) {
 	if acc.CodexQuotaJSON == "" {
 		t.Fatalf("expected quota JSON to be persisted")
 	}
+	if acc.CpaAccessStatus != "eligible" || acc.CpaAccessReason != "wham_usage_allowed" {
+		t.Fatalf("expected wham/usage success to mark access eligible, got status=%q reason=%q", acc.CpaAccessStatus, acc.CpaAccessReason)
+	}
 }
 
 func TestCodexQuotaUnauthorizedDoesNotMarkCredentialNeedsLogin(t *testing.T) {
@@ -500,6 +503,55 @@ func TestCodexQuotaUnauthorizedDoesNotMarkCredentialNeedsLogin(t *testing.T) {
 	}
 	if acc.CpaQuotaStatus != "error" || acc.CpaQuotaLastError != "HTTP 401" {
 		t.Fatalf("expected quota error state, got status=%q err=%q", acc.CpaQuotaStatus, acc.CpaQuotaLastError)
+	}
+	if acc.CpaQuotaBackoffCount != 1 || acc.CpaQuotaBackoffUntil == "" {
+		t.Fatalf("expected quota backoff after 401, got count=%d until=%q", acc.CpaQuotaBackoffCount, acc.CpaQuotaBackoffUntil)
+	}
+}
+
+func TestFetchCodexQuotasSkipsAccountsInBackoff(t *testing.T) {
+	t.Parallel()
+
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:         "CPA",
+		BaseURL:       "http://cpa.example",
+		ManagementKey: "mgmt",
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:                 "Codex",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         "codex-user@example.com-plus",
+		CpaOpenaiID:           "acct_123",
+		CpaCredentialStatus:   "ok",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	until := time.Now().UTC().Add(10 * time.Minute).Format("2006-01-02 15:04:05")
+	if err := st.UpdateAccountCodexQuotaBackoff(accountID, until, 2); err != nil {
+		t.Fatalf("set quota backoff: %v", err)
+	}
+	cache.Invalidate()
+	checker := NewChecker(st, cache, authDir, "", nil)
+	var calls int
+	checker.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("must not call CPA while backoff is active")
+	})}
+	checker.fetchCodexQuotas(context.Background())
+	if calls != 0 {
+		t.Fatalf("expected active backoff to suppress CPA calls, got %d", calls)
 	}
 }
 

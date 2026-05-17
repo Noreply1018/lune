@@ -708,6 +708,9 @@ func TestGatewayCodexCpaModelRequest429EvidenceClearsAfterModelSuccess(t *testin
 	if acc.CpaQuotaStatus != "ok" || acc.CpaQuotaLastError != "" {
 		t.Fatalf("expected model request quota evidence to clear after success, got %+v", acc)
 	}
+	if acc.CpaAccessStatus != "eligible" || acc.CpaAccessReason != "model_request_success" {
+		t.Fatalf("expected model success to mark access eligible, got %+v", acc)
+	}
 }
 
 func TestGatewayCodexCpaBlockedModelRequest429EvidenceClearsAfterModelSuccess(t *testing.T) {
@@ -865,6 +868,63 @@ func TestGatewayForcedAccount429DoesNotRecordQuotaEvidenceOrServingCooldown(t *t
 	log := waitForLatestGatewayLog(t, st)
 	if !log.Diagnostic {
 		t.Fatalf("expected forced account request to be logged as diagnostic, got %+v", log)
+	}
+}
+
+func TestGatewayRouteTraceIncludesSkipReasons(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	if err := st.UpdatePoolWithRoutingPolicy(*token.PoolID, "test-pool", 1, true, "ordered"); err != nil {
+		t.Fatalf("UpdatePoolWithRoutingPolicy: %v", err)
+	}
+	blockedID, err := st.CreateAccount(&store.Account{
+		Label:      "blocked",
+		SourceKind: "openai_compat",
+		BaseURL:    "http://blocked.example/v1",
+		APIKey:     "sk-blocked",
+		Provider:   "openai",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount blocked: %v", err)
+	}
+	if err := st.UpdateAccountHealth(blockedID, "error", "broken"); err != nil {
+		t.Fatalf("UpdateAccountHealth blocked: %v", err)
+	}
+	if _, err := st.AddPoolMember(*token.PoolID, blockedID); err != nil {
+		t.Fatalf("AddPoolMember blocked: %v", err)
+	}
+	if err := st.RefreshAccountModels(blockedID, []string{"gpt-5-codex"}); err != nil {
+		t.Fatalf("RefreshAccountModels blocked: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "resp-ok",
+			"object": "response",
+			"usage":  map[string]any{"input_tokens": 1, "output_tokens": 1},
+		})
+	}))
+	defer server.Close()
+	selectedID := addOpenAICompatGatewayAccount(t, st, cache, *token.PoolID, "selected", server.URL+"/v1", "gpt-5-codex")
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if log.AccountID != selectedID || log.RouteTrace == "" {
+		t.Fatalf("expected selected route trace, got %+v", log)
+	}
+	if strings.Contains(log.RouteTrace, "hi") || strings.Contains(log.RouteTrace, "sk-") {
+		t.Fatalf("route_trace leaked request body or token: %s", log.RouteTrace)
+	}
+	if !strings.Contains(log.RouteTrace, `"account_id":`+strconv.FormatInt(blockedID, 10)) ||
+		!strings.Contains(log.RouteTrace, `"reason":"account_unhealthy"`) ||
+		!strings.Contains(log.RouteTrace, `"selected_account_id":`+strconv.FormatInt(selectedID, 10)) {
+		t.Fatalf("route_trace missing skip reason or selected account: %s", log.RouteTrace)
 	}
 }
 

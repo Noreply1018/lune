@@ -206,7 +206,11 @@ function isCpaOtherwiseRoutable(account: Account): boolean {
   ) {
     return false;
   }
-  if (provider === "codex" && account.cpa_subscription_status !== "active") return false;
+  if (provider === "codex") {
+    if (account.cpa_access_status === "eligible") return true;
+    if (account.cpa_access_status === "ineligible" || account.cpa_access_status === "pending") return false;
+    return account.cpa_subscription_status === "active";
+  }
   return true;
 }
 
@@ -271,30 +275,30 @@ export function getRouteSummary(
     }
 
     const provider = String(account.cpa_provider || "").toLowerCase();
-    const subscriptionStatus = account.cpa_subscription_status || "unknown";
-    if (provider === "codex" && subscriptionStatus !== "active") {
-      const reason =
-        subscriptionStatus === "expired"
-          ? "订阅已过期"
-          : subscriptionStatus === "free"
-            ? "订阅不可用"
-            : subscriptionStatus === "pending"
-              ? "订阅刷新中"
-              : subscriptionStatus === "error"
-                ? "订阅获取失败"
-                : "订阅未知";
-      const action = subscriptionStatus === "pending" ? "稍后刷新订阅" : "刷新订阅";
-      return routeSummary("error", reason, "订阅状态未确认可用，普通路由会跳过。", [action, "检查订阅信息"]);
+    if (provider === "codex") {
+      const accessStatus = account.cpa_access_status || "unknown";
+      if (accessStatus !== "eligible") {
+        const reason =
+          accessStatus === "ineligible"
+            ? "Access 不可用"
+            : accessStatus === "pending"
+              ? "Access 待确认"
+              : accessStatus === "error"
+                ? "Access 探测失败"
+                : "Access 未确认";
+        return routeSummary("error", reason, "Codex 使用资格尚未确认可用，普通路由会跳过。", ["刷新账号状态", "检查 Access 详情"]);
+      }
     }
 
     if (account.cpa_quota_status === "blocked") {
       return routeSummary("error", "额度已用尽", "额度接口明确拒绝继续使用，普通路由会跳过。", ["刷新额度", "更换账号"]);
     }
-    if (account.cpa_quota_status === "error" && account.cpa_quota_last_error) {
+    const quotaErrorMeta = getCpaQuotaErrorMeta(account);
+    if (quotaErrorMeta?.reason === "model_request_429") {
       return routeSummary(
         account.serving_status === "cooldown" ? "error" : "degraded",
-        "模型请求被限流",
-        "最近真实模型请求返回了 HTTP 429；额度快照和真实请求证据需要分开判断。",
+        quotaErrorMeta.label,
+        quotaErrorMeta.detail,
         ["刷新额度", "查看 Activity", "等待冷却结束"],
       );
     }
@@ -312,10 +316,11 @@ export function getRouteSummary(
 
   if (account.source_kind === "cpa") {
     if (account.cpa_quota_status === "error") {
+      const quotaErrorMeta = getCpaQuotaErrorMeta(account);
       return routeSummary(
         "degraded",
-        "额度查询失败",
-        "最近模型调用可用性未被单独否定，但额度接口暂不可用，路由会降权。",
+        quotaErrorMeta?.label || "额度查询失败",
+        quotaErrorMeta?.detail || "最近模型调用可用性未被单独否定，但额度接口暂不可用，路由会降权。",
         ["刷新额度", "查看 Activity"],
       );
     }
@@ -449,6 +454,14 @@ export function getCpaQuotaErrorMeta(account: Account): {
   label: string;
   detail: string;
   tone: "warning" | "danger";
+  source: "model_request" | "wham_usage" | "cpa_management" | "store";
+  reason:
+    | "quota_blocked"
+    | "model_request_429"
+    | "quota_fetch_auth_failed"
+    | "runtime_api_call_failed"
+    | "quota_fetch_failed"
+    | "quota_unknown";
 } | null {
   if (account.source_kind !== "cpa") return null;
   if (account.cpa_provider.toLowerCase() !== "codex") return null;
@@ -458,13 +471,55 @@ export function getCpaQuotaErrorMeta(account: Account): {
       label: "额度已用尽",
       detail: account.cpa_quota_last_error || "额度已耗尽或上游拒绝使用",
       tone: "danger",
+      source: "store",
+      reason: "quota_blocked",
     };
   }
   if (status === "error") {
+    const lastError = account.cpa_quota_last_error || "";
+    if (lastError.startsWith("HTTP 429 from model request")) {
+      return {
+        label: "模型请求被限流",
+        detail: lastError || "最近一次真实模型请求返回了 HTTP 429",
+        tone: "warning",
+        source: "model_request",
+        reason: "model_request_429",
+      };
+    }
+    const lower = lastError.toLowerCase();
+    if (lower.includes("management") || lower.includes("api-call")) {
+      return {
+        label: "额度查询失败",
+        detail: lastError || "CPA management 无法代理额度查询。",
+        tone: "warning",
+        source: "cpa_management",
+        reason: "runtime_api_call_failed",
+      };
+    }
+    if (lastError.includes("HTTP 401") || lastError.includes("HTTP 403")) {
+      return {
+        label: "额度接口鉴权失败",
+        detail: lastError || "额度辅助接口鉴权失败，不代表模型请求被限流。",
+        tone: "warning",
+        source: "wham_usage",
+        reason: "quota_fetch_auth_failed",
+      };
+    }
     return {
-      label: "模型请求被限流",
-      detail: account.cpa_quota_last_error || "最近一次真实模型请求返回了 HTTP 429",
+      label: "额度查询失败",
+      detail: lastError || "额度辅助接口暂不可用。",
       tone: "warning",
+      source: "wham_usage",
+      reason: "quota_fetch_failed",
+    };
+  }
+  if (status === "unknown") {
+    return {
+      label: "额度未知",
+      detail: account.cpa_quota_last_error || "没有可用额度快照。",
+      tone: "warning",
+      source: "store",
+      reason: "quota_unknown",
     };
   }
   return null;

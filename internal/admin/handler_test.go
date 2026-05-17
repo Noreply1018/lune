@@ -75,6 +75,30 @@ func multipartAuthJSONBody(t *testing.T, filename string, fields map[string]stri
 	return body, writer.FormDataContentType()
 }
 
+func multipartAuthJSONBatchBody(t *testing.T, fields map[string]string, files map[string]string) (*bytes.Buffer, string) {
+	t.Helper()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			t.Fatalf("write multipart field: %v", err)
+		}
+	}
+	for filename, payload := range files {
+		part, err := writer.CreateFormFile("files", filename)
+		if err != nil {
+			t.Fatalf("create form file: %v", err)
+		}
+		if _, err := part.Write([]byte(payload)); err != nil {
+			t.Fatalf("write form file: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	return body, writer.FormDataContentType()
+}
+
 func codexAuthJSON(t *testing.T, email, accountID, refreshToken string) string {
 	t.Helper()
 	token := fakeJWT(t, map[string]any{
@@ -334,6 +358,129 @@ func TestImportCpaAuthJSONIsIdempotentForSameAccount(t *testing.T) {
 	}
 }
 
+func TestPreviewCpaAuthJSONBatchDoesNotWriteAndSkipsDuplicate(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Codex", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+	authJSON := codexAuthJSON(t, "batch@example.com", "acct_batch", "refresh-secret")
+	body, contentType := multipartAuthJSONBatchBody(t, map[string]string{
+		"pool_id": fmt.Sprint(poolID),
+	}, map[string]string{
+		"a.json": authJSON,
+		"b.json": authJSON,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json-batch/preview", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+	handler.previewCpaAuthJSONBatch(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "refresh-secret") {
+		t.Fatalf("preview leaked token: %s", rr.Body.String())
+	}
+	var resp struct {
+		Data cpaAuthJSONBatchResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.Summary.Created != 1 || resp.Data.Summary.Skipped != 1 {
+		t.Fatalf("unexpected preview summary: %+v", resp.Data.Summary)
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("preview must not create accounts, got %d", len(accounts))
+	}
+	if entries, err := os.ReadDir(authDir); err != nil {
+		t.Fatalf("read auth dir: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("preview must not write auth files, got %d entries", len(entries))
+	}
+}
+
+func TestImportCpaAuthJSONBatchPartialSuccessAndDuplicate(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Codex", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+	first := codexAuthJSON(t, "first@example.com", "acct_first", "refresh-first")
+	second := codexAuthJSON(t, "second@example.com", "acct_second", "refresh-second")
+	body, contentType := multipartAuthJSONBatchBody(t, map[string]string{
+		"pool_id": fmt.Sprint(poolID),
+	}, map[string]string{
+		"first.json":      first,
+		"first-copy.json": first,
+		"second.json":     second,
+		"bad.json":        `{"type":"codex","email":"bad@example.com"}`,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json-batch", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+	handler.importCpaAuthJSONBatch(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "refresh-first") || strings.Contains(rr.Body.String(), "refresh-second") {
+		t.Fatalf("response leaked token: %s", rr.Body.String())
+	}
+	var resp struct {
+		Data cpaAuthJSONBatchResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.Summary.Created != 2 || resp.Data.Summary.Skipped != 1 || resp.Data.Summary.Failed != 1 {
+		t.Fatalf("unexpected import summary: %+v", resp.Data.Summary)
+	}
+	if resp.Data.BatchID == "" {
+		t.Fatalf("expected batch id in import response")
+	}
+	if resp.Data.Summary.PendingRuntimeSync != 0 {
+		t.Fatalf("expected no runtime sync pending without checker, got %+v", resp.Data.Summary)
+	}
+	accounts, err := st.ListAccounts()
+	if err != nil {
+		t.Fatalf("list accounts: %v", err)
+	}
+	if len(accounts) != 2 {
+		t.Fatalf("expected two imported accounts, got %d", len(accounts))
+	}
+	members, err := st.ListPoolMembers(poolID)
+	if err != nil {
+		t.Fatalf("list pool members: %v", err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("expected two pool members, got %d", len(members))
+	}
+}
+
 func TestImportCpaAuthJSONRejectsUnsafeInputs(t *testing.T) {
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
@@ -359,7 +506,7 @@ func TestImportCpaAuthJSONRejectsUnsafeInputs(t *testing.T) {
 	}{
 		{name: "login sessions filename", filename: ".login-sessions.json", payload: `{"sessions":[]}`, want: ".login-sessions"},
 		{name: "login sessions shape", filename: "auth.json", payload: `{"sessions":[]}`, want: ".login-sessions"},
-		{name: "missing refresh", filename: "auth.json", payload: `{"type":"codex","email":"x@example.com","access_token":"abc.def"}`, want: "refresh_token"},
+		{name: "missing refresh", filename: "auth.json", payload: `{"type":"codex","email":"x@example.com","access_token":"abc.def"}`, want: "credential field"},
 		{name: "unsupported provider", filename: "auth.json", payload: `{"type":"openai","email":"x@example.com","refresh_token":"r","access_token":"abc.def"}`, want: "unsupported provider"},
 		{name: "array json", filename: "auth.json", payload: `[]`, want: "object"},
 	}
@@ -612,7 +759,7 @@ func TestUpsertImportedCodexAccountDerivesActiveSubscriptionStatus(t *testing.T)
 	if err != nil {
 		t.Fatalf("get account: %v", err)
 	}
-	if acc.CpaSubscriptionStatus != "active" || acc.CpaSubscriptionExpiresAt != "2099-01-01T00:00:00Z" {
+	if acc.CpaSubscriptionStatus != "active" || acc.CpaSubscriptionExpiresAt != "2099-01-01T00:00:00Z" || acc.CpaAccessStatus != "eligible" {
 		t.Fatalf("expected active subscription status from imported auth file, got %+v", acc)
 	}
 }
@@ -1341,11 +1488,11 @@ func TestGetNotificationsReturnsSettingsAndSubscriptions(t *testing.T) {
 	if resp.Data.Settings.Enabled {
 		t.Fatalf("expected settings to default to disabled")
 	}
-	if len(resp.Data.Subscriptions) != 5 {
-		t.Fatalf("expected 5 subscriptions, got %d", len(resp.Data.Subscriptions))
+	if len(resp.Data.Subscriptions) != 6 {
+		t.Fatalf("expected 6 subscriptions, got %d", len(resp.Data.Subscriptions))
 	}
-	if len(resp.Data.EventTypes) != 5 {
-		t.Fatalf("expected 5 event types, got %d", len(resp.Data.EventTypes))
+	if len(resp.Data.EventTypes) != 6 {
+		t.Fatalf("expected 6 event types, got %d", len(resp.Data.EventTypes))
 	}
 }
 

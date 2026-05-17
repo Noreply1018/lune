@@ -2,11 +2,14 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"lune/internal/auth"
@@ -36,6 +40,7 @@ type Handler struct {
 	sessions         *cpa.SessionStore
 	healthChecker    *health.Checker
 	notifier         *notify.Service
+	cpaImportMu      sync.Mutex
 }
 
 func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, notifier *notify.Service, gatewayTmpDir ...string) *Handler {
@@ -153,6 +158,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 	handle("GET /admin/api/cpa/service/remote-accounts", h.listRemoteAccounts)
 	handle("POST /admin/api/accounts/cpa/import", h.importCpaAccount)
 	handle("POST /admin/api/accounts/cpa/import-json", h.importCpaAuthJSON)
+	handle("POST /admin/api/accounts/cpa/import-json-batch/preview", h.previewCpaAuthJSONBatch)
+	handle("POST /admin/api/accounts/cpa/import-json-batch", h.importCpaAuthJSONBatch)
 	handle("POST /admin/api/accounts/cpa/import/batch", h.batchImportCpaAccounts)
 }
 
@@ -678,21 +685,39 @@ func (h *Handler) updatePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Label    string `json:"label"`
-		Priority int    `json:"priority"`
-		Enabled  bool   `json:"enabled"`
+		Label         string `json:"label"`
+		Priority      int    `json:"priority"`
+		Enabled       bool   `json:"enabled"`
+		RoutingPolicy string `json:"routing_policy"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		webutil.WriteAdminError(w, 400, "bad_request", "invalid JSON")
 		return
 	}
-	if err := h.store.UpdatePool(id, req.Label, req.Priority, req.Enabled); err != nil {
+	pool, err := h.store.GetPool(id)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if pool == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "pool not found")
+		return
+	}
+	routingPolicy := req.RoutingPolicy
+	if routingPolicy == "" {
+		routingPolicy = pool.RoutingPolicy
+	}
+	if !store.ValidRoutingPolicy(store.NormalizeRoutingPolicy(routingPolicy)) {
+		webutil.WriteAdminError(w, 400, "invalid_routing_policy", "routing_policy must be health_first or ordered")
+		return
+	}
+	if err := h.store.UpdatePoolWithRoutingPolicy(id, req.Label, req.Priority, req.Enabled, routingPolicy); err != nil {
 		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
 
-	pool, err := h.store.GetPool(id)
+	pool, err = h.store.GetPool(id)
 	if err != nil {
 		h.internalError(w, err)
 		return
@@ -2301,52 +2326,12 @@ func (h *Handler) resumeActiveLoginSessions() {
 }
 
 func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey string, f *cpa.CpaAuthFile, label string, enabled bool, notes string) (*store.Account, error) {
+	account, err := h.importedCpaAccountTemplate(svc, accountKey, f, label, enabled, notes)
+	if err != nil {
+		return nil, err
+	}
 	labelProvided := strings.TrimSpace(label) != ""
 	notesProvided := strings.TrimSpace(notes) != ""
-	planType := ""
-	openaiID := f.AccountID
-	if info, err := cpa.ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil {
-		planType = info.PlanType
-		if info.AccountID != "" {
-			openaiID = info.AccountID
-		}
-	}
-	if label == "" {
-		label = fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType)
-	}
-
-	var expiredAt, lastRefreshAt string
-	if f.Expired != "" {
-		expiredAt = f.Expired
-	}
-	if f.LastRefresh != "" {
-		lastRefreshAt = f.LastRefresh
-	}
-	credentialStatus, credentialReason, credentialLastError, credentialCheckedAt := cpaCredentialStateFromAuthFile(f)
-	subscriptionExpiresAt, subscriptionFetchedAt, subscriptionStatus := cpaSubscriptionStateFromAuthFile(f)
-
-	account := &store.Account{
-		Label:                    label,
-		SourceKind:               "cpa",
-		CpaServiceID:             &svc.ID,
-		CpaProvider:              f.Type,
-		CpaAccountKey:            accountKey,
-		CpaEmail:                 f.Email,
-		CpaPlanType:              planType,
-		CpaOpenaiID:              openaiID,
-		CpaExpiredAt:             expiredAt,
-		CpaLastRefreshAt:         lastRefreshAt,
-		CpaDisabled:              f.Disabled,
-		CpaCredentialStatus:      credentialStatus,
-		CpaCredentialReason:      credentialReason,
-		CpaCredentialLastError:   credentialLastError,
-		CpaCredentialCheckedAt:   credentialCheckedAt,
-		CpaSubscriptionExpiresAt: subscriptionExpiresAt,
-		CpaSubscriptionFetchedAt: subscriptionFetchedAt,
-		CpaSubscriptionStatus:    subscriptionStatus,
-		Enabled:                  enabled,
-		Notes:                    notes,
-	}
 
 	if existing, err := h.store.FindAccountByCpaKey(svc.ID, accountKey); err != nil {
 		return nil, err
@@ -2392,6 +2377,54 @@ func (h *Handler) upsertImportedCpaAccount(svc *store.CpaService, accountKey str
 
 	account.ID = id
 	h.fillAccountResponse(account)
+	return account, nil
+}
+
+func (h *Handler) importedCpaAccountTemplate(svc *store.CpaService, accountKey string, f *cpa.CpaAuthFile, label string, enabled bool, notes string) (*store.Account, error) {
+	planType := ""
+	openaiID := f.AccountID
+	if info, err := cpa.ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil {
+		planType = info.PlanType
+		if info.AccountID != "" {
+			openaiID = info.AccountID
+		}
+	}
+	if label == "" {
+		label = fmt.Sprintf("%s - %s (%s)", f.Type, f.Email, planType)
+	}
+
+	var expiredAt, lastRefreshAt string
+	if f.Expired != "" {
+		expiredAt = f.Expired
+	}
+	if f.LastRefresh != "" {
+		lastRefreshAt = f.LastRefresh
+	}
+	credentialStatus, credentialReason, credentialLastError, credentialCheckedAt := cpaCredentialStateFromAuthFile(f)
+	subscriptionExpiresAt, subscriptionFetchedAt, subscriptionStatus := cpaSubscriptionStateFromAuthFile(f)
+
+	account := &store.Account{
+		Label:                    label,
+		SourceKind:               "cpa",
+		CpaServiceID:             &svc.ID,
+		CpaProvider:              f.Type,
+		CpaAccountKey:            accountKey,
+		CpaEmail:                 f.Email,
+		CpaPlanType:              planType,
+		CpaOpenaiID:              openaiID,
+		CpaExpiredAt:             expiredAt,
+		CpaLastRefreshAt:         lastRefreshAt,
+		CpaDisabled:              f.Disabled,
+		CpaCredentialStatus:      credentialStatus,
+		CpaCredentialReason:      credentialReason,
+		CpaCredentialLastError:   credentialLastError,
+		CpaCredentialCheckedAt:   credentialCheckedAt,
+		CpaSubscriptionExpiresAt: subscriptionExpiresAt,
+		CpaSubscriptionFetchedAt: subscriptionFetchedAt,
+		CpaSubscriptionStatus:    subscriptionStatus,
+		Enabled:                  enabled,
+		Notes:                    notes,
+	}
 	return account, nil
 }
 
@@ -2706,18 +2739,364 @@ func (h *Handler) importCpaAuthJSON(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) reloadCpaRuntimeAfterAuthImport(svc *store.CpaService, accountKey, phase string) {
-	if h.healthChecker == nil {
+func (h *Handler) previewCpaAuthJSONBatch(w http.ResponseWriter, r *http.Request) {
+	svc, poolID, items, ok := h.prepareCpaAuthJSONBatch(w, r, false)
+	if !ok {
 		return
+	}
+	seen := make(map[string]bool)
+	resp := cpaAuthJSONBatchResponse{PoolID: poolID}
+	for _, item := range items {
+		if item.Status == "failed" {
+			resp.Items = append(resp.Items, item)
+			resp.Summary.Failed++
+			continue
+		}
+		if seen[item.accountKey] {
+			item.Status = "skipped"
+			item.RuntimeSync = "not_applicable"
+			item.ErrorCode = "duplicate_in_batch"
+			item.ErrorMessage = "同一批次中已有相同账号。"
+			resp.Items = append(resp.Items, item)
+			resp.Summary.Skipped++
+			continue
+		}
+		seen[item.accountKey] = true
+		existing, err := h.store.FindAccountByCpaKey(svc.ID, item.accountKey)
+		if err != nil {
+			item.Status = "failed"
+			item.RuntimeSync = "not_applicable"
+			item.ErrorCode = "lookup_failed"
+			item.ErrorMessage = "账号重复检查失败。"
+			resp.Items = append(resp.Items, item)
+			resp.Summary.Failed++
+			continue
+		}
+		if existing == nil {
+			item.Action = "created"
+			resp.Summary.Created++
+		} else {
+			item.Action = "updated"
+			resp.Summary.Updated++
+		}
+		resp.Items = append(resp.Items, item)
+	}
+	webutil.WriteData(w, 200, resp)
+}
+
+func (h *Handler) importCpaAuthJSONBatch(w http.ResponseWriter, r *http.Request) {
+	svc, poolID, items, ok := h.prepareCpaAuthJSONBatch(w, r, true)
+	if !ok {
+		return
+	}
+	h.cpaImportMu.Lock()
+	defer h.cpaImportMu.Unlock()
+	enabled := true
+	if raw := strings.TrimSpace(r.FormValue("enabled")); raw != "" {
+		enabled = raw != "0" && !strings.EqualFold(raw, "false")
+	}
+	batchID := shortHash(fmt.Sprintf("%d:%d:%s", svc.ID, poolID, time.Now().UTC().Format(time.RFC3339Nano)))
+	seen := make(map[string]bool)
+	resp := cpaAuthJSONBatchResponse{BatchID: batchID, PoolID: poolID}
+	for _, item := range items {
+		if item.Status == "failed" {
+			resp.Items = append(resp.Items, item)
+			resp.Summary.Failed++
+			continue
+		}
+		if seen[item.accountKey] {
+			item.Status = "skipped"
+			item.RuntimeSync = "not_applicable"
+			item.ErrorCode = "duplicate_in_batch"
+			item.ErrorMessage = "同一批次中已有相同账号。"
+			resp.Items = append(resp.Items, item)
+			resp.Summary.Skipped++
+			continue
+		}
+		seen[item.accountKey] = true
+		item = h.importSingleCpaAuthJSONBatchItem(svc, poolID, item, enabled)
+		resp.Items = append(resp.Items, item)
+		switch item.Status {
+		case "created":
+			resp.Summary.Created++
+		case "updated":
+			resp.Summary.Updated++
+		case "skipped":
+			resp.Summary.Skipped++
+		default:
+			resp.Summary.Failed++
+		}
+		switch item.RuntimeSync {
+		case "synced":
+			resp.Summary.SyncedRuntimeSync++
+		case "pending":
+			resp.Summary.PendingRuntimeSync++
+		case "failed":
+			resp.Summary.FailedRuntimeSync++
+		}
+	}
+	h.recordCpaAuthJSONBatchAudit(resp, poolID)
+	h.cache.Invalidate()
+	webutil.WriteData(w, 200, resp)
+}
+
+func (h *Handler) prepareCpaAuthJSONBatch(w http.ResponseWriter, r *http.Request, requireWritableAuthDir bool) (*store.CpaService, int64, []cpaAuthJSONBatchItem, bool) {
+	if h.cpaAuthDir == "" {
+		webutil.WriteAdminError(w, 400, "not_configured", "cpa_auth_dir is not configured")
+		return nil, 0, nil, false
+	}
+	svc, err := h.store.GetCpaService()
+	if err != nil {
+		h.internalError(w, err)
+		return nil, 0, nil, false
+	}
+	if svc == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "no CPA service configured")
+		return nil, 0, nil, false
+	}
+	if err := r.ParseMultipartForm(int64(maxUploadedAuthJSONBytes * maxCpaAuthJSONBatchFiles)); err != nil {
+		webutil.WriteAdminError(w, 400, "bad_request", "invalid multipart form")
+		return nil, 0, nil, false
+	}
+	poolID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("pool_id")), 10, 64)
+	if err != nil || poolID == 0 {
+		webutil.WriteAdminError(w, 400, "bad_request", "pool_id is required")
+		return nil, 0, nil, false
+	}
+	pool, err := h.store.GetPool(poolID)
+	if err != nil {
+		h.internalError(w, err)
+		return nil, 0, nil, false
+	}
+	if pool == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "pool not found")
+		return nil, 0, nil, false
+	}
+	if requireWritableAuthDir {
+		if err := ensureWritableDir(h.cpaAuthDir); err != nil {
+			webutil.WriteAdminError(w, 400, "auth_dir_unwritable", "cpa auth dir is not writable")
+			return nil, 0, nil, false
+		}
+	}
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		files = r.MultipartForm.File["file"]
+	}
+	if len(files) == 0 {
+		webutil.WriteAdminError(w, 400, "bad_request", "files are required")
+		return nil, 0, nil, false
+	}
+	if len(files) > maxCpaAuthJSONBatchFiles {
+		webutil.WriteAdminError(w, 400, "too_many_files", "too many auth JSON files")
+		return nil, 0, nil, false
+	}
+	items := make([]cpaAuthJSONBatchItem, 0, len(files))
+	for _, header := range files {
+		items = append(items, h.parseCpaAuthJSONBatchFile(header))
+	}
+	return svc, poolID, items, true
+}
+
+func (h *Handler) parseCpaAuthJSONBatchFile(header *multipart.FileHeader) cpaAuthJSONBatchItem {
+	fileName := ""
+	if header != nil {
+		fileName = filepath.Base(header.Filename)
+	}
+	item := cpaAuthJSONBatchItem{
+		ClientFileName: fileName,
+		Status:         "preview",
+		RuntimeSync:    "not_applicable",
+	}
+	if header == nil {
+		return failCpaAuthJSONBatchItem(item, "missing_file", "file is required")
+	}
+	if strings.EqualFold(filepath.Base(header.Filename), ".login-sessions.json") {
+		return failCpaAuthJSONBatchItem(item, "invalid_auth_json", ".login-sessions.json is not a CPA auth JSON")
+	}
+	file, err := header.Open()
+	if err != nil {
+		return failCpaAuthJSONBatchItem(item, "read_failed", "failed to open uploaded file")
+	}
+	defer file.Close()
+	raw, err := readUploadedAuthJSON(file)
+	if err != nil {
+		return failCpaAuthJSONBatchItem(item, "invalid_auth_json", err.Error())
+	}
+	authFile, accountKey, err := parseUploadedAuthJSON(raw)
+	if err != nil {
+		return failCpaAuthJSONBatchItem(item, "invalid_auth_json", err.Error())
+	}
+	item.authFile = authFile
+	item.accountKey = accountKey
+	item.Provider = authFile.Type
+	item.PlanType = planTypeFromAuthFile(authFile)
+	item.MaskedEmail = maskEmail(authFile.Email)
+	item.AccountKeyHash = shortHash(accountKey)
+	item.AccountIDSuffix = suffix(authFile.AccountID, 6)
+	return item
+}
+
+func failCpaAuthJSONBatchItem(item cpaAuthJSONBatchItem, code, message string) cpaAuthJSONBatchItem {
+	item.Status = "failed"
+	item.RuntimeSync = "not_applicable"
+	item.ErrorCode = code
+	item.ErrorMessage = message
+	return item
+}
+
+func (h *Handler) importSingleCpaAuthJSONBatchItem(svc *store.CpaService, poolID int64, item cpaAuthJSONBatchItem, enabled bool) cpaAuthJSONBatchItem {
+	existingFile, hadExistingFile, err := readExistingAuthFileBytes(h.cpaAuthDir, item.accountKey)
+	if err != nil {
+		return failCpaAuthJSONBatchItem(item, "read_existing_failed", "failed to read existing auth file")
+	}
+	if hadExistingFile {
+		if existingAuth, err := cpa.ReadAuthFile(h.cpaAuthDir, item.accountKey); err == nil && authIdentityMismatch(existingAuth, item.authFile) {
+			return failCpaAuthJSONBatchItem(item, "identity_mismatch", "existing auth file identity does not match uploaded credential")
+		}
+	}
+	existingBefore, err := h.store.FindAccountByCpaKey(svc.ID, item.accountKey)
+	if err != nil {
+		return failCpaAuthJSONBatchItem(item, "lookup_failed", "account lookup failed")
+	}
+	if err := cpa.WriteAuthFile(h.cpaAuthDir, item.authFile, item.accountKey); err != nil {
+		return failCpaAuthJSONBatchItem(item, "write_failed", "failed to write auth file")
+	}
+	rollbackAuthFile := func() bool {
+		if hadExistingFile {
+			path := filepath.Join(h.cpaAuthDir, item.accountKey+".json")
+			return os.WriteFile(path, existingFile, 0600) == nil
+		}
+		return cpa.DeleteAuthFile(h.cpaAuthDir, item.accountKey) == nil
+	}
+	accountTemplate, err := h.importedCpaAccountTemplate(svc, item.accountKey, item.authFile, "", enabled, "")
+	if err != nil {
+		if !rollbackAuthFile() {
+			item = failCpaAuthJSONBatchItem(item, "compensation_failed", "import failed and auth file rollback failed")
+		} else {
+			item = failCpaAuthJSONBatchItem(item, "upsert_failed", "failed to create or update account")
+		}
+		return item
+	}
+	account, memberID, created, err := h.store.UpsertCpaAccountAndPoolMemberFromImport(poolID, accountTemplate)
+	if err != nil {
+		if !rollbackAuthFile() {
+			return failCpaAuthJSONBatchItem(item, "compensation_failed", "pool membership failed and rollback failed")
+		}
+		return failCpaAuthJSONBatchItem(item, "pool_member_failed", "failed to add imported account to pool")
+	}
+	item.AccountID = account.ID
+	item.PoolMemberID = memberID
+	if created || existingBefore == nil {
+		item.Status = "created"
+	} else {
+		item.Status = "updated"
+	}
+	item.RuntimeSync = h.reloadCpaRuntimeAfterAuthImport(svc, item.accountKey, "batch_upload")
+	if item.RuntimeSync == "not_applicable" && h.healthChecker != nil {
+		item.RuntimeSync = "pending"
+	}
+	if h.healthChecker != nil {
+		if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
+			go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
+				Models:        true,
+				Quota:         true,
+				Subscription:  true,
+				WaitAuthIndex: true,
+			})
+		}
+	}
+	return item
+}
+
+func (h *Handler) recordCpaAuthJSONBatchAudit(resp cpaAuthJSONBatchResponse, poolID int64) {
+	if h.notifier == nil {
+		return
+	}
+	message := fmt.Sprintf(
+		"CPA auth JSON 批量导入 %s：created=%d updated=%d skipped=%d failed=%d runtime_synced=%d runtime_pending=%d runtime_failed=%d",
+		resp.BatchID,
+		resp.Summary.Created,
+		resp.Summary.Updated,
+		resp.Summary.Skipped,
+		resp.Summary.Failed,
+		resp.Summary.SyncedRuntimeSync,
+		resp.Summary.PendingRuntimeSync,
+		resp.Summary.FailedRuntimeSync,
+	)
+	_ = h.notifier.Dispatch(context.Background(), notify.Notification{
+		Event:     "cpa_import_batch",
+		Severity:  "info",
+		Title:     "CPA auth JSON 批量导入",
+		Message:   message,
+		Timestamp: time.Now().UTC(),
+		Source: notify.NotificationSource{
+			PoolID: &poolID,
+		},
+		Vars: map[string]any{
+			"batch_id":        resp.BatchID,
+			"pool_id":         poolID,
+			"created":         resp.Summary.Created,
+			"updated":         resp.Summary.Updated,
+			"skipped":         resp.Summary.Skipped,
+			"failed":          resp.Summary.Failed,
+			"runtime_synced":  resp.Summary.SyncedRuntimeSync,
+			"runtime_pending": resp.Summary.PendingRuntimeSync,
+			"runtime_failed":  resp.Summary.FailedRuntimeSync,
+		},
+	})
+}
+
+func (h *Handler) reloadCpaRuntimeAfterAuthImport(svc *store.CpaService, accountKey, phase string) string {
+	if h.healthChecker == nil {
+		return "not_applicable"
 	}
 	reloadCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := h.healthChecker.RequestCpaRuntimeReload(reloadCtx, svc); err != nil {
 		slog.Warn("importCpaAuthJSON: CPA runtime reload failed", "account_key", accountKey, "phase", phase, "err", err)
+		return "failed"
 	}
+	return "pending"
 }
 
 const maxUploadedAuthJSONBytes = 256 << 10
+const maxCpaAuthJSONBatchFiles = 20
+
+type cpaAuthJSONBatchSummary struct {
+	Created            int `json:"created"`
+	Updated            int `json:"updated"`
+	Skipped            int `json:"skipped"`
+	Failed             int `json:"failed"`
+	SyncedRuntimeSync  int `json:"synced_runtime_sync"`
+	PendingRuntimeSync int `json:"pending_runtime_sync"`
+	FailedRuntimeSync  int `json:"failed_runtime_sync"`
+}
+
+type cpaAuthJSONBatchItem struct {
+	ClientFileName  string `json:"client_file_name"`
+	Status          string `json:"status"`
+	Provider        string `json:"provider,omitempty"`
+	PlanType        string `json:"plan_type,omitempty"`
+	MaskedEmail     string `json:"masked_email,omitempty"`
+	AccountKeyHash  string `json:"account_key_hash,omitempty"`
+	AccountIDSuffix string `json:"account_id_suffix,omitempty"`
+	AccountID       int64  `json:"account_id,omitempty"`
+	PoolMemberID    int64  `json:"pool_member_id,omitempty"`
+	RuntimeSync     string `json:"runtime_sync"`
+	ErrorCode       string `json:"error_code,omitempty"`
+	ErrorMessage    string `json:"error_message,omitempty"`
+	Action          string `json:"action,omitempty"`
+
+	authFile   *cpa.CpaAuthFile
+	accountKey string
+}
+
+type cpaAuthJSONBatchResponse struct {
+	BatchID string                  `json:"batch_id,omitempty"`
+	PoolID  int64                   `json:"pool_id"`
+	Summary cpaAuthJSONBatchSummary `json:"summary"`
+	Items   []cpaAuthJSONBatchItem  `json:"items"`
+}
 
 func readUploadedAuthJSON(file io.Reader) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(file, maxUploadedAuthJSONBytes+1))
@@ -2764,10 +3143,10 @@ func parseUploadedAuthJSON(data []byte) (*cpa.CpaAuthFile, string, error) {
 		return nil, "", fmt.Errorf("unsupported provider: %s", firstNonEmpty(f.Type, "unknown"))
 	}
 	if f.RefreshToken == "" {
-		return nil, "", fmt.Errorf("missing refresh_token")
+		return nil, "", fmt.Errorf("missing required credential field")
 	}
 	if f.AccessToken == "" && f.IDToken == "" {
-		return nil, "", fmt.Errorf("missing access_token or id_token")
+		return nil, "", fmt.Errorf("missing required credential field")
 	}
 	if info, err := cpa.ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil {
 		if f.Email == "" {
@@ -2816,6 +3195,62 @@ func readExistingAuthFileBytes(dir, accountKey string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	return data, true, nil
+}
+
+func ensureWritableDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory")
+	}
+	tmp, err := os.CreateTemp(dir, ".lune-write-test-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return os.Remove(name)
+}
+
+func planTypeFromAuthFile(f *cpa.CpaAuthFile) string {
+	if f == nil {
+		return ""
+	}
+	if info, err := cpa.ParseAccountInfoFromTokens(f.IDToken, f.AccessToken); err == nil {
+		return strings.TrimSpace(info.PlanType)
+	}
+	return ""
+}
+
+func maskEmail(email string) string {
+	email = strings.TrimSpace(email)
+	parts := strings.Split(email, "@")
+	if len(parts) != 2 || parts[0] == "" {
+		return suffix(email, 6)
+	}
+	name := []rune(parts[0])
+	if len(name) == 1 {
+		return string(name[0]) + "***@" + parts[1]
+	}
+	return string(name[0]) + "***" + string(name[len(name)-1]) + "@" + parts[1]
+}
+
+func shortHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])[:12]
+}
+
+func suffix(value string, n int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= n {
+		return value
+	}
+	return value[len(value)-n:]
 }
 
 func authIdentityMismatch(existing, incoming *cpa.CpaAuthFile) bool {

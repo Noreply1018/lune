@@ -354,6 +354,89 @@ func TestPoolRoutableCountBlocksMixedCaseCodexWithoutActiveSubscription(t *testi
 	}
 }
 
+func TestPoolRoutableCountAllowsCodexAccessEligibleWithoutSubscription(t *testing.T) {
+	st := newTestStore(t)
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&CpaService{Label: "CPA", BaseURL: "https://cpa.example.com", Enabled: true})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:                 "Free eligible",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "Codex",
+		CpaAccountKey:         "codex-free@example.com-free",
+		CpaCredentialStatus:   "ok",
+		CpaQuotaStatus:        "unknown",
+		CpaSubscriptionStatus: "unknown",
+		CpaAccessStatus:       "eligible",
+		CpaAccessReason:       "wham_usage_allowed",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("add pool member: %v", err)
+	}
+	if err := st.SetSetting("cpa_provider_pinning_supported", "1"); err != nil {
+		t.Fatalf("enable provider pinning setting: %v", err)
+	}
+
+	pool, err := st.GetPool(poolID)
+	if err != nil || pool == nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if pool.RoutableAccountCount != 1 {
+		t.Fatalf("expected access eligible Codex account to be routable with quota warn, got %d", pool.RoutableAccountCount)
+	}
+}
+
+func TestPoolRoutableCountBlocksCodexAccessPendingEvenWithActiveSubscription(t *testing.T) {
+	st := newTestStore(t)
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&CpaService{Label: "CPA", BaseURL: "https://cpa.example.com", Enabled: true})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:                 "Pending access",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         "codex-pending@example.com-plus",
+		CpaCredentialStatus:   "ok",
+		CpaQuotaStatus:        "ok",
+		CpaSubscriptionStatus: "active",
+		CpaAccessStatus:       "pending",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("add pool member: %v", err)
+	}
+	if err := st.SetSetting("cpa_provider_pinning_supported", "1"); err != nil {
+		t.Fatalf("enable provider pinning setting: %v", err)
+	}
+
+	pool, err := st.GetPool(poolID)
+	if err != nil || pool == nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if pool.RoutableAccountCount != 0 {
+		t.Fatalf("expected explicit access pending to block routing, got %d", pool.RoutableAccountCount)
+	}
+}
+
 func TestPoolRoutableCountBlocksMixedCaseCredentialStatus(t *testing.T) {
 	st := newTestStore(t)
 	poolID, err := st.CreatePool("Pool", 0, true)

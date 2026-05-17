@@ -1,6 +1,6 @@
 # 04. CPA 分层可路由模型与 Codex Free 接入
 
-状态：规划中。本文定义 v0.1.8 必须实现的 CPA 账号分层可路由模型，重点解决 Codex Free / Go 账号可以接入、可以被正确判定可路由、可以显示计划与额度的问题。
+状态：已实现并完成新容器验收。本文定义 v0.1.8 必须实现的 CPA 账号分层可路由模型，重点解决 Codex Free / Go 账号可以接入、可以被正确判定可路由、可以显示计划与额度的问题。
 
 来源：2026-05-17 对当前 Lune CPA 账号生命周期、Codex subscription / quota / router / 前端展示逻辑的代码审计，以及用户确认 v0.1.8 需要支持 Free 账号正常接入和路由。OpenAI 当前官方说明中，Codex 包含在 ChatGPT Free / Go / Plus / Pro / Business / Enterprise 等计划中，其中 Free / Go 属于限时包含；因此 Lune 不能继续把 Codex CPA 可用性等同于 paid subscription active。
 

@@ -45,6 +45,10 @@ export interface Account {
     | "free"
     | "pending"
     | "error";
+  cpa_access_status?: "unknown" | "pending" | "eligible" | "ineligible" | "error";
+  cpa_access_reason?: string;
+  cpa_access_last_error?: string;
+  cpa_access_checked_at?: string;
   codex_quota_json?: string;
   codex_quota_fetched_at?: string;
   cpa_quota_status?: "unknown" | "ok" | "blocked" | "pending" | "error";
@@ -71,6 +75,7 @@ export interface Pool {
   label: string;
   priority: number;
   enabled: boolean;
+  routing_policy: "health_first" | "ordered";
   account_count: number;
   healthy_account_count: number;
   routable_account_count: number;

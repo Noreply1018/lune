@@ -221,7 +221,7 @@ func runImport(tx *sql.Tx, payload ConfigImportPayload) (*ConfigImportResult, er
 
 func getPoolByLabelTx(tx *sql.Tx, label string) (*Pool, error) {
 	row := tx.QueryRow(`
-		SELECT p.id, p.label, p.priority, p.enabled, p.created_at, p.updated_at,
+		SELECT p.id, p.label, p.priority, p.enabled, p.routing_policy, p.created_at, p.updated_at,
 			(SELECT COUNT(*)
 			 FROM pool_members pm
 			 JOIN accounts a ON a.id = pm.account_id
@@ -229,7 +229,7 @@ func getPoolByLabelTx(tx *sql.Tx, label string) (*Pool, error) {
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
 			 WHERE pm.pool_id = p.id AND pm.enabled = 1 AND a.enabled = 1 AND a.status = 'healthy') AS healthy_account_count,
 			(SELECT COUNT(*) FROM pool_members pm JOIN accounts a ON a.id = pm.account_id
-			 WHERE pm.pool_id = p.id AND ` + routableAccountWhereSQL + `) AS routable_account_count
+			 WHERE pm.pool_id = p.id AND `+routableAccountWhereSQL+`) AS routable_account_count
 		FROM pools p
 		WHERE p.label = ?`, label)
 
