@@ -46,6 +46,14 @@ source: auth_file | cpa_management | wham_usage | model_request | config | store
 checked_at
 ```
 
+`source` 表示证据来自哪条链路；`reason` 表示这条链路给出的稳定错误或状态类别。不得把 `quota_fetch`、`runtime_api_call` 这类错误类别写进 `source`。例如：
+
+```text
+source=wham_usage, reason=quota_fetch_auth_failed
+source=cpa_management, reason=runtime_api_call_failed
+source=model_request, reason=model_request_429
+```
+
 最终聚合规则：
 
 ```text
@@ -54,6 +62,18 @@ pending / unknown -> 默认不可路由，除非该层策略明确允许 fail-op
 warn -> 可路由但产生 penalty
 pass -> 正常
 ```
+
+v0.1.8 必须把每一层的 fail-open / fail-closed 策略写死，避免实现阶段把所有 `unknown` 都当成硬阻断，或把 access 待确认错误地放行：
+
+| 层级 | `pending` / `unknown` 默认策略 | 说明 |
+| --- | --- | --- |
+| Account / Pool | block | Pool、账号或 Pool member 状态不明确时不接普通流量 |
+| Credential | block | 凭据状态不可信时不接普通流量 |
+| Runtime Binding | block | CPA provider pinning 或 runtime binding 不可信时 fail closed |
+| Access | block | Free / Go / unknown 计划必须先有 access evidence，不能只凭计划身份放行 |
+| Quota | warn | quota snapshot 缺失或刷新中不等于额度阻断；明确 blocked 或模型请求 429 evidence 才 block |
+| Serving | block | `cooldown` 未过期或 `error` 阻断；健康或冷却已过期才 pass / warn |
+| Models | conditional | 有明确模型列表且不包含请求模型时 block；模型列表为空或未知只在没有明确匹配账号时作为兜底 |
 
 v0.1.8 最低闭环要求后端新增统一评估函数或等价共享逻辑：
 
@@ -74,6 +94,15 @@ type RoutabilityDecision struct {
 ```
 
 router、Pool routable count、Route summary 和 Diagnostics 必须使用同一套规则或有测试锁定的等价规则，不能继续由 Go router、SQL 和前端 TypeScript 各自维护冲突判断。
+
+推荐实现路径：
+
+1. 后端实现统一 `RoutabilityDecision`，作为“账号能不能接普通流量”的唯一裁判。
+2. router 直接消费该决策；Diagnostics 直接展示该决策的 layers。
+3. Pool routable count 优先由同一评估逻辑统计。若实现阶段因性能或 SQL 查询成本暂时保留 SQL count，则必须新增金样测试，证明 SQL count 与统一决策在同一组 fixture 上完全一致。
+4. 前端 Route summary 不再自行重新定义硬阻断规则；可以渲染后端返回的决策，也可以用共享字段派生展示，但必须有测试锁定与后端决策一致。
+
+必须新增“统一裁判金样测试”：同一批 fixture 同时断言 router 选择、Pool `routable_account_count`、Route summary 和 Diagnostics layer。该测试必须覆盖 Free access、quota fetch error、模型请求 429、runtime binding、模型明确不支持、模型未知兜底和 serving cooldown。
 
 ## Access 与 Subscription 拆分
 
@@ -163,6 +192,21 @@ v0.1.8 可以先复用现有 `cpa_quota_status`，但 UI 和路由必须区分�
 - quota fetch HTTP 401 / 403：额度接口鉴权失败，不能等同模型限流。
 - quota fetch request failed / 502 / timeout：额度查询失败，不能等同模型限流。
 
+quota fetch `401/403` 不能自动改写 Access 或 Credential。实现必须保留来源链路和错误类别：
+
+```text
+source=wham_usage, reason=quota_fetch_auth_failed
+  -> Quota warn，展示额度查询失败 / 额度接口鉴权失败
+
+source=cpa_management, reason=runtime_api_call_failed
+  -> Runtime Binding 或 Credential 诊断可提示管理调用失败，但不能伪装成模型限流
+
+source=model_request, reason=model_request_429
+  -> 只有真实普通模型请求 429 才进入模型请求限流 evidence
+```
+
+如果后端暂时只保存 `cpa_quota_last_error` 一个摘要字段，也必须在派生 meta 或 Diagnostics 中给出等价 `source/reason`，避免把 management api-call 失败、目标 wham 鉴权失败和真实模型请求失败混成同一类问题。
+
 Free / Go quota 展示必须按实际返回窗口动态渲染，不能固定假设一定有 `5h` 和 `7d` 两个窗口。没有周额度窗口时，不渲染假的 7d pending bar。
 
 ## Codex Free / Go 路由规则
@@ -234,6 +278,14 @@ Access 和 quota 均采用缓存 + 定期刷新 + 失败退避：
 - 短暂探测失败只更新错误摘要和 checked_at，不立刻清空已有 eligible 结论。
 - 失败重试应使用退避策略，避免 quota / access 探测失败时持续打 CPA management。
 - 具体刷新间隔和退避周期由实现阶段确定，但必须在测试矩阵中固定并覆盖。
+
+实现阶段必须把 refresh/backoff 参数沉淀为可测试配置或常量，并在验收矩阵中声明实际值。最低要求：
+
+- access / quota 刷新失败后进入退避窗口。
+- 退避窗口内不会持续调用 CPA management 或 wham/usage。
+- 退避窗口过后允许再次刷新。
+- 刷新成功后清理或重置退避状态。
+- 退避期间已确认 `eligible` 的账号不因短暂失败被降级为 `ineligible`。
 
 ## UI 表现
 
@@ -333,6 +385,8 @@ Models
 - health 测试：Free 首次导入后 access 先为 pending/unknown，并异步 wham/usage 探测。
 - health 测试：eligible 后一次 wham/usage 401/403/request failed 不立刻降级为 ineligible。
 - health 测试：明确 access denied / plan unsupported 才写入 ineligible。
+- health 测试：access / quota 刷新失败后进入退避，退避窗口内不会重复打 CPA management / wham/usage。
+- health 测试：退避窗口过后允许再次刷新，刷新成功后清理或重置退避状态。
 - gateway 测试：模型请求成功可以清除旧模型请求 429 evidence，并可作为 access eligible 证据。
 - gateway 测试：模型请求 429 写 quota / serving 阻断，不写 access ineligible。
 
@@ -359,12 +413,14 @@ Models
 | CT-FREE-02 | Free auth JSON，wham/usage allowed=false | access 不写 ineligible；quota blocked；普通路由跳过 |
 | CT-FREE-03 | Free auth JSON，quota fetch 401，模型请求成功 | access eligible；quota warn；普通路由可用但降权 |
 | CT-FREE-04 | Free auth JSON，普通模型请求 429 | quota / serving 阻断；不写 access ineligible |
-| CT-FREE-05 | Plus auth JSON，subscription active | access eligible；保持现有 paid 行为 |
-| CT-FREE-06 | Plus auth JSON，subscription expired，无其他可用证据 | access ineligible；普通路由跳过 |
-| CT-FREE-07 | UI 移动端和桌面 | Free 计划 chip、quota 单窗口、Access 诊断无重叠 |
-| CT-FREE-08 | 测试清理 | 测试容器和临时数据已删除 |
+| CT-FREE-05 | Free 模型请求成功 | 可以作为 access eligible 自然证据 |
+| CT-FREE-06 | Plus auth JSON，subscription active | access eligible；保持现有 paid 行为 |
+| CT-FREE-07 | Plus auth JSON，subscription expired，无其他可用证据 | access ineligible；普通路由跳过 |
+| CT-FREE-08 | UI 移动端和桌面 | Free 计划 chip、quota 单窗口、Access 诊断无重叠 |
 | CT-FREE-09 | Free quota 只有 primary window | 卡片中间区域两行高度稳定，第二行为 `Plan  短周期额度  无周额度` |
 | CT-FREE-10 | Free quota pending | 第一行为 pending，第二行为 `Plan  短周期额度  无周额度`，卡片高度与 Plus 一致 |
+| CT-FREE-11 | 退避恢复 | 退避窗口过后 fake CPA 恢复成功 | 允许再次刷新；成功后清理或重置退避状态 |
+| CT-FREE-12 | 测试清理 | 测试容器和临时数据已删除 |
 
 ## 已确认口径
 

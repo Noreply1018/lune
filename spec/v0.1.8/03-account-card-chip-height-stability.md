@@ -229,7 +229,8 @@ Plan  短周期额度  无周额度
 | CT-CHIP-02 | 多账号同屏对比 | 构造一枚、两枚底部 chip 的 Active Pool 卡片，以及 Free / Plus quota 卡片 | 同屏卡片高度稳定，网格不出现某一张异常增高 |
 | CT-CHIP-03 | Disabled Dock 对比 | 构造右侧 disabled 账号，包含 plan chip、健康 chip 和两枚底部 chip | 右侧窄栏不出现两行 chip 导致高度跳变 |
 | CT-CHIP-04 | 移动视口检查 | 使用浏览器或 Playwright 截图检查 375px 页面 | chip 省略合理，无重叠、无横向溢出 |
-| CT-CHIP-05 | 测试清理 | 验收完成后检查 Docker 状态和临时数据 | 测试容器、临时数据目录或 volume 已删除 |
+| CT-CHIP-05 | 未来额外 chip 韧性 | 通过测试夹具人为加入第三枚底部摘要 chip | 单行约束仍不换行、不撑高、不遮挡按钮 |
+| CT-CHIP-06 | 测试清理 | 验收完成后检查 Docker 状态和临时数据 | 测试容器、临时数据目录或 volume 已删除 |
 
 ## 最低验收标准
 

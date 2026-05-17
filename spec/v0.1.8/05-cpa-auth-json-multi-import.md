@@ -164,10 +164,22 @@ enabled=<optional bool, default true>
 4. 生成稳定 account key 和目标 auth file 名称；不得使用用户上传文件名作为最终路径。
 5. 检测同批次重复 account key。
 6. 检测磁盘和数据库中已有 account key。
-7. 对新账号执行原子写入、CPA reload、账号 upsert、加入目标 Pool、异步 refresh。
+7. 对新账号执行可补偿写入、账号 upsert、加入目标 Pool、CPA reload / runtime sync、异步 refresh。
 8. 对已有账号执行幂等更新，复用同一个 Lune account，并确保加入目标 Pool。
 9. 对同批次重复文件，默认只处理第一份；同批次中排在后面的同 key 项主状态必须为 `skipped`，重复原因写入 `error_code='duplicate_in_batch'` 或等价安全错误摘要。
 10. 对单项失败执行单项回滚，不影响同批次其他项。
+
+批量导入不得承诺跨文件系统、数据库和 CPA runtime reload 的严格全局原子事务。实现必须采用可补偿事务口径：
+
+- DB account upsert 与 Pool membership 必须在同一个数据库事务中完成；失败时回滚数据库变更。
+- auth file 写入必须使用临时文件 + rename 或等价安全写入；覆盖已有文件前必须备份旧内容。
+- DB 事务失败时，新 auth file 必须删除；已有 auth file 必须恢复备份。
+- runtime reload / auth index sync 失败不回滚已经成功的导入主状态；item 保持 `created` 或 `updated`，并把 `runtime_sync` 写为 `pending` 或 `failed`。
+- 异步 Access / Quota / Models refresh 失败不把导入主状态改成 `failed`，只进入刷新摘要或 Diagnostics。
+- 单个 item 的补偿失败必须写入安全日志和审计摘要，但不得影响同批次其他 item 的已成功结果。
+- 如果补偿失败导致 auth file 或 DB 状态可能不一致，该 item 必须返回或记录为 `status='failed'`，并使用 `error_code='compensation_failed'` 或等价安全错误码；不能只写日志而让结果页看起来成功。
+
+并发导入必须靠数据库唯一约束、文件锁或等价互斥保护 account key。两个请求同时导入同一 account key 时，最终只能有一个 DB account、一个目标 Pool member 和一个最终 auth file；另一个请求必须返回 `updated`、`skipped` 或安全失败，不能产生重复账号。
 
 同账号重复导入必须遵守：
 
@@ -275,6 +287,10 @@ Models
 - 目标 Pool 不存在时，请求级失败，不写入任何 auth file。
 - 预检后、确认导入前状态变化时，正式导入重新校验并按最新状态返回 `created` / `updated` / `skipped` / `failed`。
 - 覆盖已有 auth file 后 upsert 失败时恢复旧文件和旧账号快照。
+- DB upsert 或 Pool member 添加失败时，数据库事务回滚；新 auth file 删除，已有 auth file 恢复备份。
+- runtime reload / auth index sync 失败时，item 主状态仍为 `created` / `updated`，`runtime_sync` 为 `pending` 或 `failed`，不把成功导入回滚成 failed。
+- 补偿失败导致文件或 DB 可能不一致时，item 返回 `status='failed'` 且 `error_code='compensation_failed'` 或等价安全错误码；结果页和审计摘要必须可见。
+- 两个并发请求导入同一 account key 时，最终没有重复 DB account、重复 Pool member 或损坏 auth file；失败方或后完成方返回可解释安全状态。
 - 导入成功后触发 refresh，Access / Quota / Models 至少进入 completed / pending / error 的可解释状态。
 - 后端响应和日志不包含 token 字段值。
 
@@ -310,7 +326,10 @@ Models
 | CT-MJSON-08 | 预检后状态变化 | 预检显示新账号后，在确认前另一路径先导入同账号，再点击确认导入 | 正式导入重新校验，返回 updated / skipped / failed 等最新结果，不盲信预检 |
 | CT-MJSON-09 | runtime pending 双状态 | runtime auth index 尚未确认 | item 主状态仍为 created / updated；runtime_sync 为 pending；页面不把 pending_runtime_sync 当主状态 |
 | CT-MJSON-10 | runtime sync 枚举边界 | 构造 synced / pending / failed / not_applicable 四种 runtime sync 结果 | 四种值只出现在 runtime_sync 字段；item 主 status 仍只为 created / updated / skipped / failed |
-| CT-MJSON-11 | 测试清理 | 完成上述验收 | 删除测试容器和临时数据目录或 volume |
+| CT-MJSON-11 | 并发重复导入 | 两个客户端同时上传同一 account key fixture | 最终只有一个 DB account、一个目标 Pool member 和一个 auth file；两个响应均为可解释安全状态 |
+| CT-MJSON-12 | runtime reload 失败不回滚导入 | 模拟 auth file 与 DB 写入成功但 runtime reload 失败 | item 主状态为 created / updated；runtime_sync 为 failed 或 pending；账号仍在 Pool 中可见但不可直接宣称可路由 |
+| CT-MJSON-13 | 补偿失败可见 | 模拟回滚 auth file 失败或 DB / 文件状态可能不一致 | item 主状态为 failed，带 `compensation_failed` 或等价安全错误码；审计摘要可见 |
+| CT-MJSON-14 | 测试清理 | 完成上述验收 | 删除测试容器和临时数据目录或 volume |
 
 仅修改本规格文档时不执行容器测试；实现代码进入 v0.1.8 后必须执行。
 
@@ -321,5 +340,7 @@ Models
 - 导入成功不等于账号可路由；可路由性由分层模型刷新结果决定。
 - 同账号导入必须幂等更新，不创建重复账号。
 - 同批次重复 account key 默认不覆盖前一项。
+- 并发重复 account key 导入必须由唯一约束、文件锁或等价互斥兜底，不能生成重复账号或损坏 auth file。
 - 批量导入允许部分成功、部分失败。
+- 导入采用可补偿事务口径：DB 事务、auth file 备份/恢复、runtime sync 独立状态三者分层处理。
 - 批量结果和审计只记录安全摘要，不记录完整凭据。

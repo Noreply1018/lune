@@ -109,6 +109,18 @@ quota_error_kind =
 
 实现可以选择在前端派生该 meta，也可以选择由后端返回安全派生字段；无论采用哪种方式，v0.1.8 的最低闭环都是 UI、诊断页和路由摘要不再把所有 `error` 都叫作“模型请求被限流”。
 
+为了避免把不同来源的 `401/403` 混成同一个根因，派生 meta 必须保留安全 `source/reason`。`source` 表示链路来源，`reason` 表示错误类别：
+
+| `source` | `reason` | 示例 | UI 摘要 | Diagnostics 归因 | 路由影响 |
+| --- | --- | --- | --- | --- |
+| `model_request` | `model_request_429` | 普通 `/chat/completions` 返回 `HTTP 429 from model request` | 模型请求被限流 | Serving / Quota evidence | 硬阻断 |
+| `wham_usage` | `quota_fetch_auth_failed` | `wham/usage` 返回 `HTTP 401/403` | 额度查询失败 / 额度接口鉴权失败 | Quota warn | 轻降级 |
+| `wham_usage` | `quota_fetch_failed` | `wham/usage` 返回 `request failed` / 502 / timeout | 额度查询失败 | Quota warn | 轻降级 |
+| `cpa_management` | `runtime_api_call_failed` | CPA management api-call 无法代理 quota 请求 | 额度查询失败 | Runtime Binding 或 Credential 细节中说明管理调用失败 | 不单独把 access 写成 ineligible |
+| `store` | `quota_error_legacy_unknown` | 旧数据只有宽泛摘要 | 额度查询失败 | Quota warn，并展示原始安全摘要 | 轻降级，除非摘要是模型请求 429 |
+
+如果 v0.1.8 暂时不新增数据库字段，后端或前端也必须从安全摘要中派生等价 `source/reason`，并在测试中锁定 `HTTP 401/403` 不会被写入 Access ineligible、Credential needs_login 或模型限流。`quota_fetch` 和 `runtime_api_call` 不作为 `source` 枚举值；它们只能作为 `reason` 的语义类别或展示文案。
+
 ## UI 表现
 
 账号卡片、Route 摘要和 Diagnostics 的 Quota 维度必须统一文案。
@@ -182,18 +194,22 @@ Diagnostics 的 Quota 区域至少展示：
 - 前端测试：`cpa_quota_status='unknown'` 显示“额度未知”。
 - 前端测试：卡片 chip、Route 摘要和 Diagnostics Quota 维度对同一账号给出一致文案。
 - 前端测试：旧 quota snapshot + 较新 `HTTP 401` fetch error 时，Diagnostics 同时展示“最新查询失败”和“上次成功快照时间”。
+- 前端 / 后端派生测试：quota fetch `HTTP 401/403` 派生为 `source=wham_usage` + `reason=quota_fetch_auth_failed` 或等价 meta，不能派生为 `model_request_429`、Access ineligible 或 Credential needs_login。
+- Diagnostics 测试：当错误为 CPA management api-call 失败时，派生为 `source=cpa_management` + `reason=runtime_api_call_failed` 或等价 meta；Quota 区域展示额度查询失败，同时 Runtime Binding / Credential 细节能看到安全来源，不把该错误误称为真实模型请求限流。
 
 ### API / 后端测试
 
 如果实现选择在后端返回派生字段，需要补充 API 测试：
 
 - `HTTP 429 from model request` 派生为 `model_request_429`。
-- `HTTP 401` / `HTTP 403` 派生为 `quota_auth_failed`。
-- 其他 error 派生为 `quota_fetch_failed`。
+- wham/usage `HTTP 401` / `HTTP 403` 派生为 `source=wham_usage` + `reason=quota_fetch_auth_failed`。
+- wham/usage 其他 error 派生为 `source=wham_usage` + `reason=quota_fetch_failed`。
+- CPA management api-call 失败派生为 `source=cpa_management` + `reason=runtime_api_call_failed`。
 - `blocked` 派生为 `quota_blocked`。
 - `unknown` 派生为 `quota_unknown`。
 - quota 刷新失败会更新最近尝试时间和安全错误摘要，不覆盖旧成功快照的成功时间。
 - quota 刷新成功会更新最近成功时间，并清理或降级展示旧 fetch error。
+- quota fetch `401/403/request failed` 不会写入 `cpa_access_status='ineligible'`，也不会写入 credential `needs_login`。
 
 如果实现只在前端派生，后端测试不是必须项，但必须保留现有 gateway `429` evidence 测试，防止 v0.1.7 的真实模型请求 `429` 修复回退。
 

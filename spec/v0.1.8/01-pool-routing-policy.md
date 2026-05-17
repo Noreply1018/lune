@@ -217,7 +217,40 @@ request log、diagnostic response 或结构化调试日志必须提供可复核�
 - `attempt_count`：最终尝试次数。
 - `account_penalty`：被选账号的 penalty 数值或等价摘要。
 - `skip_reason`：排在前面的账号被跳过的主要原因。
-- retry 关系：同一请求内各 attempt 的账号选择结果，至少能复核“首次账号、最终账号、尝试次数、当前策略”之间的关系。
+- `route_trace` 或等价安全摘要：同一请求内各 attempt 的账号选择结果，至少能复核“首次账号、最终账号、尝试次数、当前策略”之间的关系。
+
+`route_trace` 不需要进入 Activity 图表，但必须在 request log、diagnostic response 或结构化调试日志中可复核。最低结构：
+
+```json
+[
+  {
+    "attempt_index": 1,
+    "routing_policy": "ordered",
+    "account_id": 1,
+    "result": "attempted",
+    "penalty": 1
+  },
+  {
+    "attempt_index": 2,
+    "routing_policy": "ordered",
+    "account_id": 2,
+    "result": "selected_after_retry",
+    "penalty": 0
+  }
+]
+```
+
+账号被跳过但未实际 attempt 时，也必须能记录主要原因：
+
+```json
+{
+  "account_id": 1,
+  "result": "skipped",
+  "skip_reason": "model_not_on_account"
+}
+```
+
+该摘要不得包含 token、auth file、request body、prompt 或完整上游响应体。
 
 最低可解释要求：
 
@@ -236,6 +269,8 @@ request log、diagnostic response 或结构化调试日志必须提供可复核�
 - router 测试：`ordered` 下明确不支持请求模型的账号排第一时跳过。
 - router 测试：`ordered` 下没有明确模型匹配账号时，允许模型列表为空账号兜底。
 - gateway 测试：retry 在 `ordered` 下排除失败账号后继续按列表顺序选下一个账号。
+- gateway / log 测试：触发一次 retry 后，`route_trace` 或等价摘要包含 attempt 账号序列、最终账号、策略和尝试次数。
+- gateway / diagnostic 测试：排第一账号因模型不匹配、runtime binding、quota blocked 或 access pending 被跳过时，日志或诊断载体记录对应 `skip_reason`。
 - API 测试：Pool 策略字段默认 `health_first`，可更新为 `ordered`，非法值返回 400。
 - cache 测试：策略更新后路由 cache 生效，不需要重启进程。
 - 前端测试：Pool 详情页“自检 Pool”右侧存在策略切换按钮，点击后文案和颜色切换。

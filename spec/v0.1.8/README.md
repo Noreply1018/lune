@@ -4,13 +4,21 @@
 
 本版本的基础目标是把 CPA 账号可路由规则从零散字段判断收束为分层判定模型。Codex Free / Go 账号进入 CPA 后，`subscription active` 不再能代表所有可用账号；v0.1.8 必须把计划身份、Codex access / entitlement、quota、真实 serving 状态拆开，避免把 Free 误判为订阅异常，也避免把 quota 查询失败误判为模型请求限流。
 
+分层判定必须由后端统一裁判或由金样测试证明等价。router、Pool routable count、Route summary 和 Diagnostics 不能继续各自维护互相漂移的规则；Access `pending/unknown` 是硬阻断，Quota `pending/unknown` 是轻降级，Models `unknown` 只在没有明确匹配账号时作为兜底。
+
 本版本还把 Pool 内账号调度从隐式“健康优先”升级为显式 Pool 级路由策略，让用户可以在“优先成功率”和“严格尊重账号排序”之间做选择。该能力不改变分层模型中的硬阻断规则，不允许绕过需要重登、access ineligible、额度明确阻断、runtime binding 不可用或服务冷却等不可接普通流量状态。
 
+路由结果必须可复核。`ordered` 下排第一账号被跳过、或 retry 后选择后续账号时，request log、diagnostic response 或结构化调试日志必须保留 `route_trace` 或等价安全摘要，能看到 attempt 序列、skip reason、最终账号和策略，但不得泄露 token、prompt、request body 或完整上游响应。
+
 本版本还必须修正 Codex CPA quota 诊断文案的误归类：`cpa_quota_status='error'` 不能一律展示为“模型请求被限流”。只有 `cpa_quota_last_error` 明确来自普通模型请求 `HTTP 429 from model request` 时，才使用“模型请求被限流”；`HTTP 401`、`HTTP 403`、`request failed` 或其他 quota 辅助接口失败必须展示为“额度查询失败”或更具体的查询失败原因。
+
+quota 错误派生必须保留安全 `source/reason`。`source` 表示链路来源，例如 `wham_usage`、`cpa_management`、`model_request`；`reason` 表示错误类别，例如 `quota_fetch_auth_failed`、`runtime_api_call_failed`、`model_request_429`。Diagnostics 或派生 meta 至少要能区分这些情况，避免把 wham/usage 查询失败、CPA management api-call 失败和真实模型请求 429 混成同一类问题。
 
 本版本同时修复 v0.1.7 Pool 账号卡片 chip 在三枚摘要组合下换行撑高的问题。卡片 chip 是摘要层，应优先保证网格高度稳定和快速扫描；完整解释放在 title、tooltip、详情抽屉或诊断区。
 
 本版本还把 v0.1.7 的单文件 CPA auth JSON 导入扩展为多文件导入。该能力只覆盖用户显式选择多个 `.json` 文件，不扫描旧数据目录、不导入压缩包、不迁移数据库；导入结果必须逐项展示创建、更新、跳过、失败和 runtime sync 状态，并且只记录安全摘要。
+
+批量导入采用可补偿事务口径，而不是承诺文件系统、数据库和 CPA runtime reload 的严格全局原子事务。DB account + Pool membership 必须事务化；auth file 必须可备份/恢复；runtime sync 失败不回滚已经成功的导入主状态，只写入独立 `runtime_sync`。并发重复导入同一 account key 必须由唯一约束、文件锁或等价互斥兜底。
 
 ## 文档结构
 
@@ -35,15 +43,19 @@
 10. 降级需要分层：轻降级可以继续接流量；硬阻断必须跳过。
 11. 路由结果必须可解释。用户把账号排第一却没有被选中时，UI / 日志需要能说明跳过原因。
 12. 重试必须沿用当前 Pool 的路由策略，并排除已尝试失败的账号。
-13. UI 控件要克制：在现有“自检 Pool”右侧增加策略切换按钮，不新增大段说明或新的复杂面板。
-14. Quota 快照、quota 辅助接口失败和真实模型请求限流必须分层展示；前端不能只根据 `cpa_quota_status='error'` 推断“模型请求被限流”。
-15. Pool 账号卡片 chip 是摘要层，不要求完整铺开所有文字；优先保证网格高度稳定和扫描效率。
-16. 卡片右上角显示 Plan chip + 健康 chip；底部 chip 只显示 `今日 N` 和主问题，不再显示 subscription 到期。
-17. Free 只有短周期额度时，quota 第二行显示 `Plan  短周期额度  无周额度`，用于保持与 Plus 卡片一致的高度。
-18. 卡片 chip 行必须稳定为单行摘要；完整解释应放在 title、tooltip、详情抽屉或诊断区。
-19. 解决 chip 高度异常必须约束布局根因，不能只依赖缩短某一个当前文案。
-20. CPA auth JSON 多账号导入必须以 v0.1.7 单文件导入的安全边界为基础；多文件只扩大批处理能力，不扩大到目录扫描、压缩包或整库迁移。
-21. 导入成功不等于账号可路由；导入后的 Credential、Runtime Binding、Access、Quota、Serving 和 Models 仍必须由分层刷新流程确认。
+13. retry 和 ordered 跳过必须留下 `route_trace` 或等价安全摘要，以便复核 attempt 序列、skip reason、最终账号和策略。
+14. UI 控件要克制：在现有“自检 Pool”右侧增加策略切换按钮，不新增大段说明或新的复杂面板。
+15. Quota 快照、quota 辅助接口失败和真实模型请求限流必须分层展示；前端不能只根据 `cpa_quota_status='error'` 推断“模型请求被限流”。
+16. Quota error meta 必须保留安全 `source/reason`：`source` 表示链路来源，`reason` 表示错误类别。
+17. Pool 账号卡片 chip 是摘要层，不要求完整铺开所有文字；优先保证网格高度稳定和扫描效率。
+18. 卡片右上角显示 Plan chip + 健康 chip；底部 chip 只显示 `今日 N` 和主问题，不再显示 subscription 到期。
+19. Free 只有短周期额度时，quota 第二行显示 `Plan  短周期额度  无周额度`，用于保持与 Plus 卡片一致的高度。
+20. 卡片 chip 行必须稳定为单行摘要；完整解释应放在 title、tooltip、详情抽屉或诊断区。
+21. 解决 chip 高度异常必须约束布局根因，不能只依赖缩短某一个当前文案。
+22. CPA auth JSON 多账号导入必须以 v0.1.7 单文件导入的安全边界为基础；多文件只扩大批处理能力，不扩大到目录扫描、压缩包或整库迁移。
+23. 导入成功不等于账号可路由；导入后的 Credential、Runtime Binding、Access、Quota、Serving 和 Models 仍必须由分层刷新流程确认。
+24. 批量导入必须使用可补偿事务口径，覆盖 DB rollback、auth file 备份恢复、runtime sync 独立状态和并发重复导入保护。
+25. Access / quota refresh 失败必须进入可测试退避；退避窗口内不得持续打 CPA management / wham/usage，成功后必须清理或重置退避状态。
 
 ## 已确认口径
 
