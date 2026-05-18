@@ -25,10 +25,15 @@ export interface CodexQuota {
   spendControlReached: boolean;
 }
 
+export interface CodexWeeklyWindowMeta {
+  text: string;
+  detail: string;
+}
+
 // Parse the raw `accounts.codex_quota_json` payload. Only populated for
 // CPA-codex accounts and only after at least one successful quota fetch.
 export function parseCodexQuota(account: Account): CodexQuota | null {
-  if (account.cpa_provider !== "codex") return null;
+  if (String(account.cpa_provider || "").toLowerCase() !== "codex") return null;
   const raw = account.codex_quota_json;
   if (!raw) return null;
   let parsed: Record<string, unknown>;
@@ -66,24 +71,54 @@ export function parseCodexQuota(account: Account): CodexQuota | null {
 }
 
 function parseWindow(raw: unknown): QuotaWindow | null {
-  if (!raw || typeof raw !== "object") return null;
-  const w = raw as Record<string, unknown>;
-  const usedPercent = toNumber(w.used_percent);
-  const limit = toNumber(w.limit_window_seconds);
-  const resetAfter = toNumber(w.reset_after_seconds);
-  const resetAt = toNumber(w.reset_at);
-  if (limit == null || resetAfter == null || resetAt == null) return null;
-  return {
-    usedPercent: usedPercent ?? 0,
-    limitWindowSeconds: limit,
-    resetAfterSeconds: resetAfter,
-    resetAtMs: resetAt * 1000,
+	if (!raw || typeof raw !== "object") return null;
+	const w = raw as Record<string, unknown>;
+	const usedPercent = toNumber(w.used_percent ?? 0);
+	const limit = toNumber(w.limit_window_seconds);
+	const resetAfter = toNumber(w.reset_after_seconds);
+	const resetAt = toNumber(w.reset_at);
+	if (usedPercent == null || limit == null || resetAfter == null || resetAt == null) return null;
+	return {
+		usedPercent,
+		limitWindowSeconds: limit,
+		resetAfterSeconds: resetAfter,
+		resetAtMs: resetAt * 1000,
   };
 }
 
 function toNumber(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
   return null;
+}
+
+export function codexWeeklyWindowMeta(planType: string | undefined, quotaErrorLabel?: string): CodexWeeklyWindowMeta {
+  if (quotaErrorLabel === "额度查询失败") {
+    return {
+      text: "额度查询失败",
+      detail: "额度辅助接口暂不可用，未拿到 7 天额度快照。",
+    };
+  }
+  const plan = String(planType || "").trim().toLowerCase();
+  if (plan === "free" || plan === "go") {
+    return {
+      text: "无周额度",
+      detail: "当前计划未返回 7 天额度窗口。",
+    };
+  }
+  if (!plan || plan === "unknown") {
+    return {
+      text: "周额度未知",
+      detail: "账号计划或 quota snapshot 不完整，不能判断是否存在 7 天窗口。",
+    };
+  }
+  return {
+    text: "周额度待同步",
+    detail: "额度快照未返回 7 天窗口，不能判断周额度。",
+  };
 }
 
 // Tone reflects how much headroom is left: a full green bar means plenty of

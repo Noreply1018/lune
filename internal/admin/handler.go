@@ -756,12 +756,51 @@ func (h *Handler) deletePool(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	reloadServices := h.cpaServicesForPoolRuntimeReload(id)
 	if err := h.store.DeletePoolWithAccounts(id); err != nil {
 		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
+	var reloadErrs []string
+	for _, svc := range reloadServices {
+		if err := h.healthChecker.RequestCpaRuntimeReload(r.Context(), svc); err != nil {
+			reloadErrs = append(reloadErrs, fmt.Sprintf("%s: %v", svc.Label, err))
+		}
+	}
+	if len(reloadErrs) > 0 {
+		webutil.WriteAdminError(w, 503, "cpa_reload_failed", "pool deleted, but CPA runtime reload failed: "+strings.Join(reloadErrs, "; "))
+		return
+	}
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) cpaServicesForPoolRuntimeReload(poolID int64) []*store.CpaService {
+	if h.healthChecker == nil {
+		return nil
+	}
+	members, err := h.store.ListPoolMembers(poolID)
+	if err != nil {
+		return nil
+	}
+	seen := map[int64]bool{}
+	var services []*store.CpaService
+	for _, member := range members {
+		acc := member.Account
+		if acc == nil || acc.SourceKind != "cpa" || acc.CpaServiceID == nil {
+			continue
+		}
+		if seen[*acc.CpaServiceID] {
+			continue
+		}
+		svc, err := h.store.GetCpaServiceByID(*acc.CpaServiceID)
+		if err != nil || svc == nil {
+			continue
+		}
+		seen[*acc.CpaServiceID] = true
+		services = append(services, svc)
+	}
+	return services
 }
 
 // --- Pool Members ---
@@ -1299,7 +1338,9 @@ func (h *Handler) getUsage(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
-	logs, total, err := h.store.GetUsage(filter)
+	logFilter := filter
+	logFilter.IncludeDiagnostic = true
+	logs, total, err := h.store.GetUsage(logFilter)
 	if err != nil {
 		h.internalError(w, err)
 		return

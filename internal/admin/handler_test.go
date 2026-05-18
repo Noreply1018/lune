@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -1109,6 +1110,64 @@ func TestDeleteCpaAccountRemovesAuthFileAndSignalsReload(t *testing.T) {
 	}
 	if _, err := os.Stat(reloadSignal); err != nil {
 		t.Fatalf("expected reload signal to be written: %v", err)
+	}
+}
+
+func TestDeletePoolWithCpaAccountReportsReloadFailure(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	reloadSignal := filepath.Join(t.TempDir(), "reload.signal")
+	poolID, err := st.CreatePool("CPA Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	svcID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "http://127.0.0.1:1",
+		APIKey:  "svc-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accID, err := st.CreateAccount(&store.Account{
+		Label:               "CPA Account",
+		SourceKind:          "cpa",
+		CpaServiceID:        &svcID,
+		CpaProvider:         "codex",
+		CpaAccountKey:       "codex-delete-pool-plus",
+		CpaCredentialStatus: "ok",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accID); err != nil {
+		t.Fatalf("add pool member: %v", err)
+	}
+	checker := health.NewChecker(st, cache, authDir, "", newTestNotifier(st))
+	checker.SetCpaReloadSignalPath(reloadSignal)
+	handler := NewHandler(st, cache, authDir, "", checker, newTestNotifier(st))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodDelete, fmt.Sprintf("/admin/api/pools/%d", poolID), http.NoBody)
+	req.SetPathValue("id", fmt.Sprintf("%d", poolID))
+	rr := httptest.NewRecorder()
+	handler.deletePool(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 reload failure, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if pool, err := st.GetPool(poolID); err != nil || pool != nil {
+		t.Fatalf("pool should already be deleted despite reload failure, pool=%+v err=%v", pool, err)
+	}
+	if acc, err := st.GetAccount(accID); err != nil || acc != nil {
+		t.Fatalf("account should already be deleted despite reload failure, acc=%+v err=%v", acc, err)
+	}
+	if _, err := os.Stat(reloadSignal); err != nil {
+		t.Fatalf("expected reload signal write attempt: %v", err)
 	}
 }
 

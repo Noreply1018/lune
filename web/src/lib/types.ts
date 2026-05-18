@@ -136,6 +136,10 @@ export interface RequestLog {
   error_message: string | null;
   source_kind: string;
   attempt_count: number;
+  diagnostic?: boolean;
+  force_account?: boolean;
+  stateful_probe?: boolean;
+  traffic_kind?: "ordinary" | "diagnostic" | "stateful_probe" | string;
   runtime_auth_index: string;
   runtime_auth_id: string;
   runtime_account_key: string;

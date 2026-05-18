@@ -761,12 +761,13 @@ CREATE INDEX idx_request_logs_created_at ON request_logs(created_at);
 	}
 	defer st.Close()
 
-	for _, col := range []string{"error_fingerprint", "error_repeat_count", "error_last_seen_at", "diagnostic", "account_label_snapshot"} {
+	for _, col := range []string{"error_fingerprint", "error_repeat_count", "error_last_seen_at", "diagnostic", "force_account", "stateful_probe", "traffic_kind", "account_label_snapshot"} {
 		requireTableColumn(t, st.DB(), "request_logs", col)
 	}
 	for _, name := range []string{
 		"idx_request_logs_usage_filters",
 		"idx_request_logs_usage_account_created",
+		"idx_request_logs_usage_traffic_created",
 		"idx_request_logs_usage_source_created",
 		"idx_request_logs_usage_token_created",
 		"idx_request_logs_usage_model_requested_created",

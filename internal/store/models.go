@@ -143,6 +143,9 @@ type RequestLog struct {
 	SourceKind           string `json:"source_kind"`
 	AttemptCount         int    `json:"attempt_count"`
 	Diagnostic           bool   `json:"diagnostic,omitempty"`
+	ForceAccount         bool   `json:"force_account,omitempty"`
+	StatefulProbe        bool   `json:"stateful_probe,omitempty"`
+	TrafficKind          string `json:"traffic_kind,omitempty"`
 	RuntimeAuthIndex     string `json:"runtime_auth_index"`
 	RuntimeAuthID        string `json:"runtime_auth_id"`
 	RuntimeAccountKey    string `json:"runtime_account_key"`

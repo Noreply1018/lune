@@ -25,7 +25,7 @@ func (s *Store) ListTokens() ([]AccessToken, error) {
 	}
 	defer rows.Close()
 
-	var tokens []AccessToken
+	tokens := []AccessToken{}
 	for rows.Next() {
 		t, err := scanTokenRow(rows)
 		if err != nil {
@@ -170,7 +170,7 @@ func (s *Store) ListTokensByPool(poolID int64) ([]AccessToken, error) {
 	}
 	defer rows.Close()
 
-	var tokens []AccessToken
+	tokens := []AccessToken{}
 	for rows.Next() {
 		t, err := scanTokenRow(rows)
 		if err != nil {

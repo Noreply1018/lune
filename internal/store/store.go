@@ -160,6 +160,9 @@ CREATE TABLE IF NOT EXISTS request_logs (
     source_kind       TEXT NOT NULL DEFAULT '',
     attempt_count     INTEGER NOT NULL DEFAULT 1,
     diagnostic        INTEGER NOT NULL DEFAULT 0,
+    force_account     INTEGER NOT NULL DEFAULT 0,
+    stateful_probe    INTEGER NOT NULL DEFAULT 0,
+    traffic_kind      TEXT NOT NULL DEFAULT 'ordinary',
     runtime_auth_index TEXT NOT NULL DEFAULT '',
     runtime_auth_id TEXT NOT NULL DEFAULT '',
     runtime_account_key TEXT NOT NULL DEFAULT '',
@@ -173,6 +176,7 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_a
 CREATE INDEX IF NOT EXISTS idx_request_logs_pool_id ON request_logs(pool_id);
 CREATE INDEX IF NOT EXISTS idx_request_logs_usage_filters ON request_logs(created_at, access_token_name, account_id, model_requested, model_actual, source_kind);
 CREATE INDEX IF NOT EXISTS idx_request_logs_usage_account_created ON request_logs(account_id, diagnostic, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_request_logs_usage_traffic_created ON request_logs(traffic_kind, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_request_logs_usage_source_created ON request_logs(source_kind, diagnostic, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_request_logs_usage_token_created ON request_logs(access_token_name, diagnostic, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_request_logs_usage_model_requested_created ON request_logs(model_requested, diagnostic, created_at, id);
@@ -818,6 +822,9 @@ func (s *Store) migrateRequestLogOperationalColumns() error {
 		{"error_repeat_count", `ALTER TABLE request_logs ADD COLUMN error_repeat_count INTEGER NOT NULL DEFAULT 1`},
 		{"error_last_seen_at", `ALTER TABLE request_logs ADD COLUMN error_last_seen_at TEXT NOT NULL DEFAULT ''`},
 		{"diagnostic", `ALTER TABLE request_logs ADD COLUMN diagnostic INTEGER NOT NULL DEFAULT 0`},
+		{"force_account", `ALTER TABLE request_logs ADD COLUMN force_account INTEGER NOT NULL DEFAULT 0`},
+		{"stateful_probe", `ALTER TABLE request_logs ADD COLUMN stateful_probe INTEGER NOT NULL DEFAULT 0`},
+		{"traffic_kind", `ALTER TABLE request_logs ADD COLUMN traffic_kind TEXT NOT NULL DEFAULT 'ordinary'`},
 		{"account_label_snapshot", `ALTER TABLE request_logs ADD COLUMN account_label_snapshot TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, a := range adds {
@@ -832,9 +839,20 @@ func (s *Store) migrateRequestLogOperationalColumns() error {
 			return fmt.Errorf("add column %s: %w", a.col, err)
 		}
 	}
+	if _, err := s.db.Exec(`
+		UPDATE request_logs
+		   SET traffic_kind = CASE
+		     WHEN diagnostic = 1 THEN 'diagnostic'
+		     WHEN stateful_probe = 1 THEN 'stateful_probe'
+		     WHEN traffic_kind = '' THEN 'ordinary'
+		     ELSE traffic_kind
+		   END`); err != nil {
+		return fmt.Errorf("backfill request log traffic kind: %w", err)
+	}
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_filters ON request_logs(created_at, access_token_name, account_id, model_requested, model_actual, source_kind)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_account_created ON request_logs(account_id, diagnostic, created_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_traffic_created ON request_logs(traffic_kind, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_source_created ON request_logs(source_kind, diagnostic, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_token_created ON request_logs(access_token_name, diagnostic, created_at, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_usage_model_requested_created ON request_logs(model_requested, diagnostic, created_at, id)`,

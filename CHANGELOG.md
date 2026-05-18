@@ -10,7 +10,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ## [0.1.9] - 2026-05-17
 
-状态：发布流程进行中。代码实现、自动化测试、真实容器验收、subagent 严格审计、发布文档提交、tag 与镜像推送完成后更新为已发布。
+状态：发布流程进行中。代码实现、自动化测试和真实容器验收已完成；subagent 严格审计、发布文档提交、tag 与镜像推送完成后更新为已发布。
 
 ### Pool 管理体验
 
@@ -23,13 +23,42 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 - 删除 Pool 会删除该 Pool 当前包含的账号，并通过账号外键级联移除这些账号在其他 Pool 中的成员关系。
 - 删除确认文案明确提示会删除 Pool Token、Pool 内账号以及这些账号的其他 Pool 归属，避免把删除误理解为只移除分组。
+- 删除含 CPA 账号的 Pool 后会请求 CPA runtime reload，避免 runtime 继续持有已删除账号的旧 auth binding。
+- 删除含 CPA 账号的 Pool 时若 runtime reload 失败，会明确返回 `cpa_reload_failed`，同时 Pool 与账号删除结果已落库。
+- Pool 删除遇到短暂 SQLite busy 时会进行小间隔重试，降低与异步模型发现等后台写库任务并发时误报 500 的概率。
+
+### Codex Plus Quota
+
+- Codex Plus 账号在 quota 辅助接口 `wham/usage` 返回 `401/403`、且没有可解析周额度快照时，不再显示“无周额度”。
+- Quota 查询失败统一展示为“额度查询失败”，并保留模型请求成功或 access eligible 的独立事实。
+- Plus primary-only 或无 snapshot 时展示“周额度待同步 / 周额度未知”，不把辅助接口失败误判为无周额度。
+- provider 大小写和 quota window 字符串数字解析更宽容；非法数字字符串不会被误解析成可用额度。
+- 模型请求返回 429 时仍作为 quota / rate-limit evidence；quota fetch 401/403 不作为硬阻断。
+- 纯 diagnostic 成功请求不会清理模型请求 429 evidence，也不会写入 access eligible 证据。
+
+### 真实探查状态回写
+
+- `X-Lune-Account-Id` 强制账号请求不再自动归类为 diagnostic，普通客户端强制账号认证失败会写入 `needs_login`。
+- 新增 `X-Lune-Probe-Mode: stateful`，供 Playground 和 Pool 自检表示“用户主动真实探查”，允许写 credential / access / quota evidence，但不写普通 serving cooldown。
+- 显式 `X-Lune-Diagnostic: true` 仍是纯诊断流量，不写 credential 状态，不计普通 usage。
+- `request_logs` 新增 `force_account`、`stateful_probe`、`traffic_kind`，Activity 日志保留 ordinary / stateful probe / diagnostic 审计记录；usage summary 默认排除 diagnostic 和 stateful probe。
+- Activity 页趋势、日报、Top errors 和流向统计只使用 ordinary usage；日志表仍保留 diagnostic / stateful probe 审计记录。
+- CPA upstream `auth_unavailable / no auth available / credential unavailable` 可识别为账号认证不可用；service key / management key 错误不会误写账号 `needs_login`。
+
+### API 一致性
+
+- accounts / pools / tokens 空集合统一返回 `[]`，避免管理端和自动化验收把空列表读成 `null`。
 
 ### 验证
 
-- `go test ./internal/store ./internal/admin`
+- `go test ./internal/store ./internal/admin ./internal/gateway`
+- `npm --prefix web run test:quota`
 - `npm --prefix web run build`
 - `go test ./...`
-- 真实容器验收、subagent 严格审计和最终清理证据见 `spec/v0.1.9/100-release-evidence.md`。
+- `docker build -t lune:v0.1.9-current-test --build-arg LUNE_VERSION=0.1.9-current-test .`
+- 使用临时容器 `lune-019-current-test`、端口 `127.0.0.1:23333`、隔离数据卷 `lune-data-019-current-test` 和 fake CPA `http://host.docker.internal:28888` 完成 Pool 生命周期、共享账号级联删除、CPA auth JSON 导入、stateful probe 状态回写、usage 排除和日志审计矩阵。
+- 测试容器、测试数据卷和 fake CPA 临时进程均已清理；旧版 `lune-0.1.8`、`lune-0.1.5` 容器未被停止或修改。
+- 真实容器验收、审计和最终清理证据见 `spec/v0.1.9/100-release-evidence.md`。
 
 ## [0.1.8] - 2026-05-17
 

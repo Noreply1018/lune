@@ -34,7 +34,7 @@ func (s *Store) InsertLog(l *RequestLog) error {
 		if l.ErrorLastSeenAt == "" {
 			l.ErrorLastSeenAt = time.Now().UTC().Format("2006-01-02 15:04:05")
 		}
-		if l.ErrorFingerprint != "" {
+		if l.ErrorFingerprint != "" && !l.Diagnostic && !l.StatefulProbe {
 			if updated, err := s.foldRecentRequestLogError(l); err != nil {
 				return err
 			} else if updated {
@@ -56,17 +56,20 @@ func (s *Store) InsertLog(l *RequestLog) error {
 			accountLabelSnapshot = acc.Label
 		}
 	}
+	l.TrafficKind = normalizeRequestTrafficKind(l.TrafficKind, l.Diagnostic, l.StatefulProbe)
 
 	_, err := s.db.Exec(
 		`INSERT INTO request_logs (
 			request_id, access_token_name, model_requested, model_actual, pool_id, account_id, account_label_snapshot,
 			status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success,
 			error_message, error_fingerprint, error_repeat_count, error_last_seen_at, source_kind, attempt_count, diagnostic,
+			force_account, stateful_probe, traffic_kind,
 			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason, route_trace
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		l.RequestID, l.AccessTokenName, l.ModelRequested, l.ModelActual, l.PoolID, l.AccountID, accountLabelSnapshot,
 		l.StatusCode, l.LatencyMs, l.InputTokens, l.OutputTokens, l.Stream, l.RequestIP, l.Success,
 		l.ErrorMessage, l.ErrorFingerprint, l.ErrorRepeatCount, l.ErrorLastSeenAt, sourceKind, attempts, boolToInt(l.Diagnostic),
+		boolToInt(l.ForceAccount), boolToInt(l.StatefulProbe), l.TrafficKind,
 		l.RuntimeAuthIndex, l.RuntimeAuthID, l.RuntimeAccountKey, l.RuntimeBindingStatus, l.RuntimeBindingReason, sanitizeRequestLogError(l.RouteTrace),
 	)
 	return err
@@ -80,10 +83,12 @@ func (s *Store) foldRecentRequestLogError(l *RequestLog) (bool, error) {
 		 FROM request_logs
 		 WHERE error_fingerprint = ?
 		   AND diagnostic = ?
+		   AND stateful_probe = ?
+		   AND traffic_kind = ?
 		   AND created_at >= ?
 		 ORDER BY id DESC
 		 LIMIT 1`,
-		l.ErrorFingerprint, boolToInt(l.Diagnostic), since,
+		l.ErrorFingerprint, boolToInt(l.Diagnostic), boolToInt(l.StatefulProbe), normalizeRequestTrafficKind(l.TrafficKind, l.Diagnostic, l.StatefulProbe), since,
 	).Scan(&id)
 	if err == sql.ErrNoRows {
 		return false, nil
@@ -104,12 +109,13 @@ func (s *Store) foldRecentRequestLogError(l *RequestLog) (bool, error) {
 
 func scanLogRow(rows *sql.Rows) (RequestLog, error) {
 	var l RequestLog
-	var stream, success, diagnostic int
+	var stream, success, diagnostic, forceAccount, statefulProbe int
 	var poolID, accountID sql.NullInt64
 	if err := rows.Scan(
 		&l.ID, &l.RequestID, &l.AccessTokenName, &l.ModelRequested, &l.ModelActual, &poolID, &accountID,
 		&l.StatusCode, &l.LatencyMs, &l.InputTokens, &l.OutputTokens, &stream, &l.RequestIP, &success,
 		&l.ErrorMessage, &l.ErrorFingerprint, &l.ErrorRepeatCount, &l.ErrorLastSeenAt, &l.SourceKind, &l.AttemptCount, &diagnostic,
+		&forceAccount, &statefulProbe, &l.TrafficKind,
 		&l.RuntimeAuthIndex, &l.RuntimeAuthID, &l.RuntimeAccountKey, &l.RuntimeBindingStatus, &l.RuntimeBindingReason,
 		&l.RouteTrace,
 		&l.CreatedAt,
@@ -125,6 +131,9 @@ func scanLogRow(rows *sql.Rows) (RequestLog, error) {
 	l.Stream = stream != 0
 	l.Success = success != 0
 	l.Diagnostic = diagnostic != 0
+	l.ForceAccount = forceAccount != 0
+	l.StatefulProbe = statefulProbe != 0
+	l.TrafficKind = normalizeRequestTrafficKind(l.TrafficKind, l.Diagnostic, l.StatefulProbe)
 	return l, nil
 }
 
@@ -138,6 +147,7 @@ func (s *Store) ListLogs(limit, offset int) ([]RequestLog, int, error) {
 		`SELECT id, request_id, access_token_name, model_requested, model_actual, pool_id, account_id,
 			status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success,
 			error_message, error_fingerprint, error_repeat_count, error_last_seen_at, source_kind, attempt_count, diagnostic,
+			force_account, stateful_probe, traffic_kind,
 			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason, route_trace,
 			created_at
 		 FROM request_logs ORDER BY id DESC LIMIT ? OFFSET ?`,
@@ -169,6 +179,7 @@ func (s *Store) ListLogsByPool(poolID int64, limit, offset int) ([]RequestLog, i
 		`SELECT id, request_id, access_token_name, model_requested, model_actual, pool_id, account_id,
 			status_code, latency_ms, input_tokens, output_tokens, stream, request_ip, success,
 			error_message, error_fingerprint, error_repeat_count, error_last_seen_at, source_kind, attempt_count, diagnostic,
+			force_account, stateful_probe, traffic_kind,
 			runtime_auth_index, runtime_auth_id, runtime_account_key, runtime_binding_status, runtime_binding_reason, route_trace,
 			created_at
 		 FROM request_logs WHERE pool_id = ? ORDER BY id DESC LIMIT ? OFFSET ?`,
@@ -219,10 +230,27 @@ func requestLogErrorFingerprint(l *RequestLog, sourceKind string) string {
 		strconvInt64(l.AccountID),
 		strconv.Itoa(l.StatusCode),
 		strconv.FormatBool(l.Diagnostic),
+		strconv.FormatBool(l.StatefulProbe),
+		normalizeRequestTrafficKind(l.TrafficKind, l.Diagnostic, l.StatefulProbe),
 		normalizedError,
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:])
+}
+
+func normalizeRequestTrafficKind(kind string, diagnostic, statefulProbe bool) string {
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	switch kind {
+	case "ordinary", "diagnostic", "stateful_probe":
+		return kind
+	}
+	if diagnostic {
+		return "diagnostic"
+	}
+	if statefulProbe {
+		return "stateful_probe"
+	}
+	return "ordinary"
 }
 
 func truncateUTF8Bytes(s string, maxBytes int) string {

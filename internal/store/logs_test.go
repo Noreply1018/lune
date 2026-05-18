@@ -2,6 +2,7 @@ package store
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,22 @@ func TestUsageExcludesDiagnosticLogsByDefault(t *testing.T) {
 		t.Fatalf("insert diagnostic log: %v", err)
 	}
 	if err := st.InsertLog(&RequestLog{
+		RequestID:       "probe",
+		AccessTokenName: "token",
+		ModelRequested:  "gpt-test",
+		ModelActual:     "gpt-test",
+		AccountID:       3,
+		StatusCode:      200,
+		Success:         true,
+		ForceAccount:    true,
+		StatefulProbe:   true,
+		SourceKind:      "openai_compat",
+		InputTokens:     5,
+		OutputTokens:    6,
+	}); err != nil {
+		t.Fatalf("insert stateful probe log: %v", err)
+	}
+	if err := st.InsertLog(&RequestLog{
 		RequestID:       "norm",
 		AccessTokenName: "token",
 		ModelRequested:  "gpt-test",
@@ -94,7 +111,7 @@ func TestUsageExcludesDiagnosticLogsByDefault(t *testing.T) {
 		t.Fatalf("usage summary: %v", err)
 	}
 	if stats.TotalRequests != 1 || stats.TotalInputTokens != 3 || stats.TotalOutputTokens != 4 {
-		t.Fatalf("expected diagnostic log to be excluded, got %+v", stats)
+		t.Fatalf("expected diagnostic and stateful probe logs to be excluded, got %+v", stats)
 	}
 	if len(stats.ByAccount) != 1 || stats.ByAccount[0].AccountID != 2 {
 		t.Fatalf("expected only normal account in usage summary, got %+v", stats.ByAccount)
@@ -175,8 +192,79 @@ func TestDiagnosticErrorsDoNotFoldIntoOrdinaryErrors(t *testing.T) {
 	}
 }
 
+func TestDiagnosticAndStatefulProbeErrorsDoNotFoldRepeatedRequests(t *testing.T) {
+	st := newLogsTestStore(t)
+	for _, tc := range []struct {
+		name  string
+		patch func(*RequestLog)
+	}{
+		{name: "diagnostic", patch: func(l *RequestLog) { l.Diagnostic = true }},
+		{name: "stateful", patch: func(l *RequestLog) {
+			l.ForceAccount = true
+			l.StatefulProbe = true
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for i := 0; i < 2; i++ {
+				log := &RequestLog{
+					RequestID:       tc.name + strconv.Itoa(i),
+					AccessTokenName: "token",
+					ModelRequested:  "gpt-test",
+					ModelActual:     "gpt-test",
+					AccountID:       1,
+					StatusCode:      503,
+					Success:         false,
+					ErrorMessage:    "same upstream failure",
+					SourceKind:      "openai_compat",
+				}
+				tc.patch(log)
+				if err := st.InsertLog(log); err != nil {
+					t.Fatalf("insert log %d: %v", i, err)
+				}
+			}
+		})
+	}
+
+	logs, total, err := st.ListLogs(10, 0)
+	if err != nil {
+		t.Fatalf("list logs: %v", err)
+	}
+	if total != 4 || len(logs) != 4 {
+		t.Fatalf("expected each diagnostic/stateful request to keep its own row, total=%d logs=%+v", total, logs)
+	}
+	for _, log := range logs {
+		if log.ErrorRepeatCount != 1 {
+			t.Fatalf("expected no diagnostic/stateful folding, got %+v", log)
+		}
+	}
+}
+
 func TestOverviewExcludesDiagnosticLogs(t *testing.T) {
 	st := newLogsTestStore(t)
+	if err := st.InsertLog(&RequestLog{
+		RequestID:      "stateful-probe-overview",
+		ModelRequested: "gpt-test",
+		ModelActual:    "gpt-test",
+		StatusCode:     200,
+		Success:        true,
+		ForceAccount:   true,
+		StatefulProbe:  true,
+		SourceKind:     "openai_compat",
+		LatencyMs:      10,
+	}); err != nil {
+		t.Fatalf("insert stateful probe log: %v", err)
+	}
+	if err := st.InsertLog(&RequestLog{
+		RequestID:      "ordinary-overview",
+		ModelRequested: "gpt-test",
+		ModelActual:    "gpt-test",
+		StatusCode:     200,
+		Success:        true,
+		SourceKind:     "openai_compat",
+		LatencyMs:      20,
+	}); err != nil {
+		t.Fatalf("insert ordinary log: %v", err)
+	}
 	if err := st.InsertLog(&RequestLog{
 		RequestID:      "diagnostic-overview",
 		ModelRequested: "gpt-test",
@@ -193,7 +281,7 @@ func TestOverviewExcludesDiagnosticLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("overview: %v", err)
 	}
-	if overview.RequestsToday != 0 || overview.SuccessRateToday != 0 || overview.AvgLatencyToday != 0 {
-		t.Fatalf("overview should exclude diagnostic logs, got %+v", overview)
+	if overview.RequestsToday != 1 || overview.SuccessRateToday != 1 || overview.AvgLatencyToday != 20 {
+		t.Fatalf("overview should exclude diagnostic and stateful probe logs, got %+v", overview)
 	}
 }

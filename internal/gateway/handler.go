@@ -93,6 +93,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := generateRequestID()
 	accessToken := auth.AccessTokenFromContext(r.Context())
 	diagnostic := DiagnosticFromContext(r.Context())
+	if !diagnostic && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Lune-Diagnostic")), "true") {
+		r = r.WithContext(ContextWithDiagnostic(r.Context()))
+		diagnostic = true
+	}
 
 	// determine path suffix
 	pathSuffix := extractPathSuffix(r.URL.Path)
@@ -145,11 +149,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			forceAccountID = &id
 		}
 	}
-	diagnosticRoute := diagnostic || forceAccountID != nil
-	if diagnosticRoute && !diagnostic {
-		r = r.WithContext(ContextWithDiagnostic(r.Context()))
-		diagnostic = true
+	forceAccount := forceAccountID != nil
+	statefulProbe := forceAccount && !diagnostic && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Lune-Probe-Mode")), "stateful")
+	if forceAccount {
+		r = r.WithContext(ContextWithForceAccount(r.Context()))
 	}
+	if statefulProbe {
+		r = r.WithContext(ContextWithStatefulProbe(r.Context()))
+	}
+	diagnosticRoute := diagnostic || statefulProbe
 
 	// initial route resolution
 	resolved, err := h.router.ResolveWithOptions(model, tokenPoolID, forceAccountID, router.ResolveOptions{Diagnostic: diagnosticRoute})
@@ -229,11 +237,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		lastResolved = resolved
-		candidates := h.router.ExplainCandidates(model, resolved.PoolID, exclude, router.ResolveOptions{Diagnostic: diagnostic})
+		candidates := h.router.ExplainCandidates(model, resolved.PoolID, exclude, router.ResolveOptions{Diagnostic: diagnosticRoute})
 		routeTrace = append(routeTrace, map[string]any{
 			"attempt":             attempt + 1,
 			"routing_policy":      currentRoutingPolicy(h.cache, resolved.PoolID),
 			"selected_account_id": resolved.AccountID,
+			"force_account":       forceAccount,
+			"stateful_probe":      statefulProbe,
+			"diagnostic":          diagnostic,
 			"candidates":          candidates,
 		})
 
@@ -288,7 +299,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// network/connection error
 			exclude = append(exclude, resolved.AccountID)
 			lastErr = result.Err
-			if result.HealthImpact && !diagnostic {
+			if result.HealthImpact && !diagnostic && !statefulProbe {
 				h.recordServingFailure(resolved.AccountID, result.Err.Error())
 			}
 
@@ -302,10 +313,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if IsRetryableStatus(result.StatusCode) {
 			errMsg := upstreamErrorMessage(result, fmt.Sprintf("HTTP %d", result.StatusCode))
-			if result.StatusCode == http.StatusTooManyRequests && !diagnostic {
+			if resolved.Account.SourceKind == "cpa" && isCpaAccountUpstreamAuthFailure(result.StatusCode, result.Body) {
+				if !diagnostic || statefulProbe {
+					msg := fmt.Sprintf("HTTP %d", result.StatusCode)
+					h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
+				}
+				result.WriteResponse(w)
+				h.logRequestWithBindingTrace(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog, diagnostic, routeTrace)
+				return
+			}
+			if result.StatusCode == http.StatusTooManyRequests && (!diagnostic || statefulProbe) {
 				h.recordCodexQuotaRateLimitEvidence(resolved.Account, result.Body, errMsg)
 			}
-			if result.HealthImpact && !diagnostic {
+			if result.HealthImpact && !diagnostic && !statefulProbe {
 				h.recordServingFailure(resolved.AccountID, errMsg)
 			}
 			lastStatusCode = result.StatusCode
@@ -350,7 +370,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			errMsg = upstreamErrorMessage(result, "")
 		}
 		if success {
-			if !diagnostic {
+			if !diagnostic && !statefulProbe {
 				h.recordServingSuccess(resolved.AccountID)
 				if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaCredentialStatus, "auth_suspect") {
 					h.updateCpaCredential(resolved.AccountID, "ok", "", "")
@@ -362,22 +382,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}()
 				}
 			}
-			if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaProvider, "codex") {
+			if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaProvider, "codex") && (!diagnostic || statefulProbe) {
 				_ = h.store.ClearAccountCodexModelRequestQuotaEvidence(resolved.AccountID)
 				_ = h.store.UpdateAccountCpaAccessStatus(resolved.AccountID, "eligible", "model_request_success", "", time.Now().UTC().Format(time.RFC3339))
 				h.cache.Invalidate()
 			}
 		} else if resolved.Account.SourceKind == "cpa" && isCpaAccountUpstreamAuthFailure(result.StatusCode, result.Body) {
-			if !diagnostic {
+			if !diagnostic || statefulProbe {
 				msg := fmt.Sprintf("HTTP %d", result.StatusCode)
 				h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
 			}
 		} else if resolved.Account.SourceKind != "cpa" && isGatewayAuthFailure(result.StatusCode, result.Body) {
-			if !diagnostic {
+			if !diagnostic && !statefulProbe {
 				h.updateHealth(resolved.AccountID, "error", "upstream authentication failed")
 			}
 		} else if result.Stream != nil && result.Stream.Failed {
-			if !diagnostic && result.Stream.HealthImpact {
+			if !diagnostic && !statefulProbe && result.Stream.HealthImpact {
 				h.recordServingFailure(resolved.AccountID, errMsg)
 			}
 		}
@@ -523,6 +543,18 @@ func (h *Handler) logRequestWithBindingTrace(requestID string, token *store.Acce
 			trace = string(data)
 		}
 	}
+	forceAccount := false
+	statefulProbe := false
+	if r != nil {
+		forceAccount = ForceAccountFromContext(r.Context())
+		statefulProbe = StatefulProbeFromContext(r.Context())
+	}
+	trafficKind := "ordinary"
+	if diagnostic {
+		trafficKind = "diagnostic"
+	} else if statefulProbe {
+		trafficKind = "stateful_probe"
+	}
 
 	log := &store.RequestLog{
 		RequestID:            requestID,
@@ -542,6 +574,9 @@ func (h *Handler) logRequestWithBindingTrace(requestID string, token *store.Acce
 		SourceKind:           sourceKind,
 		AttemptCount:         attemptCount,
 		Diagnostic:           diagnostic,
+		ForceAccount:         forceAccount,
+		StatefulProbe:        statefulProbe,
+		TrafficKind:          trafficKind,
 		RuntimeAuthIndex:     binding.AuthIndex,
 		RuntimeAuthID:        binding.AuthID,
 		RuntimeAccountKey:    binding.AccountKey,
@@ -626,9 +661,6 @@ func isGatewayAuthFailure(statusCode int, body []byte) bool {
 }
 
 func isCpaAccountUpstreamAuthFailure(statusCode int, body []byte) bool {
-	if statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden {
-		return false
-	}
 	text := strings.ToLower(string(body))
 	if strings.Contains(text, "service key") ||
 		strings.Contains(text, "api key") ||
@@ -636,13 +668,27 @@ func isCpaAccountUpstreamAuthFailure(statusCode int, body []byte) bool {
 		strings.Contains(text, "invalid authorization") {
 		return false
 	}
-	return strings.Contains(text, "refresh token") ||
-		strings.Contains(text, "invalid_grant") ||
-		strings.Contains(text, "token_invalidated") ||
-		strings.Contains(text, "upstream credential") ||
-		strings.Contains(text, "upstream authentication") ||
-		strings.Contains(text, "chatgpt") ||
-		strings.Contains(text, "codex credential")
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return strings.Contains(text, "refresh token") ||
+			strings.Contains(text, "invalid_grant") ||
+			strings.Contains(text, "token_invalidated") ||
+			strings.Contains(text, "upstream credential") ||
+			strings.Contains(text, "upstream authentication") ||
+			strings.Contains(text, "chatgpt") ||
+			strings.Contains(text, "codex credential") ||
+			strings.Contains(text, "auth_unavailable") ||
+			strings.Contains(text, "no auth available") ||
+			strings.Contains(text, "credential unavailable")
+	}
+	if statusCode >= 500 {
+		return strings.Contains(text, "auth_unavailable") ||
+			strings.Contains(text, "no auth available") ||
+			strings.Contains(text, "credential unavailable") ||
+			strings.Contains(text, "upstream credential") ||
+			strings.Contains(text, "upstream authentication") ||
+			strings.Contains(text, "codex credential")
+	}
+	return false
 }
 
 func bodyHasQuotaLimitSignal(body []byte) bool {

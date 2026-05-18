@@ -695,6 +695,7 @@ func TestGatewayCodexCpaModelRequest429EvidenceClearsAfterModelSuccess(t *testin
 
 	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
 	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
 	rr := httptest.NewRecorder()
 	req.ServeHTTP(rr, req.Request)
 	if rr.Code != http.StatusOK {
@@ -743,6 +744,7 @@ func TestGatewayCodexCpaBlockedModelRequest429EvidenceClearsAfterModelSuccess(t 
 
 	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
 	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
 	rr := httptest.NewRecorder()
 	req.ServeHTTP(rr, req.Request)
 	if rr.Code != http.StatusOK {
@@ -829,7 +831,53 @@ func TestGatewayDiagnostic429DoesNotRecordQuotaEvidenceOrServingCooldown(t *test
 	}
 }
 
-func TestGatewayForcedAccount429DoesNotRecordQuotaEvidenceOrServingCooldown(t *testing.T) {
+func TestGatewayStatefulProbe429RecordsQuotaEvidenceWithoutServingCooldown(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"quota limit reached"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "probe-limited-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.ServingStatus != "healthy" {
+		t.Fatalf("stateful probe 429 must not mutate serving health, got %+v", acc)
+	}
+	if acc.CpaQuotaStatus != "blocked" || !strings.HasPrefix(acc.CpaQuotaLastError, "HTTP 429 from model request") {
+		t.Fatalf("stateful probe 429 must record quota evidence, got %+v", acc)
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if log.Diagnostic || !log.ForceAccount || !log.StatefulProbe || log.TrafficKind != "stateful_probe" {
+		t.Fatalf("expected stateful probe log, got %+v", log)
+	}
+}
+
+func TestGatewayForcedAccount429RecordsQuotaEvidenceAndServingCooldown(t *testing.T) {
 	st, cache, handler, token := newHandlerTestStore(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -862,12 +910,15 @@ func TestGatewayForcedAccount429DoesNotRecordQuotaEvidenceOrServingCooldown(t *t
 	if err != nil {
 		t.Fatalf("GetAccount: %v", err)
 	}
-	if acc.ServingStatus != "healthy" || acc.CpaQuotaStatus != "unknown" || acc.CpaQuotaLastError != "" {
-		t.Fatalf("forced account 429 must not mutate ordinary route health or quota evidence, got %+v", acc)
+	if acc.ServingStatus != "cooldown" {
+		t.Fatalf("forced account 429 must update ordinary serving health, got %+v", acc)
+	}
+	if acc.CpaQuotaStatus != "blocked" || !strings.HasPrefix(acc.CpaQuotaLastError, "HTTP 429 from model request") {
+		t.Fatalf("forced account 429 must record quota evidence, got %+v", acc)
 	}
 	log := waitForLatestGatewayLog(t, st)
-	if !log.Diagnostic {
-		t.Fatalf("expected forced account request to be logged as diagnostic, got %+v", log)
+	if log.Diagnostic || !log.ForceAccount || log.StatefulProbe || log.TrafficKind != "ordinary" {
+		t.Fatalf("expected forced account request to be ordinary force-account traffic, got %+v", log)
 	}
 }
 
@@ -961,6 +1012,283 @@ func TestGatewayCpaServiceAuthFailureDoesNotMarkAccountNeedsLogin(t *testing.T) 
 	}
 	if acc.CpaCredentialStatus == "needs_login" {
 		t.Fatalf("service auth failure must not mark account needs_login: %+v", acc)
+	}
+}
+
+func TestGatewayForcedAccountAuthFailureWritesNeedsLogin(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"refresh token invalid"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "forced-auth-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	var acc *store.Account
+	waitForGatewayTest(t, func() bool {
+		var err error
+		acc, err = st.GetAccount(accountID)
+		return err == nil && acc != nil && acc.CpaCredentialStatus == "needs_login"
+	})
+	log := waitForLatestGatewayLog(t, st)
+	if log.Diagnostic || !log.ForceAccount || log.StatefulProbe || log.TrafficKind != "ordinary" {
+		t.Fatalf("expected ordinary force-account log, got %+v", log)
+	}
+}
+
+func TestGatewayStatefulProbeAuthUnavailable503WritesNeedsLoginWithoutServingCooldown(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"auth_unavailable: no auth available"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "probe-auth-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	var acc *store.Account
+	waitForGatewayTest(t, func() bool {
+		var err error
+		acc, err = st.GetAccount(accountID)
+		return err == nil && acc != nil && acc.CpaCredentialStatus == "needs_login"
+	})
+	if acc.ServingStatus != "healthy" {
+		t.Fatalf("stateful probe auth_unavailable must not mutate serving health, got %+v", acc)
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if log.Diagnostic || !log.ForceAccount || !log.StatefulProbe || log.TrafficKind != "stateful_probe" {
+		t.Fatalf("expected stateful probe log, got %+v", log)
+	}
+	stats, err := st.GetUsageSummary(store.UsageFilter{})
+	if err != nil {
+		t.Fatalf("usage summary: %v", err)
+	}
+	if stats.TotalRequests != 0 {
+		t.Fatalf("stateful probe must not count ordinary usage, got %+v", stats)
+	}
+}
+
+func TestGatewayStatefulProbeGenericChatGPT503DoesNotWriteCredential(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"ChatGPT upstream temporarily unavailable"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "probe-chatgpt-503-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaCredentialStatus != "ok" || acc.ServingStatus != "healthy" {
+		t.Fatalf("generic ChatGPT 503 must not mark credential or serving unhealthy for stateful probe: %+v", acc)
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if log.Diagnostic || !log.ForceAccount || !log.StatefulProbe || log.TrafficKind != "stateful_probe" {
+		t.Fatalf("expected stateful probe log, got %+v", log)
+	}
+}
+
+func TestGatewayDiagnosticHeaderAuthFailureDoesNotWriteCredential(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"refresh token invalid"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "diagnostic-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Diagnostic", "true")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaCredentialStatus == "needs_login" {
+		t.Fatalf("diagnostic header must not mark account needs_login: %+v", acc)
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if !log.Diagnostic || !log.ForceAccount || log.StatefulProbe || log.TrafficKind != "diagnostic" {
+		t.Fatalf("expected diagnostic force-account log, got %+v", log)
+	}
+	stats, err := st.GetUsageSummary(store.UsageFilter{})
+	if err != nil {
+		t.Fatalf("usage summary: %v", err)
+	}
+	if stats.TotalRequests != 0 {
+		t.Fatalf("diagnostic request must not count ordinary usage, got %+v", stats)
+	}
+}
+
+func TestGatewayDiagnosticHeaderOverridesStatefulProbeMode(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"refresh token invalid"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "diagnostic-stateful-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Diagnostic", "true")
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaCredentialStatus == "needs_login" {
+		t.Fatalf("diagnostic header must override stateful probe mode and not mark account needs_login: %+v", acc)
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if !log.Diagnostic || !log.ForceAccount || log.StatefulProbe || log.TrafficKind != "diagnostic" {
+		t.Fatalf("expected diagnostic log when both headers are present, got %+v", log)
+	}
+}
+
+func TestGatewayDiagnosticHeaderSuccessDoesNotWriteAccessOrClearQuotaEvidence(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "diagnostic-success-cpa", "codex", "gpt-5-codex")
+	if err := st.UpdateAccountCpaAccessStatus(accountID, "eligible", "existing_probe", "", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCpaAccessStatus: %v", err)
+	}
+	if err := st.UpdateAccountCodexQuotaStatus(accountID, "blocked", "HTTP 429 from model request: rate limit reached", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+	}
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Diagnostic", "true")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaAccessStatus != "eligible" || acc.CpaAccessReason != "existing_probe" {
+		t.Fatalf("diagnostic success must not write access evidence, got %+v", acc)
+	}
+	if acc.CpaQuotaStatus != "blocked" || !strings.HasPrefix(acc.CpaQuotaLastError, "HTTP 429 from model request") {
+		t.Fatalf("diagnostic success must not clear quota evidence, got %+v", acc)
+	}
+	log := waitForLatestGatewayLog(t, st)
+	if !log.Diagnostic || !log.ForceAccount || log.StatefulProbe || log.TrafficKind != "diagnostic" {
+		t.Fatalf("expected diagnostic log, got %+v", log)
 	}
 }
 

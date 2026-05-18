@@ -147,6 +147,15 @@ function DigestLine({ children }: { children: React.ReactNode }) {
   return <p className="text-[0.97rem] leading-7 text-moon-700">{children}</p>;
 }
 
+function isOrdinaryUsageLog(log: RequestLog) {
+  return (
+    log.traffic_kind !== "diagnostic" &&
+    log.traffic_kind !== "stateful_probe" &&
+    !log.diagnostic &&
+    !log.stateful_probe
+  );
+}
+
 // --- Daily Digest ----------------------------------------------------------
 // Digest window = rolling 24h ending now; comparison window = the 24h before that.
 // Everything below treats `logs30d` as the source of truth so we never mix
@@ -1703,8 +1712,18 @@ export default function ActivityPage() {
   );
 
   const logs30d = usage?.logs ?? [];
-  const logs24h = useMemo(() => logs30d.filter((l) => within(l, 24)), [logs30d]);
-  const logs7d = useMemo(() => logs30d.filter((l) => within(l, 24 * 7)), [logs30d]);
+  const ordinaryLogs30d = useMemo(
+    () => logs30d.filter(isOrdinaryUsageLog),
+    [logs30d],
+  );
+  const logs24h = useMemo(
+    () => ordinaryLogs30d.filter((l) => within(l, 24)),
+    [ordinaryLogs30d],
+  );
+  const logs7d = useMemo(
+    () => ordinaryLogs30d.filter((l) => within(l, 24 * 7)),
+    [ordinaryLogs30d],
+  );
   const preciseAccountLogs24h = useMemo(
     () =>
       logs24h.filter(
@@ -1743,7 +1762,7 @@ export default function ActivityPage() {
 
   const buckets24h = useMemo(() => buildBuckets(logs24h, "24h"), [logs24h]);
   const buckets7d = useMemo(() => buildBuckets(logs7d, "7d"), [logs7d]);
-  const buckets30d = useMemo(() => buildBuckets(logs30d, "30d"), [logs30d]);
+  const buckets30d = useMemo(() => buildBuckets(ordinaryLogs30d, "30d"), [ordinaryLogs30d]);
 
   const totalPages = Math.max(
     1,
@@ -1906,7 +1925,7 @@ export default function ActivityPage() {
         }
       />
 
-      <DailyDigest logs30d={logs30d} poolMap={poolMap} />
+      <DailyDigest logs30d={ordinaryLogs30d} poolMap={poolMap} />
 
       <section id="trends" className="scroll-mt-6">
         <div className="grid gap-6 xl:grid-cols-3">

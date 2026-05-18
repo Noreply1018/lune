@@ -542,7 +542,7 @@ type rowScanner interface {
 }
 
 func scanAccounts(rows *sql.Rows) ([]Account, error) {
-	var accs []Account
+	accs := []Account{}
 	for rows.Next() {
 		a, err := scanAccountRow(rows)
 		if err != nil {

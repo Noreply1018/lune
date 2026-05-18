@@ -314,6 +314,8 @@ function OverviewPanel({
             ? "warning"
             : "danger";
   const quotaError = getCpaQuotaErrorMeta(account);
+  const isCodexCpa =
+    account.source_kind === "cpa" && account.cpa_provider.toLowerCase() === "codex";
 
   return (
     <div className="space-y-6">
@@ -364,6 +366,7 @@ function OverviewPanel({
             quota={codexQuota}
             fetchedAt={account.codex_quota_fetched_at}
             planType={account.cpa_plan_type}
+            quotaErrorLabel={quotaError?.label}
           />
           {quotaError ? (
             <p
@@ -376,10 +379,10 @@ function OverviewPanel({
             </p>
           ) : null}
         </div>
-      ) : account.cpa_provider === "codex" ? (
+      ) : isCodexCpa ? (
         <section className="space-y-2.5 rounded-[1.2rem] border border-moon-200/55 bg-white/60 px-4 py-4">
           <p className="text-[11px] uppercase tracking-[0.18em] text-moon-400">Quota</p>
-          <CodexQuotaBarsPendingCompact />
+          <CodexQuotaBarsPendingCompact planType={account.cpa_plan_type} quotaErrorLabel={quotaError?.label} />
           <p
             className={cn(
               "text-xs",
@@ -641,6 +644,7 @@ function PlaygroundPanel({
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
           "X-Lune-Account-Id": String(accountId),
+          "X-Lune-Probe-Mode": "stateful",
         },
         body: JSON.stringify({
           model: selectedModel,
@@ -683,6 +687,7 @@ function PlaygroundPanel({
       const curl = `curl ${origin}/v1/chat/completions \\
   -H 'Authorization: Bearer ${maskedToken}' \\
   -H 'X-Lune-Account-Id: ${accountId}' \\
+  -H 'X-Lune-Probe-Mode: stateful' \\
   -H 'Content-Type: application/json' \\
   -d '${shellSafeBody}'`;
       setLastCurl(curl);

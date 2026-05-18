@@ -456,6 +456,7 @@ export default function PoolDetailPage() {
                     "Content-Type": "application/json",
                     Authorization: `Bearer ${token}`,
                     "X-Lune-Account-Id": String(member.account_id),
+                    "X-Lune-Probe-Mode": "stateful",
                   },
                   body: JSON.stringify({
                     model,

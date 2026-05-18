@@ -13,7 +13,7 @@ import {
   CodexQuotaBarsPendingCompact,
 } from "@/components/CodexQuotaBars";
 import DirectAccountSignal from "@/components/DirectAccountSignal";
-import { isQuotaStale, parseCodexQuota } from "@/lib/codexQuota";
+import { codexWeeklyWindowMeta, isQuotaStale, parseCodexQuota } from "@/lib/codexQuota";
 import { compact, relativeTime } from "@/lib/fmt";
 import type { PoolMember } from "@/lib/types";
 import {
@@ -181,6 +181,7 @@ export default function AccountCard({
     account?.source_kind === "cpa" && account.cpa_provider.toLowerCase() === "codex";
   const credential = account ? getCpaCredentialMeta(account) : null;
   const quotaError = account ? getCpaQuotaErrorMeta(account) : null;
+  const weeklyMeta = codexWeeklyWindowMeta(account?.cpa_plan_type, quotaError?.label);
   const requestChip: CardChip = { label: `今日 ${compact(requests)}` };
   const planChip = getPlanChip(account, isCodexCpa);
   const mainIssueChip = getMainIssueChip(account, credential, quotaError);
@@ -295,9 +296,9 @@ export default function AccountCard({
         </div>
 
         {codexQuota ? (
-          <CodexQuotaBarsCompact quota={codexQuota} stale={codexQuotaStale} />
+          <CodexQuotaBarsCompact quota={codexQuota} stale={codexQuotaStale} weeklyMeta={weeklyMeta} />
         ) : isCodexCpa ? (
-          <CodexQuotaBarsPendingCompact />
+          <CodexQuotaBarsPendingCompact planType={account.cpa_plan_type} quotaErrorLabel={quotaError?.label} />
         ) : showDirectSignal ? (
           <DirectAccountSignal requests={requests} successRate={successRate} />
         ) : null}

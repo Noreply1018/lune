@@ -5,7 +5,9 @@ import {
   isQuotaStale,
   parseSqliteUTC,
   windowTone,
+  codexWeeklyWindowMeta,
   type CodexQuota,
+  type CodexWeeklyWindowMeta,
   type QuotaWindow,
   type WindowTone,
 } from "@/lib/codexQuota";
@@ -35,23 +37,32 @@ const toneText: Record<WindowTone, string> = {
 export function CodexQuotaBarsCompact({
   quota,
   stale,
+  weeklyMeta,
 }: {
   quota: CodexQuota;
   stale: boolean;
+  weeklyMeta: CodexWeeklyWindowMeta;
 }) {
   return (
     <div className={cn("space-y-1", stale && "opacity-60")}>
       <CompactRow label="短" window={quota.primary} stale={stale} />
-      {quota.secondary ? <CompactRow label="周" window={quota.secondary} stale={stale} /> : <UnavailableCompactRow label="周" text="无周额度" />}
+      {quota.secondary ? <CompactRow label="周" window={quota.secondary} stale={stale} /> : <UnavailableCompactRow label="周" meta={weeklyMeta} />}
     </div>
   );
 }
 
-export function CodexQuotaBarsPendingCompact() {
+export function CodexQuotaBarsPendingCompact({
+  planType,
+  quotaErrorLabel,
+}: {
+  planType?: string;
+  quotaErrorLabel?: string;
+}) {
+  const weeklyMeta = codexWeeklyWindowMeta(planType, quotaErrorLabel);
   return (
     <div className="space-y-1" title="额度正在同步后补齐">
       <PendingCompactRow label="短" />
-      <UnavailableCompactRow label="周" text="无周额度" />
+      <UnavailableCompactRow label="周" meta={weeklyMeta} />
     </div>
   );
 }
@@ -66,12 +77,12 @@ function PendingCompactRow({ label }: { label: string }) {
   );
 }
 
-function UnavailableCompactRow({ label, text }: { label: string; text: string }) {
+function UnavailableCompactRow({ label, meta }: { label: string; meta: CodexWeeklyWindowMeta }) {
   return (
-    <div className="flex items-center gap-2 text-[11px] tabular-nums" title="当前计划未返回周额度窗口">
+    <div className="flex items-center gap-2 text-[11px] tabular-nums" title={meta.detail}>
       <span className="w-5 shrink-0 text-moon-400">{label}</span>
       <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-moon-200/35" />
-      <span className="w-16 shrink-0 text-right text-moon-350">{text}</span>
+      <span className="w-20 shrink-0 text-right text-moon-350">{meta.text}</span>
     </div>
   );
 }
@@ -117,13 +128,16 @@ export function CodexQuotaBarsFull({
   quota,
   fetchedAt,
   planType,
+  quotaErrorLabel,
 }: {
   quota: CodexQuota;
   fetchedAt: string | undefined;
   planType: string;
+  quotaErrorLabel?: string;
 }) {
   const stale = isQuotaStale(fetchedAt);
   const fetchedRel = fetchedAt ? relativeTime(sqliteToISO(fetchedAt)) : "从未";
+  const weeklyMeta = codexWeeklyWindowMeta(planType, quotaErrorLabel);
 
   return (
     <section className="space-y-3 rounded-[1.2rem] border border-moon-200/55 bg-white/60 px-4 py-4">
@@ -150,7 +164,7 @@ export function CodexQuotaBarsFull({
       ) : (
         <div className="flex items-center justify-between gap-2 rounded-[0.9rem] bg-moon-100/55 px-3 py-2 text-[12px] text-moon-500">
           <span className="font-medium text-moon-600">7 天窗口</span>
-          <span>当前计划无周额度</span>
+          <span title={weeklyMeta.detail}>{weeklyMeta.text}</span>
         </div>
       )}
 

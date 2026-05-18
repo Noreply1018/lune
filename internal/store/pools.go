@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const accountRoutableBaseWhereSQL = `a.enabled = 1
@@ -46,7 +47,7 @@ func (s *Store) ListPools() ([]Pool, error) {
 	}
 	defer rows.Close()
 
-	var pools []Pool
+	pools := []Pool{}
 	for rows.Next() {
 		p, err := scanPoolRowWithCounts(rows)
 		if err != nil {
@@ -243,6 +244,20 @@ func (s *Store) DisablePool(id int64) error {
 // to it. Deleting the accounts also removes their memberships in any other
 // pools through the pool_members account_id foreign key.
 func (s *Store) DeletePoolWithAccounts(id int64) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = s.deletePoolWithAccounts(id); err == nil {
+			return nil
+		}
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+	}
+	return err
+}
+
+func (s *Store) deletePoolWithAccounts(id int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -278,6 +293,14 @@ func (s *Store) DeletePoolWithAccounts(id int64) error {
 	}
 
 	return tx.Commit()
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked")
 }
 
 // DeletePoolWithOrphans deletes a pool and cleans up orphan accounts

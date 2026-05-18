@@ -498,7 +498,7 @@ export function getCpaQuotaErrorMeta(account: Account): {
     }
     if (lastError.includes("HTTP 401") || lastError.includes("HTTP 403")) {
       return {
-        label: "额度接口鉴权失败",
+        label: "额度查询失败",
         detail: lastError || "额度辅助接口鉴权失败，不代表模型请求被限流。",
         tone: "warning",
         source: "wham_usage",
