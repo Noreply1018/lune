@@ -80,6 +80,13 @@ Add Account 第二步中的“新建 Pool”继续存在。它解决的是“接
 
 该语义更接近“删除这一组接入资源”，不是“仅移除分组”。因此删除入口必须放在“危险操作”区域，且必须二次确认。
 
+删除边界：
+
+- 删除包含 CPA 账号的 Pool 后，必须触发 CPA runtime reload 或明确执行等价清理流程，避免运行时继续持有已删除账号的旧 auth binding。
+- 删除最后一个 Pool 后，Overview 必须回到首次空状态，Sidebar 不显示已删除 Pool，Settings / Pool Credentials 不再显示已删除 Pool token。
+- 删除当前正在查看的 Pool 后，前端必须跳转到可用的相邻 Pool；如果没有剩余 Pool，则跳转到 Overview。
+- 删除 Pool 不要求删除磁盘上的历史 auth 文件；如果保留文件，必须保证它不会再通过 runtime auth index 绑定到已删除账号。
+
 ## API 对应关系
 
 | 操作 | API |
@@ -97,3 +104,5 @@ Add Account 第二步中的“新建 Pool”继续存在。它解决的是“接
 - “更多设置”位置紧跟 Pool 级操作按钮，而不是挤入标题区。
 - 删除 Pool 的 UI 文案与后端实际删除语义一致。
 - 删除共享账号场景必须覆盖：账号如果也属于其他 Pool，删除来源 Pool 后账号本身消失，其他 Pool 不再展示该账号。
+- 删除含 CPA 账号场景必须覆盖 runtime reload / auth binding 清理语义。
+- 删除最后一个 Pool 场景必须覆盖 Overview、Sidebar、Settings Pool token 一致性。

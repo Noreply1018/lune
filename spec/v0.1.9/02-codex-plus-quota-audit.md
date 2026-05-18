@@ -76,7 +76,7 @@ DB 快照中的关键字段：
 
 `a***@hotmail.com` 账号的 Plus 身份、subscription active、access eligible、runtime binding confirmed 和模型请求成功都成立，但 CPA management 代理 `https://chatgpt.com/backend-api/wham/usage` 时返回 `HTTP 401`。
 
-因此真实问题是：模型路径可用，但 quota 辅助查询路径不可用。Lune 必须把这类状态展示为“额度查询失败”或“周额度待同步”，不能展示为“无周额度”。
+因此真实问题是：模型路径可用，但 quota 辅助查询路径不可用。Lune 必须把这类带明确 quota fetch error 的状态展示为“额度查询失败”，不能展示为“无周额度”；只有没有明确错误、但 paid plan 缺少 secondary window 时，才展示“周额度待同步”。
 
 ### UI 表达问题
 
@@ -109,19 +109,24 @@ v0.1.9 必须明确以下语义：
 - Plus / Pro / Team / Unknown paid plan 缺少 secondary window 时，应展示“周额度待同步”“额度快照缺少周窗口”或“额度查询失败”，并保留错误来源。
 - `HTTP 401/403` quota fetch error 不得降级为 `access ineligible`，也不得显示为“模型请求被限流”。
 
-### 后端建议
+### quota meta 收敛策略
 
-建议增加后端派生字段或统一 meta，避免前端仅靠原始字段猜测：
+v0.1.9 必须提供唯一的 quota meta 派生入口，避免各 UI 组件靠原始字段各自猜测。实现可以选择以下两种路径之一，但只能有一个权威来源：
+
+1. **后端派生字段**：API 返回结构化 meta，前端只消费 meta。
+2. **前端集中派生函数**：不新增 API 字段，但必须提供一个统一派生函数，AccountCard、AccountDetail、Route Summary、Diagnostics 全部复用该函数，不得在组件内重复判断。
+
+建议的 meta 字段如下：
 
 | 字段 | 建议含义 |
 | --- | --- |
 | `quota_snapshot_status` | `available / missing / parse_error / stale` |
 | `quota_primary_window_status` | `available / missing` |
 | `quota_secondary_window_status` | `available / not_applicable / pending / missing / error` |
-| `quota_error_source` | `wham_usage / cpa_management / model_request / store` |
-| `quota_error_reason` | `quota_fetch_auth_failed / runtime_api_call_failed / quota_fetch_failed / model_request_429 / quota_blocked / snapshot_missing` |
+| `quota_error_source` | `wham_usage / cpa_management / model_request / parser / store` |
+| `quota_error_reason` | `quota_fetch_auth_failed / runtime_api_call_failed / quota_fetch_failed / model_request_429 / quota_blocked / snapshot_missing / snapshot_parse_error` |
 
-如果 v0.1.9 不新增 API 字段，也必须在前端集中封装等价派生函数，所有卡片、详情、Route Summary 和 Diagnostics 共用同一逻辑。
+无论选择哪一路径，验收时必须能从 API 响应或统一派生结果中解释 `source` 与 `reason`，例如 `HTTP 401/403 from wham/usage` 必须归为 `source=wham_usage`、`reason=quota_fetch_auth_failed` 或等价结构化语义。
 
 ### 前端建议
 
@@ -154,12 +159,14 @@ v0.1.9 必须明确以下语义：
 | Unknown plan，只有 primary | `周额度未知` | `账号计划或 quota snapshot 不完整，不能判断是否存在 7 天窗口。` |
 | 模型请求 429 | `请求限流` | `普通模型请求返回 429，路由会跳过该账号直到证据过期或状态刷新。` |
 
+这些文案是本版本的唯一口径。AccountCard、AccountDetail、Route Summary、Diagnostics 可以根据空间缩短说明，但同一场景的短文案必须一致，不得在一处显示“额度查询失败”、另一处显示“周额度待同步”。
+
 ## 验收要求
 
 v0.1.9 发布前必须覆盖：
 
 - 单元测试：quota meta 派生、parser、route routability。
-- 前端组件测试或等价渲染检查：卡片和详情页文案。
+- 前端组件测试或等价渲染检查：卡片和详情页文案。如果本版本不引入前端测试框架，必须使用 Playwright 或等价 fixture 页面截图 / DOM 断言覆盖这些文案。
 - fake CPA 容器矩阵：`wham/usage` 401、403、empty、invalid JSON、primary-only、primary+secondary。
 - 真实容器验收：使用隔离测试容器，不影响旧容器；用完删除测试容器和临时数据。
 

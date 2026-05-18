@@ -8,7 +8,7 @@ v0.1.8 已经把 Pool 作为外部网关访问边界，但前端入口仍偏“�
 
 v0.1.9 的目标是补齐 Pool 的基础生命周期管理，但不引入新的 Pool 列表页，不搬迁 token 管理，也不改变现有路由策略入口。
 
-本版本还必须修复 v0.1.8 真实容器中发现的 Codex Plus quota 展示误导：账号已确认 `plus`、`subscription active`、`access eligible` 且普通模型请求成功，但 `wham/usage` quota 辅助查询返回 `HTTP 401`，导致没有 quota snapshot。UI 必须把这种状态展示为“额度查询失败”“周额度待同步”或等价 warning，不能展示为“无周额度”。
+本版本还必须修复 v0.1.8 真实容器中发现的 Codex Plus quota 展示误导：账号已确认 `plus`、`subscription active`、`access eligible` 且普通模型请求成功，但 `wham/usage` quota 辅助查询返回 `HTTP 401`，导致没有 quota snapshot。UI 必须把这种状态展示为“额度查询失败”，不能展示为“无周额度”。
 
 本版本同时必须修复另一个 v0.1.8 真实容器问题：后台 quota 辅助接口返回 `HTTP 401` 后，用户在 Playground 或 Pool 自检中真实调用模型也失败，但账号仍停留在“额度接口鉴权失败 / 服务正常”的组合状态，没有升级为 `cpa_credential_status=needs_login`。根因是 `X-Lune-Account-Id` 强制账号请求被后端一律归类为 `diagnostic`，而 gateway 对 diagnostic 请求禁止写入 credential 状态。v0.1.9 必须把“强制账号路由”“纯诊断流量”“用户主动真实探查”三种语义拆开。
 
@@ -68,6 +68,8 @@ v0.1.9 必须把以下状态拆开：
 - 如果这些账号也属于其他 Pool，账号删除会级联移除它们在其他 Pool 中的 member 关系。
 
 这意味着“删除 Pool”是结构性操作，不是简单移除分组；前端必须把影响面写清楚，并要求二次确认。
+
+删除 Pool 后还必须保证运行态和 UI 状态收敛：CPA runtime 不得继续绑定已删除账号；Sidebar、Overview、Settings Pool token 不得残留已删除 Pool 或 token；如果删除的是当前 Pool，前端跳转到剩余 Pool 或 Overview。
 
 ## 非范围
 

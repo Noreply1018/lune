@@ -16,15 +16,18 @@
 | UI-08 | 停用确认 | 停用 Pool 前弹出二次确认；确认后 Pool 变为 disabled，网关请求不再通过该 Pool 路由 |
 | UI-09 | 启用操作 | disabled Pool 可在“更多设置”弹窗中直接启用，完成后刷新详情与侧边栏 |
 | UI-10 | 删除确认 | 删除 Pool 前弹出二次确认，文案明确说明会删除 Pool token、Pool 内账号和这些账号的其他 Pool 归属 |
+| UI-11 | 删除后导航 | 删除当前 Pool 后跳转到相邻可用 Pool；没有剩余 Pool 时跳转 Overview 首次空状态 |
 | API-01 | 独立创建 Pool | `POST /admin/api/pools` 创建 Pool 后自动生成默认 Pool token |
 | API-02 | 删除 Pool 同删账号 | 删除 Pool 后，该 Pool 当前成员账号不存在 |
 | API-03 | 共享账号级联 | 若账号也属于其他 Pool，删除来源 Pool 后账号被删除，其他 Pool member 关系也被级联移除 |
+| API-04 | 删除 CPA Pool runtime 收敛 | 删除含 CPA 账号的 Pool 后触发 runtime reload 或等价清理，runtime auth index 不再绑定已删除账号 |
+| API-05 | 删除最后 Pool 清理 | 删除最后一个 Pool 后，Sidebar / Overview / Settings Pool token 不显示已删除 Pool 或 token |
 | DOC-01 | 范围文档 | `README.md`、`01-pool-lifecycle-management.md`、本验收矩阵共同描述四点范围且没有相互冲突 |
 | DOC-02 | Codex quota 文档 | `README.md`、`02-codex-plus-quota-audit.md`、本验收矩阵共同记录 v0.1.8 真实问题、修复建议和测试口径 |
 | DOC-03 | 真实探查状态回写文档 | `README.md`、`03-codex-real-probe-state-writeback.md`、本验收矩阵共同记录问题根源、审计结论、改进优化和真实容器测试矩阵 |
 | REL-01 | 容器验收 | 涉及前端、运行配置和删除语义的实现完成后，使用新构建测试容器完成 Pool 创建、重命名、启停、删除同删账号矩阵 |
-| REL-01B | Codex quota 容器验收 | 涉及 Codex quota 展示或运行态实现后，使用新构建测试容器和 fake CPA 完成 quota 401/403、primary-only、primary+secondary 和模型 429 代表性矩阵 |
-| REL-01C | 真实探查状态回写容器验收 | 涉及 gateway、Playground、自检或状态派生实现后，使用新构建测试容器和 fake CPA 完成 quota 401 + 模型 200 / 认证失败 / 429 / 5xx / service key 错误矩阵 |
+| REL-01B | Codex quota 容器验收 | 涉及 Codex quota 展示或运行态实现后，使用新构建测试容器和 fake CPA 完成 CQ-01 到 CQ-26 完整矩阵 |
+| REL-01C | 真实探查状态回写容器验收 | 涉及 gateway、Playground、自检或状态派生实现后，使用新构建测试容器和 fake CPA 完成 RPW-01 到 RPW-16 完整矩阵 |
 | REL-02 | 清理 | 测试容器和临时数据目录清理完成，不影响旧版本正在运行的容器 |
 | REL-03 | 审计与提交 | 修改完成后 subagent 严格审计通过，并按项目规则提交 Git commit |
 
@@ -32,13 +35,13 @@
 
 | ID | 场景 | 准备 | 操作 | 期望 |
 | --- | --- | --- | --- | --- |
-| CQ-01 | 0.1.8 复现夹具 | Plus、subscription active、access eligible、runtime binding confirmed、`codex_quota_json=''`、quota error `HTTP 401` | 渲染 Pool 账号卡片 | 右上角显示 Plus；quota 区显示“额度查询失败”或“周额度待同步”；不显示“无周额度” |
+| CQ-01 | 0.1.8 复现夹具 | Plus、subscription active、access eligible、runtime binding confirmed、`codex_quota_json=''`、quota error `HTTP 401` | 渲染 Pool 账号卡片 | 右上角显示 Plus；quota 区显示“额度查询失败”；不显示“无周额度” |
 | CQ-02 | 详情页复现夹具 | 同 CQ-01 | 打开账号详情 | Quota section 说明额度辅助接口鉴权失败，模型请求仍可能可用；不显示“当前计划无周额度” |
 | CQ-03 | Diagnostics 复现夹具 | 同 CQ-01 | 打开 Diagnostics | Quota 维度为 warning；source/reason 可解释；Access 维度仍为 eligible |
 | CQ-04 | Route Summary 复现夹具 | 同 CQ-01 | 打开 Pool 详情 Route Summary | 账号可路由但带 quota warning；不作为硬阻断 |
-| CQ-05 | Plus quota fetch 403 | Plus、access eligible、无 snapshot、quota error `HTTP 403` | 渲染卡片、详情和 Diagnostics | 显示“额度接口鉴权失败”或“额度查询失败”；不显示“无周额度”或“模型请求被限流” |
-| CQ-06 | Plus pending 无 snapshot | `cpa_plan_type=plus` 且没有 `codex_quota_json`，quota 仍在 pending / unknown | 渲染卡片和详情 | 第二行显示“周额度待同步”或“周额度未知”，不得显示“无周额度” |
-| CQ-07 | Plus primary-only | Plus snapshot 只有 primary window | 渲染卡片和详情 | 显示“周额度待同步”或“周额度未知”；不显示“无周额度” |
+| CQ-05 | Plus quota fetch 403 | Plus、access eligible、无 snapshot、quota error `HTTP 403` | 渲染卡片、详情和 Diagnostics | 显示“额度查询失败”；不显示“无周额度”或“模型请求被限流” |
+| CQ-06 | Plus pending 无 snapshot | `cpa_plan_type=plus` 且没有 `codex_quota_json`，quota 仍在 pending / unknown，且没有明确 fetch error | 渲染卡片和详情 | 第二行显示“周额度待同步”，不得显示“无周额度” |
+| CQ-07 | Plus primary-only | Plus snapshot 只有 primary window，且没有明确 fetch error | 渲染卡片和详情 | 显示“周额度待同步”；不显示“无周额度” |
 | CQ-08 | Free primary-only | Free snapshot 只有 primary window | 渲染卡片和详情 | 显示“无周额度”，高度与 Plus 卡片一致 |
 | CQ-09 | Go primary-only | Go snapshot 只有 primary window | 渲染卡片和详情 | 可显示“无周额度”，不得使用红色订阅异常 |
 | CQ-10 | Unknown primary-only | Unknown plan snapshot 只有 primary window | 渲染卡片和详情 | 显示“周额度未知”，不推断无周额度 |
@@ -77,6 +80,8 @@
 | RPW-12 | 纯 diagnostic 不写状态 | 调用 `/admin/api/accounts/{id}/diagnostic-request` 或显式 `X-Lune-Diagnostic: true`，上游返回认证失败 | 查询账号 | 不写 `needs_login`，除非该入口明确声明为有状态诊断 |
 | RPW-13 | 强制账号不等于 diagnostic | 普通客户端带 `X-Lune-Account-Id` 但不带 diagnostic header | 模型请求返回账号认证失败 | 写 `needs_login`；request log 能说明 force account |
 | RPW-14 | 状态优先级 | 同一账号同时有 quota 401 和 credential needs_login | 打开卡片、Route Summary、Diagnostics | 主问题统一为需要重新登录，quota warning 作为次级信息 |
+| RPW-15 | stateful probe 可审计 | Playground / 自检各发起一次 | 查询 request log 或 route trace | 能区分 `force_account`、`stateful_probe`、纯 `diagnostic`；stateful probe 不计普通 usage但保留审计记录 |
+| RPW-16 | 普通 5xx 与账号 auth 5xx 优先级 | 模型请求分别返回普通 503、503 + `auth_unavailable` | Playground 或自检 | 普通 503 只写 probe error；503 + 账号 auth 缺失写 `needs_login` |
 
 ## 关键反例
 

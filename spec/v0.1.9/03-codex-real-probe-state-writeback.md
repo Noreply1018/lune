@@ -71,7 +71,7 @@ v0.1.9 必须恢复 v0.1.6 已确认的状态语义：
 | quota fetch `401/403`，真实模型请求明确账号认证失败 | `cpa_credential_status=needs_login` | 需要重新登录 |
 | quota fetch `401/403`，真实模型请求 `429` 或 quota 文案限流 | quota 写入模型请求限流或 blocked 证据 | 额度已用尽 / 模型请求被限流 |
 | quota fetch `401/403`，普通业务模型请求 `5xx` / timeout / EOF | serving 进入 error / cooldown，Credential 不变 | 服务异常 / 冷却 |
-| quota fetch `401/403`，Playground / Pool 自检模型请求 `5xx` / timeout / EOF | 只写 probe error，Credential 和 Serving 不变 | 自检失败 / Playground 错误 |
+| quota fetch `401/403`，Playground / Pool 自检模型请求普通 `5xx` / timeout / EOF，且响应内容不能明确归因为账号认证缺失 | 只写 probe error，Credential 和 Serving 不变 | 自检失败 / Playground 错误 |
 | quota fetch `401/403`，没有真实模型证据 | Credential 不变，quota warning | 额度接口鉴权失败 / 额度查询失败 |
 
 ## 改进方案
@@ -88,6 +88,13 @@ gateway 必须把请求语义拆成至少三个独立维度：
 
 Playground 和 Pool 自检必须走 `force_account + stateful_probe`。纯诊断入口才走 `diagnostic`。
 
+实现上必须避免继续用单个 `diagnostic` 布尔值承载全部语义。请求日志和 usage 统计至少需要能还原以下事实：
+
+- 是否强制账号路由：`force_account=true/false` 或等价 trace 字段。
+- 是否纯诊断：`diagnostic=true/false`，纯诊断默认禁止写 Credential / Access / Serving / quota evidence。
+- 是否用户主动真实探查：`stateful_probe=true/false` 或 `traffic_kind=stateful_probe`。
+- 普通 usage 统计必须排除纯诊断和 `stateful_probe`；但 `stateful_probe` 的 request log 仍应可被审计，且允许写 Credential / Access / quota evidence。
+
 ### 状态写入规则
 
 真实模型请求完成后，gateway 必须按来源和错误归属写状态：
@@ -100,8 +107,9 @@ Playground 和 Pool 自检必须走 `force_account + stateful_probe`。纯诊断
 - `stateful_probe`：
   - 明确 CPA 账号上游认证失败：写 `cpa_credential_status=needs_login`。
   - 成功：写 `cpa_access_status=eligible`，可写 probe success，不计普通 usage。
-  - `429`：写 quota / rate-limit evidence 或至少写 probe error，并按现有模型请求 429 规则阻断普通路由。
-  - `5xx` / timeout / EOF：只写 probe error，不写 serving failure / cooldown，不写 `needs_login`。
+  - `429`：必须写 quota / rate-limit evidence，并按现有模型请求 429 规则阻断普通路由；同时可写 probe error 摘要。
+  - 普通 `5xx` / timeout / EOF：只写 probe error，不写 serving failure / cooldown，不写 `needs_login`。
+  - `503`、`401` 或其他状态码只要响应内容能明确归因为账号 auth 缺失，例如 `auth_unavailable: no auth available`，必须优先归类为账号 credential 硬失败，写 `needs_login`。
 - 纯 `diagnostic`：
   - 不计普通 usage。
   - 不修复普通 serving health。
@@ -124,6 +132,12 @@ CPA 账号上游认证失败分类必须覆盖 v0.1.8 真实日志中出现的�
 - CPA 明确返回的账号 auth 缺失 / 失效文案
 
 同时必须继续排除 Lune 到 CPA 的 service key / management key 错误。service key 错误应写 CPA service / runtime 维度，不得把某个用户账号误标为 `needs_login`。
+
+错误分类优先级：
+
+1. 先识别 service key / management key / Lune 到 CPA 的服务级认证错误；这类错误不得写账号 `needs_login`。
+2. 再识别账号级认证缺失或失效文案；即使 HTTP 状态码是 `503`，只要 body 明确包含账号 auth 不可用证据，也必须按账号 credential 硬失败处理。
+3. 剩余 `5xx` / timeout / EOF 才按服务异常或 probe-only 错误处理。
 
 ### UI 展示优先级
 
@@ -178,6 +192,8 @@ v0.1.9 涉及本规格的实现完成后，必须使用新构建测试容器和�
 | RPW-12 | 纯 diagnostic 不写状态 | 调用 `/admin/api/accounts/{id}/diagnostic-request` 或显式 `X-Lune-Diagnostic: true`，上游返回认证失败 | 查询账号 | 不写 `needs_login`，除非该入口明确声明为有状态诊断 |
 | RPW-13 | 强制账号不等于 diagnostic | 普通客户端带 `X-Lune-Account-Id` 但不带 diagnostic header | 模型请求返回账号认证失败 | 写 `needs_login`；request log 能说明 force account |
 | RPW-14 | 状态优先级 | 同一账号同时有 quota 401 和 credential needs_login | 打开卡片、Route Summary、Diagnostics | 主问题统一为需要重新登录，quota warning 作为次级信息 |
+| RPW-15 | stateful probe 可审计 | Playground / 自检各发起一次 | 查询 request log 或 route trace | 能区分 `force_account`、`stateful_probe`、纯 `diagnostic`；stateful probe 不计普通 usage 但保留审计记录 |
+| RPW-16 | 普通 5xx 与账号 auth 5xx 优先级 | 模型请求分别返回普通 503、503 + `auth_unavailable` | Playground 或自检 | 普通 503 只写 probe error；503 + 账号 auth 缺失写 `needs_login` |
 
 ## 自动化测试要求
 
@@ -190,6 +206,8 @@ v0.1.9 涉及本规格的实现完成后，必须使用新构建测试容器和�
 - gateway 单元测试：`auth_unavailable` / `no auth available` 被归类为账号 credential 硬失败。
 - 前端或集成测试：Playground / Pool 自检请求携带 stateful probe 语义。
 - UI 派生测试：Credential 硬失败优先于 quota fetch warning。
+- request log / usage 测试：`stateful_probe` 不计入普通 usage，但日志能审计 `force_account` 与 `stateful_probe` 语义。
+- request log / usage 测试：纯 `diagnostic` 与 `stateful_probe` 可区分，纯 diagnostic 不写 Credential / Access / Serving / quota evidence。
 
 ## 发布证据要求
 
@@ -198,7 +216,7 @@ v0.1.9 涉及本规格的实现完成后，必须使用新构建测试容器和�
 - 新构建镜像 tag 或 digest。
 - 测试容器名、端口、隔离 volume / 数据目录。
 - fake CPA 响应矩阵摘要。
-- RPW-01 到 RPW-14 的通过证据。
+- RPW-01 到 RPW-16 的通过证据。
 - 普通 usage 是否排除 Playground / 自检的验证摘要。
 - 测试容器和临时数据清理结果。
 

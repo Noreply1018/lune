@@ -11,6 +11,7 @@
 - `02-codex-plus-quota-audit.md`
 - `03-codex-real-probe-state-writeback.md`
 - `99-acceptance-matrix.md`
+- `100-release-evidence.md`
 
 ## 本轮补充
 
