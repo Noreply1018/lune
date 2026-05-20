@@ -316,6 +316,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if IsRetryableStatus(result.StatusCode) {
 			errMsg := upstreamErrorMessage(result, fmt.Sprintf("HTTP %d", result.StatusCode))
+			if resolved.Account.SourceKind == "cpa" && isCpaAccountBannedSignal(result.StatusCode, result.Body, errMsg) {
+				if !diagnostic || statefulProbe {
+					h.recordAccountDiagnosticObservation(resolved.Account, "banned", "upstream_banned_signal", "account banned by upstream", result.StatusCode, "upstream_banned", errMsg)
+				}
+				result.WriteResponse(w)
+				h.logRequestWithBindingTrace(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog, diagnostic, routeTrace)
+				return
+			}
 			if resolved.Account.SourceKind == "cpa" && isCpaAccountUpstreamAuthFailure(result.StatusCode, result.Body) {
 				if !diagnostic || statefulProbe {
 					msg := fmt.Sprintf("HTTP %d", result.StatusCode)
@@ -394,10 +402,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaProvider, "codex") && (!diagnostic || statefulProbe) {
-				_ = h.store.ClearAccountCodexModelRequestQuotaEvidence(resolved.AccountID)
+				if strings.EqualFold(resolved.Account.CpaQuotaStatus, "error") && isQuotaProbeAuthFailureText(resolved.Account.CpaQuotaLastError) {
+					// Preserve quota/auth-failure evidence; only enrich diagnostic state.
+				} else {
+					_ = h.store.ClearAccountCodexModelRequestQuotaEvidence(resolved.AccountID)
+				}
 				_ = h.store.UpdateAccountCpaAccessStatus(resolved.AccountID, "eligible", "model_request_success", "", time.Now().UTC().Format(time.RFC3339))
-				h.recordAccountDiagnosticObservation(resolved.Account, "usable", "succeeded", "model request succeeded", result.StatusCode, "", "")
+				if strings.EqualFold(resolved.Account.CpaQuotaStatus, "error") && isQuotaProbeAuthFailureText(resolved.Account.CpaQuotaLastError) {
+					h.recordAccountDiagnosticObservation(resolved.Account, "quota_probe_auth_failed_but_usable", "succeeded", "quota probe authentication failed but model request succeeded", result.StatusCode, "quota_probe_auth_failed_but_usable", "")
+				} else {
+					h.recordAccountDiagnosticObservation(resolved.Account, "usable", "succeeded", "model request succeeded", result.StatusCode, "", "")
+				}
 				h.cache.Invalidate()
+			}
+		} else if resolved.Account.SourceKind == "cpa" && isCpaAccountBannedSignal(result.StatusCode, result.Body, errMsg) {
+			if !diagnostic || statefulProbe {
+				h.recordAccountDiagnosticObservation(resolved.Account, "banned", "upstream_banned_signal", "account banned by upstream", result.StatusCode, "upstream_banned", errMsg)
 			}
 		} else if resolved.Account.SourceKind == "cpa" && isCpaAccountUpstreamAuthFailure(result.StatusCode, result.Body) {
 			if !diagnostic || statefulProbe {
@@ -405,6 +425,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
 				h.recordAccountDiagnosticObservation(resolved.Account, "auth_invalid", "auth_invalid_signal", "account authentication failed", result.StatusCode, "auth_invalid", errMsg)
 			}
+		} else if resolved.Account.SourceKind == "cpa" && (!diagnostic || statefulProbe) {
+			h.recordAccountDiagnosticObservation(resolved.Account, "unknown", "transient_error", "upstream request failed", result.StatusCode, "upstream_request_failed", errMsg)
 		} else if resolved.Account.SourceKind != "cpa" && isGatewayAuthFailure(result.StatusCode, result.Body) {
 			if !diagnostic && !statefulProbe {
 				h.updateHealth(resolved.AccountID, "error", "upstream authentication failed")
@@ -720,10 +742,14 @@ func safeDiagnosticObservationMessage(normalizedCode, fallback string) string {
 	switch strings.TrimSpace(normalizedCode) {
 	case "quota_exhausted":
 		return "quota exhausted by model request"
+	case "quota_probe_auth_failed_but_usable":
+		return "quota probe authentication failed but account remains usable"
 	case "rate_limited":
 		return "rate limited by model request"
 	case "auth_invalid":
 		return "account authentication failed"
+	case "upstream_banned":
+		return "account banned by upstream"
 	case "upstream_request_failed":
 		return "upstream request failed"
 	case "upstream_transient_error":
@@ -796,6 +822,33 @@ func isCpaAccountUpstreamAuthFailure(statusCode int, body []byte) bool {
 	return false
 }
 
+func isCpaAccountBannedSignal(statusCode int, body []byte, fallback string) bool {
+	if statusCode < 400 {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(firstNonEmptyString(extractUpstreamErrorMessage(body), string(body), fallback)))
+	if text == "" || textHasQuotaLimitSignal(text) {
+		return false
+	}
+	for _, phrase := range []string{
+		"account banned",
+		"account is banned",
+		"account deactivated",
+		"account disabled",
+		"account is disabled",
+		"account suspended",
+		"abuse lock",
+		"policy lock",
+		"account locked",
+		"access to this account has been disabled",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 func bodyHasQuotaLimitSignal(body []byte) bool {
 	if len(body) == 0 {
 		return false
@@ -804,6 +857,14 @@ func bodyHasQuotaLimitSignal(body []byte) bool {
 		return true
 	}
 	return textHasQuotaLimitSignal(string(body))
+}
+
+func isQuotaProbeAuthFailureText(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(text, "http 401") ||
+		strings.Contains(text, "http 403") ||
+		strings.Contains(text, "unauthorized") ||
+		strings.Contains(text, "forbidden")
 }
 
 func textHasQuotaLimitSignal(text string) bool {

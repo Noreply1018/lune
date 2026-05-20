@@ -4,11 +4,9 @@
 
 Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本，但在默认体验、部署方式、配置形态还没有完全稳定前，minor 版本可能会调整产品边界。
 
-## [未发布]
+## [0.2.0] - 2026-05-20
 
-### v0.2.0
-
-状态：本轮已完成 CPA 删除后重导入核心修复、生命周期 operation 审计、账号真实请求诊断 evidence 回写、数据保留清理审计和隔离容器复现；完整 v0.2.0 发布仍需按规格矩阵继续验收。
+状态：已发布。本轮已完成 CPA 删除后重导入核心修复、生命周期 operation 审计、账号真实请求诊断 evidence 回写、数据保留清理审计、隔离容器复现和发布证据整理。
 
 ### CPA Auth JSON 删除后重导入
 
@@ -16,6 +14,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - `runtime_reload` 作为可审计 operation 记录 `request_runtime_reload` 阶段，后续可从审计记录恢复成功或失败原因。
 - `delete_account` 的 auth file 删除失败现已脱敏，不再泄露底层路径或账号 key。
 - `tool-repro` 的 `cpa-import-reimport` 场景现在会导出删除、重导入和 runtime reload 的脱敏 evidence。
+- `tool-repro` 的 `stateful-probe` 场景现在会导出隔离容器中的 request log、账号诊断和 diagnostic evidence 摘要。
 
 ### 通用可审计性
 
@@ -43,6 +42,8 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - 隔离容器验证 `data-retention prune`，清理 operation 可在 `recent-operations` 中恢复
 - 隔离容器复现 `stateful-probe`，当前真实 volume 样本证据为 `request_log_collected / http_code=503 / account_log_matched=0 / diagnostic_evidence_count=0`
 - subagent 严格审计通过
+
+## [未发布]
 
 ## [0.1.9] - 2026-05-17
 

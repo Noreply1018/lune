@@ -466,14 +466,15 @@ func TestCodexQuotaUnauthorizedDoesNotMarkCredentialNeedsLogin(t *testing.T) {
 		t.Fatalf("create cpa service: %v", err)
 	}
 	accountID, err := st.CreateAccount(&store.Account{
-		Label:               "Codex",
-		SourceKind:          "cpa",
-		CpaServiceID:        &serviceID,
-		CpaProvider:         "codex",
-		CpaAccountKey:       "codex-user@example.com-plus",
-		CpaOpenaiID:         "acct_123",
-		CpaCredentialStatus: "ok",
-		Enabled:             true,
+		Label:                 "Codex",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         "codex-user@example.com-plus",
+		CpaOpenaiID:           "acct_123",
+		CpaCredentialStatus:   "ok",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatalf("create account: %v", err)
@@ -506,6 +507,71 @@ func TestCodexQuotaUnauthorizedDoesNotMarkCredentialNeedsLogin(t *testing.T) {
 	}
 	if acc.CpaQuotaBackoffCount != 1 || acc.CpaQuotaBackoffUntil == "" {
 		t.Fatalf("expected quota backoff after 401, got count=%d until=%q", acc.CpaQuotaBackoffCount, acc.CpaQuotaBackoffUntil)
+	}
+	diag, err := st.GetAccountDiagnostic(accountID)
+	if err != nil {
+		t.Fatalf("get diagnostic: %v", err)
+	}
+	if diag.StableDiagnosticStatus != "unknown" || diag.LastProbeStatus != "quota_probe_auth_failed" {
+		t.Fatalf("expected quota auth failure to preserve unknown stable status, got %+v", diag)
+	}
+	if diag.SchedulerStatus != "eligible_with_warning" || len(diag.Evidence) == 0 || diag.Evidence[len(diag.Evidence)-1].NormalizedErrorCode != "quota_probe_auth_failed" {
+		t.Fatalf("expected quota auth failure evidence without stable promotion, got %+v", diag)
+	}
+}
+
+func TestCodexQuotaUnauthorizedPromotesExistingUsableDiagnostic(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "http://cpa.example",
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:                 "Codex",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         "codex-user@example.com-plus",
+		CpaOpenaiID:           "acct_123",
+		CpaCredentialStatus:   "ok",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := st.UpdateAccountDiagnostic(accountID, store.AccountDiagnosticUpdate{
+		StableDiagnosticStatus: "usable",
+		LastProbeStatus:        "succeeded",
+		SchedulerStatus:        "eligible",
+		SafeSummary:            "model request succeeded",
+	}); err != nil {
+		t.Fatalf("seed diagnostic: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.recordCodexQuotaProbeDiagnostic(*acc, http.StatusUnauthorized, "HTTP 401")
+	diag, err := st.GetAccountDiagnostic(accountID)
+	if err != nil {
+		t.Fatalf("get diagnostic: %v", err)
+	}
+	if diag.StableDiagnosticStatus != "quota_probe_auth_failed_but_usable" || diag.LastProbeStatus != "quota_probe_auth_failed" {
+		t.Fatalf("expected usable diagnostic to promote quota auth warning, got %+v", diag)
+	}
+	if diag.SchedulerStatus != "eligible_with_warning" || len(diag.Evidence) == 0 || diag.Evidence[len(diag.Evidence)-1].NormalizedErrorCode != "quota_probe_auth_failed" {
+		t.Fatalf("expected schedulable quota auth warning evidence, got %+v", diag)
 	}
 }
 

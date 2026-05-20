@@ -1030,6 +1030,9 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 		}
 		_ = c.store.UpdateAccountCodexQuotaStatus(acc.ID, status, msg, checkedAt)
 		_ = c.store.UpdateAccountCodexQuotaBackoff(acc.ID, nextCodexQuotaBackoffUntil(acc.CpaQuotaBackoffCount, time.Now().UTC()), acc.CpaQuotaBackoffCount+1)
+		if isQuotaProbeAuthFailureStatus(resp.StatusCode) {
+			c.recordCodexQuotaProbeDiagnostic(acc, resp.StatusCode, msg)
+		}
 		c.cache.Invalidate()
 		return fmt.Errorf("%s", msg)
 	}
@@ -1063,6 +1066,58 @@ func (c *Checker) fetchOneCodexQuota(ctx context.Context, client *cpa.Management
 	}
 	c.cache.Invalidate()
 	return nil
+}
+
+func (c *Checker) recordCodexQuotaProbeDiagnostic(acc store.Account, httpStatus int, msg string) {
+	stableStatus := "unknown"
+	probeStatus := "quota_probe_auth_failed"
+	safeSummary := "quota probe authentication failed"
+	preserveStable := true
+	current, err := c.store.GetAccountDiagnostic(acc.ID)
+	if err != nil {
+		slog.Warn("load account diagnostic for quota probe", "account_id", acc.ID, "err", err)
+		return
+	}
+	if current != nil {
+		stableStatus = current.StableDiagnosticStatus
+		if stableStatus == "" {
+			stableStatus = "unknown"
+		}
+		switch stableStatus {
+		case "usable", "quota_probe_auth_failed_but_usable":
+			stableStatus = "quota_probe_auth_failed_but_usable"
+			safeSummary = "quota probe authentication failed but account remains usable"
+			preserveStable = false
+		}
+	}
+	previousStable := "unknown"
+	if current != nil && strings.TrimSpace(current.StableDiagnosticStatus) != "" {
+		previousStable = current.StableDiagnosticStatus
+	}
+	status := httpStatus
+	operationID := store.AccountKeyHash(fmt.Sprintf("account-diagnostic:%d:%s", acc.ID, time.Now().UTC().Format(time.RFC3339Nano)))
+	if err := c.store.UpdateAccountDiagnosticWithEvidence(acc.ID, store.AccountDiagnosticUpdate{
+		OperationID:                    operationID,
+		StableDiagnosticStatus:         stableStatus,
+		PreviousStableDiagnosticStatus: previousStable,
+		LastProbeStatus:                probeStatus,
+		SafeSummary:                    safeSummary,
+		PreserveStableStatus:           preserveStable,
+	}, store.AccountDiagnosticEvidenceInput{
+		ProbeType:           "quota_probe",
+		Stage:               "wham_usage",
+		HTTPStatus:          &status,
+		UpstreamErrorCode:   "quota_probe_auth_failed",
+		NormalizedErrorCode: "quota_probe_auth_failed",
+		SafeMessage:         "quota probe authentication failed",
+		ObservedAt:          time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		slog.Warn("record quota probe diagnostic", "account_id", acc.ID, "err", err)
+	}
+}
+
+func isQuotaProbeAuthFailureStatus(statusCode int) bool {
+	return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
 }
 
 func nextCodexQuotaBackoffUntil(failures int, now time.Time) string {

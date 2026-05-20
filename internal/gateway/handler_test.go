@@ -578,9 +578,9 @@ func TestGatewayCpaSuccessDoesNotClearQuotaState(t *testing.T) {
 			acc.CpaQuotaLastError == "HTTP 403" &&
 			acc.CpaSubscriptionStatus == "active"
 	})
-	diag := waitForAccountDiagnosticStatus(t, st, accountID, "usable", "succeeded")
-	if diag.SchedulerStatus != "eligible" || diag.Evidence[0].ProbeType != "routing_observation" || diag.Evidence[0].Stage != "model_request" {
-		t.Fatalf("expected usable routing observation evidence, got %+v", diag)
+	diag := waitForAccountDiagnosticStatus(t, st, accountID, "quota_probe_auth_failed_but_usable", "succeeded")
+	if diag.SchedulerStatus != "eligible_with_warning" || diag.Evidence[0].ProbeType != "routing_observation" || diag.Evidence[0].Stage != "model_request" {
+		t.Fatalf("expected quota auth warning routing observation evidence, got %+v", diag)
 	}
 }
 
@@ -720,6 +720,163 @@ func TestGatewayTransientErrorDoesNotOverwriteStableDiagnosticStatus(t *testing.
 	last := diag.Evidence[len(diag.Evidence)-1]
 	if last.NormalizedErrorCode != "rate_limited" && last.NormalizedErrorCode != "upstream_request_failed" && last.NormalizedErrorCode != "stream_failed" && last.NormalizedErrorCode != "upstream_transient_error" {
 		t.Fatalf("expected normalized transient evidence, got %+v", last)
+	}
+}
+
+func TestGatewayRecordsQuotaProbeAuthFailureButUsableAfterModelSuccess(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "quota-auth-warning-cpa", "codex", "gpt-5-codex")
+	if err := st.UpdateAccountCodexQuotaStatus(accountID, "error", "HTTP 401", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+	}
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	diag := waitForAccountDiagnosticStatus(t, st, accountID, "quota_probe_auth_failed_but_usable", "succeeded")
+	if diag.SchedulerStatus != "eligible_with_warning" {
+		t.Fatalf("expected quota auth warning to remain schedulable, got %+v", diag)
+	}
+}
+
+func TestGatewayRecordsBannedDiagnostic(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"message": "account disabled",
+			},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "banned-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	diag := waitForAccountDiagnosticStatus(t, st, accountID, "banned", "upstream_banned_signal")
+	if diag.SchedulerStatus != "ineligible" {
+		t.Fatalf("expected banned diagnostic to block scheduling, got %+v", diag)
+	}
+}
+
+func TestGatewayPolicyViolationDoesNotMarkBanned(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"message": "policy violation",
+			},
+		})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "policy-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	diag := waitForAccountDiagnosticStatus(t, st, accountID, "unknown", "transient_error")
+	if diag.SchedulerStatus != "eligible_with_warning" {
+		t.Fatalf("expected policy violation to remain warning-only, got %+v", diag)
+	}
+}
+
+func TestGatewayGenericForbiddenRecordsDiagnostic(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "forbidden-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	diag := waitForAccountDiagnosticStatus(t, st, accountID, "unknown", "transient_error")
+	if len(diag.Evidence) == 0 || diag.Evidence[len(diag.Evidence)-1].NormalizedErrorCode != "upstream_request_failed" {
+		t.Fatalf("expected generic forbidden diagnostic evidence, got %+v", diag)
 	}
 }
 
