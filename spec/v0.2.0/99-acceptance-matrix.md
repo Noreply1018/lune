@@ -20,6 +20,20 @@
 | IMP-12 | 审计明细持久化 | 执行一次包含成功、失败、跳过的导入 | 请求结束后查询审计记录 | 能恢复 batch id、文件名、account key hash、状态、runtime sync、error code |
 | IMP-13 | 安全脱敏 | 查询日志、导入审计、通知 payload | 检查敏感字段 | 不出现 refresh token、access token、id token、完整 auth JSON、完整 account key |
 
+## 通用可审计性
+
+| ID | 场景 | 准备 | 操作 | 期望 |
+| --- | --- | --- | --- | --- |
+| AUD-01 | 关键操作事件 | 执行账号导入、账号删除、Pool 删除、runtime reload | 查询最近操作 | 每个操作都有 operation id、类型、目标摘要、时间、状态和安全错误摘要 |
+| AUD-02 | 阶段错误 | 构造 DB busy、runtime reload 失败、上游认证失败 | 查询操作明细 | 能看到失败阶段、错误码和安全上下文 |
+| AUD-03 | 关联 ID | 执行一次批量导入 | 对齐 API log、operation record、runtime reload log | 同一 operation id 能贯穿多处证据 |
+| AUD-04 | 最近操作快照 | 连续执行多次成功和失败操作 | 查询 recent operations | 请求结束后仍可恢复最近操作和 item 明细 |
+| AUD-05 | 只读 debug | 在容器内执行 `lune debug summary`、`lune debug cpa-auth` | 检查 DB、文件、runtime 状态 | 输出脱敏且不修改任何状态 |
+| AUD-06 | 隔离复现脚本 | 使用临时容器和临时 volume | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 自动复现、导出 evidence、清理临时资源 |
+| AUD-07 | 脱敏审计包 | 有账号、Pool、request log、operation record | 执行 `lune debug collect --redact` | 生成结构化审计包，不含敏感凭据 |
+| AUD-08 | 数据保留 | 超过最近操作保留窗口 | 触发清理 | 清理按策略执行，清理本身可审计 |
+| AUD-09 | 后续 spec 约束 | 新增涉及状态变更或 runtime 行为的 spec | 审阅 spec | 必须包含可审计性小节，说明阶段、错误、关联 ID、脱敏和容器矩阵 |
+
 ## 关键反例
 
 | ID | 场景 | 期望 |
@@ -29,6 +43,9 @@
 | NEG-03 | 删除账号后 runtime 尚在重启 | 批量导入不得因 runtime reload 中途状态而产生 `pool_member_failed` |
 | NEG-04 | 只读预检 | 不得写 auth file、不得创建账号、不得触发 reload |
 | NEG-05 | 审计缺失 | 不允许正式导入失败明细只存在于浏览器当次响应中 |
+| NEG-06 | 只靠日志猜测 | 关键失败不得只能通过时间窗口和日志猜测根因 |
+| NEG-07 | debug 修改现场 | `lune debug` 命令不得修复、重载、写 DB 或删除文件 |
+| NEG-08 | 审计包泄密 | 审计包不得包含 token、完整 auth JSON、完整 account key 或完整 API key |
 
 ## 容器验收要求
 
@@ -39,4 +56,4 @@
 | REL-03 | 真实 runtime | 涉及 embedded CPA reload 的矩阵必须在容器内运行，不能只用单元测试替代 |
 | REL-04 | 清理 | 测试结束删除临时容器和临时数据卷 |
 | REL-05 | 审计 | 修改完成后由 subagent 严格审计，审计通过后提交 Git commit |
-
+| REL-06 | 后续 spec 审查 | 后续涉及状态变更、运行时、外部服务或异步任务的 spec 必须包含可审计性要求 |
