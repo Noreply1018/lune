@@ -38,6 +38,22 @@
 | AUD-12 | 只读 evidence 采集 | 目标 `lune` 容器和 `lune-data` volume 存在 | 执行 `scripts/audit/collect.sh` | 输出 `audit-output/<timestamp>/`，数据卷只读挂载，正式容器不被重启、删除或写入 |
 | AUD-13 | 未实现场景显式失败 | 调用尚无安全编排的场景 | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 返回 `scenario_not_implemented`，不得伪造成功或静默降级 |
 
+## 账号真实状态诊断
+
+| ID | 场景 | 准备 | 操作 | 期望 |
+| --- | --- | --- | --- | --- |
+| DIA-01 | 多路证据持久化 | 配置任一 Codex CPA 账号 | 触发完整账号诊断 | 持久化 auth、models、subscription、quota、chat 或真实请求观察证据；请求结束后可通过 debug/API 恢复 |
+| DIA-02 | `al` 封号案例 | 在隔离真实容器中配置脱敏案例 `al` | 触发完整诊断和一次安全业务探测 | 最终 `diagnostic_status=banned`；证据包含明确封禁语义；不得显示为额度不足或暂态错误 |
+| DIA-03 | `c` 额度不足案例 | 在隔离真实容器中配置脱敏案例 `c` | 触发完整诊断和一次安全业务探测 | 最终 `diagnostic_status=quota_exhausted`；账号主体证据仍有效；不得显示为封号 |
+| DIA-04 | 额度接口鉴权失败但可用 | 使用历史 quota/history 鉴权失败但账号可用案例 | 触发 quota probe、models/subscription/chat probe | 最终 `diagnostic_status=quota_probe_auth_failed_but_usable`；调度默认仍可用；UI 显示额度接口告警 |
+| DIA-05 | 单一 quota 失败不判死 | fake upstream 或真实账号返回 quota/history 401/403，其他关键 probe 正常 | 触发完整诊断 | 不得判定为 `banned`、`auth_invalid` 或全局不可用 |
+| DIA-06 | 业务额度不足归一化 | fake upstream 或真实账号在 chat/真实请求返回 insufficient quota | 触发诊断或真实请求失败回写 | 判定为 `quota_exhausted`；错误归因到额度阶段；不污染 token/auth 状态 |
+| DIA-07 | 暂态上游错误 | 构造 models/quota/chat 任一 probe 超时、429 或 5xx | 触发诊断 | 记录 `probe_transient_error`；保留上一稳定状态；不得覆盖为封号或额度不足 |
+| DIA-08 | 调度行为一致 | 准备 `banned`、`quota_exhausted`、`quota_probe_auth_failed_but_usable` 三类账号 | 通过 Pool 发起请求 | 前两类默认不调度；quota probe 鉴权失败但可用账号默认可调度并带告警 |
+| DIA-09 | UI/API 展示一致 | 已完成一次包含多种状态的诊断 | 查询账号列表、账号详情和 debug 输出 | 三处展示同一机器状态、调度状态、最后诊断时间和安全证据摘要 |
+| DIA-10 | 诊断脱敏 | 查询诊断 DB、debug 输出、审计包和日志 | 检查敏感字段 | 不出现 token、完整 auth JSON、完整 account key、完整上游响应体 |
+| DIA-11 | fake upstream 回放 | 无法长期保留真实账号时 | 回放 `al`、`c`、quota 鉴权失败可用三类上游语义 | fake upstream 结果与真实案例期望一致，但不能替代至少一次真实容器验收 |
+
 ## 关键反例
 
 | ID | 场景 | 期望 |
@@ -52,6 +68,11 @@
 | NEG-08 | 审计包泄密 | 审计包不得包含 token、完整 auth JSON、完整 account key 或完整 API key |
 | NEG-09 | 工具容器污染生产镜像 | 不得为了审计把 `jq`、`sqlite3` 等工具打入生产 runtime 镜像 |
 | NEG-10 | 未实现场景假成功 | 未完成安全编排的复现场景不得返回成功 |
+| NEG-11 | quota/history 失败误判封号 | 只有额度接口鉴权失败时不得判定为 `banned` |
+| NEG-12 | 额度不足误判封号 | 业务请求返回额度不足时不得展示为封号 |
+| NEG-13 | 暂态错误覆盖稳定状态 | 5xx、超时、网络错误不得覆盖上一稳定诊断状态 |
+| NEG-14 | 证据层缺失 | 账号状态不得只有最终标签而无法恢复 probe 明细 |
+| NEG-15 | UI 和调度分裂 | UI 展示可用但调度层判不可用，或 UI 展示封号但调度仍使用，均不允许 |
 
 ## 容器验收要求
 
@@ -63,3 +84,5 @@
 | REL-04 | 清理 | 测试结束删除临时容器和临时数据卷 |
 | REL-05 | 审计 | 修改完成后由 subagent 严格审计，审计通过后提交 Git commit |
 | REL-06 | 后续 spec 审查 | 后续涉及状态变更、运行时、外部服务或异步任务的 spec 必须包含可审计性要求 |
+| REL-07 | 真实账号状态矩阵 | `al`、`c`、quota 鉴权失败但可用案例必须至少在一次隔离真实容器验收中跑通 |
+| REL-08 | fake upstream 不替代真实验收 | fake upstream 可用于 CI 回归，但不能作为真实账号状态识别的唯一证据 |
