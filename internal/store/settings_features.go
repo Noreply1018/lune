@@ -81,6 +81,7 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 		 FROM accounts
 		 WHERE source_kind = 'cpa'
 		   AND cpa_credential_status = 'needs_login'
+		   AND lower(cpa_quota_status) <> 'blocked'
 		   AND enabled = 1
 		 ORDER BY cpa_credential_checked_at DESC, id DESC`,
 	)
@@ -112,6 +113,44 @@ func (s *Store) ListSystemNotifications() ([]SystemNotification, error) {
 		})
 	}
 	if err := credentialRows.Err(); err != nil {
+		return nil, err
+	}
+
+	quotaRows, err := s.db.Query(
+		`SELECT id, label, cpa_quota_last_error
+		 FROM accounts
+		 WHERE source_kind = 'cpa'
+		   AND lower(cpa_provider) = 'codex'
+		   AND lower(cpa_quota_status) = 'blocked'
+		   AND enabled = 1
+		 ORDER BY cpa_quota_checked_at DESC, id DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer quotaRows.Close()
+
+	for quotaRows.Next() {
+		var accountID int64
+		var label, lastError string
+		if err := quotaRows.Scan(&accountID, &label, &lastError); err != nil {
+			return nil, err
+		}
+		if lastError == "" {
+			lastError = "quota blocked"
+		}
+		accountIDCopy := accountID
+		notifications = append(notifications, SystemNotification{
+			Type:      "cpa_quota_blocked",
+			Severity:  "warning",
+			Title:     "CPA quota blocked",
+			Message:   fmt.Sprintf("Account %q CPA quota is blocked: %s", label, lastError),
+			AccountID: &accountIDCopy,
+			Label:     label,
+			LastError: lastError,
+		})
+	}
+	if err := quotaRows.Err(); err != nil {
 		return nil, err
 	}
 

@@ -201,14 +201,15 @@ CREATE TABLE notification_deliveries (
 	if err != nil {
 		t.Fatalf("list subs: %v", err)
 	}
-	if len(subs) != 6 {
-		t.Fatalf("expected 6 seeded subscriptions, got %d", len(subs))
+	if len(subs) != 7 {
+		t.Fatalf("expected 7 seeded subscriptions, got %d", len(subs))
 	}
 	// The v8→v9 path seeds fresh defaults directly; these must already be the
 	// new concrete-field templates, never the old `{{ .Message }}` passthrough.
 	wantBodies := map[string]string{
 		"account_expiring":     "账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。",
 		"cpa_credential_error": "账号 {{ .Vars.account_label }} 的 CPA 登录态失效：{{ .Vars.last_error }}。请重新登录。",
+		"cpa_quota_blocked":    "账号 {{ .Vars.account_label }} 的 CPA 额度受限：{{ .Vars.last_error }}",
 		"account_error":        "账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}",
 		"cpa_service_error":    "CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}",
 		"cpa_import_batch":     "CPA auth JSON 批量导入 {{ .Vars.batch_id }}：created={{ .Vars.created }} updated={{ .Vars.updated }} skipped={{ .Vars.skipped }} failed={{ .Vars.failed }} runtime_pending={{ .Vars.runtime_pending }} runtime_failed={{ .Vars.runtime_failed }}",
@@ -347,8 +348,8 @@ func TestFreshDatabaseOpensAtCurrentSchema(t *testing.T) {
 	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM notification_subscriptions`).Scan(&count); err != nil {
 		t.Fatalf("query notification_subscriptions: %v", err)
 	}
-	if count != 6 {
-		t.Fatalf("expected 6 seeded subscription rows, got %d", count)
+	if count != 7 {
+		t.Fatalf("expected 7 seeded subscription rows, got %d", count)
 	}
 }
 

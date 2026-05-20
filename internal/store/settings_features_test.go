@@ -142,6 +142,45 @@ func TestCpaCredentialNeedsLoginCreatesDedicatedAlerts(t *testing.T) {
 	}
 }
 
+func TestCpaQuotaBlockedCreatesDedicatedAlerts(t *testing.T) {
+	st := newTestStore(t)
+
+	if _, err := st.db.Exec(
+		`INSERT INTO accounts (label, source_kind, cpa_provider, cpa_quota_status, cpa_quota_last_error, enabled) VALUES (?, 'cpa', 'codex', 'blocked', 'quota blocked by upstream', 1)`,
+		"codex-quota",
+	); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	overview, err := st.GetOverview()
+	if err != nil {
+		t.Fatalf("get overview: %v", err)
+	}
+	foundOverview := false
+	for _, alert := range overview.Alerts {
+		if alert.Type == "cpa_quota_blocked" && alert.Message == `Account "codex-quota" CPA quota is blocked: quota blocked by upstream` {
+			foundOverview = true
+		}
+	}
+	if !foundOverview {
+		t.Fatalf("missing CPA quota overview alert: %+v", overview.Alerts)
+	}
+
+	notifications, err := st.ListSystemNotifications()
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	foundNotification := false
+	for _, item := range notifications {
+		if item.Type == "cpa_quota_blocked" && item.Label == "codex-quota" && item.LastError == "quota blocked by upstream" {
+			foundNotification = true
+		}
+	}
+	if !foundNotification {
+		t.Fatalf("missing CPA quota notification: %+v", notifications)
+	}
+}
+
 func TestPruneRequestLogsDeletesOnlyExpiredRows(t *testing.T) {
 	st := newTestStore(t)
 

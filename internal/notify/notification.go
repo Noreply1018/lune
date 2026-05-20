@@ -50,6 +50,16 @@ func EventTypes() []EventType {
 			},
 		},
 		{
+			Event:               "cpa_quota_blocked",
+			Label:               "CPA 额度受限",
+			DefaultSeverity:     "warning",
+			DefaultBodyTemplate: `账号 {{ .Vars.account_label }} 的 CPA 额度受限：{{ .Vars.last_error }}`,
+			SampleVars: map[string]any{
+				"account_label": "account-1",
+				"last_error":    "quota blocked by upstream",
+			},
+		},
+		{
 			Event:               "account_error",
 			Label:               "账号不可用",
 			DefaultSeverity:     "critical",

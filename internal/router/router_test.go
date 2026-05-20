@@ -266,6 +266,43 @@ func TestRoutingCpaRuntimeBindingDoesNotMaskSpecificBlockingState(t *testing.T) 
 	}
 }
 
+func TestRoutingPrefersQuotaBlockedOverNeedsLoginReason(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := createRouterCpaAccount(t, st, poolID, serviceID, "quota-vs-login", "needs_login")
+	if err := st.UpdateAccountCodexQuotaStatus(accountID, "blocked", "quota blocked by upstream", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+	}
+
+	rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+	decision := rt.accountDecision(&store.Account{
+		Enabled:             true,
+		Status:              "healthy",
+		SourceKind:          "cpa",
+		CpaProvider:         "codex",
+		CpaCredentialStatus: "needs_login",
+		CpaQuotaStatus:      "blocked",
+	}, ResolveOptions{})
+	if decision.Reason != "quota_blocked" {
+		t.Fatalf("expected quota to win over login in routing reason, got %+v", decision)
+	}
+	if decision.Routable {
+		t.Fatalf("expected blocked account to remain unroutable, got %+v", decision)
+	}
+}
+
 func TestRoutingCpaAuthSuspectIsRoutableButDeprioritizedWhenBindingSupported(t *testing.T) {
 	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
 	if err != nil {

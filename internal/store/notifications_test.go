@@ -122,8 +122,8 @@ func TestNotificationSubscriptionsSeededAndUpdatable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list subs: %v", err)
 	}
-	if len(subs) != 6 {
-		t.Fatalf("expected 6 seeded subscriptions, got %d", len(subs))
+	if len(subs) != 7 {
+		t.Fatalf("expected 7 seeded subscriptions, got %d", len(subs))
 	}
 	seen := map[string]bool{}
 	for _, sub := range subs {
@@ -132,7 +132,7 @@ func TestNotificationSubscriptionsSeededAndUpdatable(t *testing.T) {
 			t.Fatalf("expected seeded body for %q, got empty", sub.Event)
 		}
 	}
-	for _, want := range []string{"account_error", "account_expiring", "cpa_credential_error", "cpa_service_error", "test"} {
+	for _, want := range []string{"account_error", "account_expiring", "cpa_credential_error", "cpa_quota_blocked", "cpa_service_error", "test"} {
 		if !seen[want] {
 			t.Fatalf("missing seeded event %q", want)
 		}

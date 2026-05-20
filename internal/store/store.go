@@ -319,6 +319,7 @@ INSERT OR IGNORE INTO notification_settings (id) VALUES (1);
 INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_template) VALUES
     ('account_expiring',  1, '账号 {{ .Vars.account_label }} 将在 {{ .Vars.expires_at }} 过期。'),
     ('cpa_credential_error', 1, '账号 {{ .Vars.account_label }} 的 CPA 登录态失效：{{ .Vars.last_error }}。请重新登录。'),
+    ('cpa_quota_blocked', 1, '账号 {{ .Vars.account_label }} 的 CPA 额度受限：{{ .Vars.last_error }}'),
     ('account_error',     1, '账号 {{ .Vars.account_label }} 最近错误：{{ .Vars.last_error }}'),
     ('cpa_service_error', 1, 'CPA runtime {{ .Vars.service_label }} 最近错误：{{ .Vars.last_error }}'),
     ('cpa_import_batch',  1, 'CPA auth JSON 批量导入 {{ .Vars.batch_id }}：created={{ .Vars.created }} updated={{ .Vars.updated }} skipped={{ .Vars.skipped }} failed={{ .Vars.failed }} runtime_pending={{ .Vars.runtime_pending }} runtime_failed={{ .Vars.runtime_failed }}'),

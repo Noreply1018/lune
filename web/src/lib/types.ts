@@ -167,6 +167,7 @@ export interface OverviewAlert {
     | "account_expiring"
     | "account_error"
     | "cpa_credential_error"
+    | "cpa_quota_blocked"
     | "pool_unhealthy"
     | string;
   message: string;

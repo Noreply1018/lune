@@ -157,6 +157,7 @@ func (s *Store) GetOverview() (*Overview, error) {
 		FROM accounts a
 		WHERE a.source_kind = 'cpa'
 		  AND a.cpa_credential_status = 'needs_login'
+		  AND lower(a.cpa_quota_status) <> 'blocked'
 		  AND a.enabled = 1`,
 	)
 	if err == nil {
@@ -171,6 +172,42 @@ func (s *Store) GetOverview() (*Overview, error) {
 			o.Alerts = append(o.Alerts, Alert{
 				Type:    "cpa_credential_error",
 				Message: fmt.Sprintf("Account %q CPA credential requires login: %s", label, credentialDetail(reason, lastError)),
+				PoolID:  poolID,
+			})
+		}
+	}
+
+	quotaRows, err := s.db.Query(`
+		SELECT a.id, a.label, a.cpa_quota_last_error,
+			COALESCE((
+				SELECT pm.pool_id
+				FROM pool_members pm
+				JOIN pools p ON p.id = pm.pool_id
+				WHERE pm.account_id = a.id AND pm.enabled = 1 AND p.enabled = 1
+				ORDER BY p.priority, p.id
+				LIMIT 1
+			), 0) AS pool_id
+		FROM accounts a
+		WHERE a.source_kind = 'cpa'
+		  AND lower(a.cpa_provider) = 'codex'
+		  AND lower(a.cpa_quota_status) = 'blocked'
+		  AND a.enabled = 1`,
+	)
+	if err == nil {
+		defer quotaRows.Close()
+		for quotaRows.Next() {
+			var id int64
+			var label, lastError string
+			var poolID int64
+			if err := quotaRows.Scan(&id, &label, &lastError, &poolID); err != nil {
+				continue
+			}
+			if lastError == "" {
+				lastError = "quota blocked"
+			}
+			o.Alerts = append(o.Alerts, Alert{
+				Type:    "cpa_quota_blocked",
+				Message: fmt.Sprintf("Account %q CPA quota is blocked: %s", label, lastError),
 				PoolID:  poolID,
 			})
 		}
