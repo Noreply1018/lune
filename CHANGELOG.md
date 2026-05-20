@@ -6,7 +6,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ## [0.2.0] - 2026-05-20
 
-状态：已发布产物，但未达到严格完成标准。CPA 删除后重导入核心修复、生命周期 operation 审计、账号真实请求诊断 evidence 回写、数据保留清理审计、隔离容器复现和发布证据整理已完成；`al`、`c`、quota 鉴权失败但可用三类真实账号矩阵尚未在一次隔离真实容器中全部跑通。
+状态：本轮发布产物已整理，但未达到严格完成标准。CPA 删除后重导入核心修复、生命周期 operation 审计、账号真实请求诊断 evidence 回写、数据保留清理审计、隔离容器复现和发布证据整理已完成；`c` 额度不足案例已在隔离真实容器中验证，`al` 和 quota 鉴权失败但可用两类真实账号矩阵尚未跑通。
 
 ### CPA Auth JSON 删除后重导入
 
@@ -43,8 +43,9 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - 隔离容器复现 `cpa-import-reimport`
 - 隔离容器验证 `data-retention prune`，清理 operation 可在 `recent-operations` 中恢复
 - 隔离容器复现 `stateful-probe`，当前真实 volume 样本证据为 `request_log_collected / http_code=503 / account_log_matched=0 / diagnostic_evidence_count=0`
+- 隔离容器验证 `c` 额度不足案例，真实模型请求返回 `HTTP 429 / usage_limit_reached`，诊断写回 `quota_exhausted / quota_exhausted_signal / ineligible`。
 - subagent 严格审计通过
-- 未完成：`al`、`c`、quota 鉴权失败但可用三类真实账号矩阵尚未在一次隔离真实容器中全部跑通，因此不能宣称 v0.2.0 严格完成。
+- 未完成：`al`、quota 鉴权失败但可用两类真实账号矩阵尚未在一次隔离真实容器中跑通，因此不能宣称 v0.2.0 严格完成。
 
 ## [未发布]
 
