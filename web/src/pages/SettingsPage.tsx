@@ -7,6 +7,8 @@ import {
   type ReactNode,
 } from "react";
 import {
+  AlertCircle,
+  CheckCircle2,
   CircleDot,
   Copy,
   Eye,
@@ -537,6 +539,9 @@ export default function SettingsPage() {
     return <ErrorState message={error} onRetry={load} />;
   }
 
+  const runtimeTone = service ? getRuntimeTone(service, readiness) : "pending";
+  const RuntimeIcon = runtimeTone === "ok" ? CheckCircle2 : runtimeTone === "pending" ? CircleDot : AlertCircle;
+
   return (
     <div className="space-y-12 pb-8">
       <SideTOC sections={SETTINGS_SECTIONS} ready={!loading} />
@@ -551,8 +556,8 @@ export default function SettingsPage() {
       >
         <div className="border-b border-moon-200/45 px-5 py-5 sm:px-6">
           <SectionHeading
-            title="System Runtime"
-            description="网关执行、请求重放、健康检查与内置 CPA runtime 状态。"
+            title="系统运行时"
+            description="查看网关是否可接收请求，以及内置 CPA 运行时的版本和诊断信息。"
             action={
               <Button
                 variant="outline"
@@ -566,7 +571,7 @@ export default function SettingsPage() {
                 ) : (
                   <CircleDot className="size-4" />
                 )}
-                Check Runtime
+                检查运行时
               </Button>
             }
           />
@@ -575,94 +580,129 @@ export default function SettingsPage() {
         <div className="px-5 py-5 sm:px-6">
           {service ? (
             <div className="space-y-5">
-              <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2 xl:grid-cols-6">
+              <div className="flex flex-col gap-3 rounded-[1.2rem] border border-moon-200/45 bg-white/54 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <span
+                    className={cn(
+                      "mt-0.5 inline-flex size-9 shrink-0 items-center justify-center rounded-full",
+                      runtimeTone === "ok" && "bg-status-green/12 text-status-green",
+                      runtimeTone === "pending" && "bg-moon-100/90 text-moon-500",
+                      runtimeTone === "error" && "bg-status-red/10 text-status-red",
+                    )}
+                  >
+                    <RuntimeIcon className={cn("size-4.5", runtimeTone === "pending" && "animate-pulse")} />
+                  </span>
+                  <div>
+                    <p className="text-sm font-semibold text-moon-800">
+                      {runtimeSummary(service, readiness)}
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-moon-500">
+                      {runtimeSummaryDetail(service, readiness)}
+                    </p>
+                  </div>
+                </div>
+                <StatusBadge
+                  ok={service.status === "healthy" && readiness?.status === "ok"}
+                  pending={service.status === "unknown" || !readiness || readiness.status === "pending"}
+                >
+                  {service.status === "healthy" && readiness?.status === "ok"
+                    ? "可接收请求"
+                    : service.status === "unknown" || !readiness || readiness.status === "pending"
+                      ? "检查中"
+                      : "需要处理"}
+                </StatusBadge>
+              </div>
+
+              <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2 xl:grid-cols-4">
                 <InfoBlock
-                  label="Status"
+                  label="运行状态"
                   value={
                     <StatusBadge
                       ok={service.status === "healthy"}
                       pending={service.status === "unknown"}
                     >
                       {service.status === "healthy"
-                        ? "Healthy"
+                        ? "正常"
                         : service.status === "unknown"
-                          ? "Pending"
-                          : "Error"}
-                    </StatusBadge>
-                  }
-                />
-                <InfoBlock label="Mode" value={service.runtime_mode || "embedded"} />
-                <InfoBlock
-                  label="Image CPA Version"
-                  value={
-                    service.image_pinned_version ||
-                    service.current_version ||
-                    "Unknown"
-                  }
-                />
-                <InfoBlock
-                  label="Running CPA Version"
-                  value={
-                    service.running_version ||
-                    service.current_version ||
-                    "Unknown"
-                  }
-                />
-                <InfoBlock
-                  label="Latest Version"
-                  value={
-                    service.latest_version
-                      ? service.latest_version
-                      : "随 Lune 镜像更新"
-                  }
-                />
-                <InfoBlock
-                  label="Provider Pinning"
-                  value={
-                    <StatusBadge
-                      ok={service.provider_pinning_state === "enabled" || service.provider_pinning_supported}
-                      pending={service.provider_pinning_state === "unknown"}
-                    >
-                      {service.provider_pinning_state === "enabled" || service.provider_pinning_supported
-                        ? "Enabled"
-                        : service.provider_pinning_state === "unknown"
-                          ? "Unknown"
-                          : "Disabled"}
+                          ? "检查中"
+                          : "异常"}
                     </StatusBadge>
                   }
                 />
                 <InfoBlock
-                  label="Readiness"
+                  label="请求就绪"
                   value={
                     <StatusBadge
                       ok={readiness?.status === "ok"}
                       pending={!readiness || readiness.status === "pending"}
                     >
                       {readiness?.status === "ok"
-                        ? "Ready"
+                        ? "已就绪"
                         : readiness?.status === "pending"
-                          ? "Checking"
-                          : "Not Ready"}
+                          ? "检查中"
+                          : "暂不可用"}
                     </StatusBadge>
                   }
                 />
                 <InfoBlock
-                  label="Last Checked"
+                  label="运行模式"
+                  value={runtimeModeLabel(service.runtime_mode)}
+                />
+                <InfoBlock
+                  label="最后检查"
                   value={
                     service.last_checked_at
                       ? shortDate(service.last_checked_at)
                       : "尚未检查"
                   }
                 />
+                <InfoBlock
+                  label="镜像内置版本"
+                  value={
+                    service.image_pinned_version ||
+                    service.current_version ||
+                    "未知"
+                  }
+                />
+                <InfoBlock
+                  label="当前运行版本"
+                  value={
+                    service.running_version ||
+                    service.current_version ||
+                    "未知"
+                  }
+                />
+                <InfoBlock
+                  label="更新来源"
+                  value={
+                    service.latest_version
+                      ? `可更新到 ${service.latest_version}`
+                      : "随 Lune 镜像更新"
+                  }
+                />
+                <InfoBlock
+                  label="版本固定"
+                  value={
+                    <StatusBadge
+                      ok={service.provider_pinning_state === "enabled" || service.provider_pinning_supported}
+                      pending={service.provider_pinning_state === "unknown"}
+                    >
+                      {service.provider_pinning_state === "enabled" || service.provider_pinning_supported
+                        ? "已启用"
+                        : service.provider_pinning_state === "unknown"
+                          ? "未知"
+                          : "未启用"}
+                    </StatusBadge>
+                  }
+                />
               </div>
 
-              <div className="grid gap-4 border-y border-moon-200/35 py-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)]">
-                <InfoBlock label="Auth Dir" value={service.auth_dir || "--"} />
+              <div className="grid gap-4 border-y border-moon-200/35 py-4 lg:grid-cols-2">
                 <InfoBlock
-                  label="Readiness Reason"
-                  value={readiness?.message || "--"}
+                  label="不可用原因"
+                  value={friendlyDiagnostic(readiness?.message)}
                 />
-                <InfoBlock label="Last Error" value={service.last_error || "None"} />
+                <InfoBlock label="最近错误" value={friendlyDiagnostic(service.last_error, "无")} />
               </div>
             </div>
           ) : (
@@ -675,11 +715,11 @@ export default function SettingsPage() {
         <div className="grid border-t border-moon-200/45 lg:grid-cols-2">
           <div className="px-5 py-5 sm:px-6 lg:border-r lg:border-moon-200/35">
             <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-moon-300">
-              Execution
+              执行
             </p>
             <div className="divide-y divide-moon-200/30">
               <SettingsNumericRow
-                label="Request Timeout"
+                label="请求超时"
                 value={gatewayForm.request_timeout}
                 suffix="秒"
                 min={1}
@@ -693,7 +733,7 @@ export default function SettingsPage() {
                 }}
               />
               <SettingsNumericRow
-                label="Max Retry Attempts"
+                label="最大重试次数"
                 value={gatewayForm.max_retry_attempts}
                 suffix="次"
                 min={1}
@@ -707,7 +747,7 @@ export default function SettingsPage() {
                 }}
               />
               <SettingsNumericRow
-                label="Health Check Interval"
+                label="健康检查间隔"
                 value={gatewayForm.health_check_interval}
                 suffix="秒"
                 min={1}
@@ -726,11 +766,11 @@ export default function SettingsPage() {
 
           <div className="border-t border-moon-200/45 px-5 py-5 sm:px-6 lg:border-t-0">
             <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.16em] text-moon-300">
-              Payload
+              请求体
             </p>
             <div className="divide-y divide-moon-200/30">
               <SettingsNumericRow
-                label="Max Request Body"
+                label="最大请求体"
                 value={gatewayForm.gateway_max_body_mb}
                 suffix="MB"
                 min={1}
@@ -749,7 +789,7 @@ export default function SettingsPage() {
                 }}
               />
               <SettingsNumericRow
-                label="Memory Body Threshold"
+                label="内存处理阈值"
                 value={gatewayForm.gateway_memory_body_mb}
                 suffix="MB"
                 min={1}
@@ -840,20 +880,20 @@ export default function SettingsPage() {
           setEditingNameValue("");
         }}
       >
-        <DialogContent className="max-w-md rounded-[1.6rem] border border-white/75 bg-white/95 p-0">
-          <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
-            <DialogTitle>Edit Token</DialogTitle>
-            <DialogDescription>修改名称，不会影响当前 token 值。</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 px-6 py-6">
-            <Input
-              value={editingNameValue}
-              onChange={(event) => setEditingNameValue(event.target.value)}
-              placeholder="Token name"
-              disabled={savingTokenName}
-            />
-          </div>
-          <DialogFooter className="border-t border-moon-200/55 bg-white/76 px-6 py-4">
+          <DialogContent className="max-w-md overflow-hidden rounded-[1.6rem] border border-white/75 bg-white/95 p-0">
+            <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
+              <DialogTitle>编辑 Token 名称</DialogTitle>
+              <DialogDescription>仅修改显示名称，不影响当前 Token 值。</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 px-6 py-6">
+              <Input
+                value={editingNameValue}
+                onChange={(event) => setEditingNameValue(event.target.value)}
+                placeholder="Token 名称"
+                disabled={savingTokenName}
+              />
+            </div>
+          <div className="flex flex-col-reverse gap-2 border-t border-moon-200/55 bg-moon-50/72 px-6 py-4 sm:flex-row sm:justify-end">
             <Button
               variant="outline"
               onClick={() => {
@@ -868,7 +908,7 @@ export default function SettingsPage() {
               {savingTokenName ? <RefreshCw className="size-4 animate-spin" /> : null}
               {savingTokenName ? "保存中" : "保存"}
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -1234,6 +1274,66 @@ function InlineMeta({
       </div>
     </div>
   );
+}
+
+function runtimeModeLabel(mode?: string | null) {
+  if (!mode || mode === "embedded") return "内置运行时";
+  if (mode === "external") return "外部运行时";
+  return mode;
+}
+
+function getRuntimeTone(
+  service: CpaService,
+  readiness: { status: string; message: string } | null,
+) {
+  if (service.status === "healthy" && readiness?.status === "ok") return "ok";
+  if (service.status === "unknown" || !readiness || readiness.status === "pending") {
+    return "pending";
+  }
+  return "error";
+}
+
+function runtimeSummary(
+  service: CpaService,
+  readiness: { status: string; message: string } | null,
+) {
+  if (service.status === "healthy" && readiness?.status === "ok") {
+    return "当前运行时正常，可接收网关请求。";
+  }
+  if (service.status === "unknown" || !readiness || readiness.status === "pending") {
+    return "正在确认运行时状态。";
+  }
+  return "运行时需要处理，部分请求可能不可用。";
+}
+
+function runtimeSummaryDetail(
+  service: CpaService,
+  readiness: { status: string; message: string } | null,
+) {
+  const version = service.running_version || service.current_version || "未知版本";
+  if (service.last_error) return `当前版本 ${version}，最近一次检查发现异常，详情见下方诊断。`;
+  if (readiness?.message) return `当前版本 ${version}，就绪状态需要关注，详情见下方诊断。`;
+  return `当前版本 ${version}，请求超时、重试和健康检查配置会实时生效。`;
+}
+
+function friendlyDiagnostic(value?: string | null, empty = "--") {
+  const text = value?.trim();
+  if (!text) return empty;
+  const lower = text.toLowerCase();
+  if (lower === "ok") return "无";
+  if (lower.includes("connection refused") || lower.includes("connect:")) {
+    return "运行时连接失败，请检查容器内服务是否已启动。";
+  }
+  if (lower.includes("timeout") || lower.includes("deadline exceeded")) {
+    return "运行时响应超时，请稍后重试或检查负载。";
+  }
+  if (lower.includes("no such file") || lower.includes("permission denied")) {
+    return "运行时文件访问失败，请检查数据目录挂载和权限。";
+  }
+  if (text.length > 96 || text.includes("/app/") || text.includes("\\n")) {
+    return "运行时返回了详细错误，请查看容器日志定位。";
+  }
+  return text;
 }
 
 function InfoBlock({ label, value }: { label: string; value: ReactNode }) {

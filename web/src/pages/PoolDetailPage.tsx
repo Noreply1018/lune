@@ -823,19 +823,21 @@ function PoolSettingsDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="gap-5 rounded-[1.25rem] bg-white/95 p-5 sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="text-[1.05rem] text-moon-800">更多设置</DialogTitle>
-            <DialogDescription>
-              管理当前 Pool 的名称、启用状态和删除操作。
+        <DialogContent className="flex max-h-[min(42rem,calc(100vh-2rem))] flex-col gap-0 overflow-hidden rounded-[1.55rem] border border-white/75 bg-white/96 p-0 shadow-[0_34px_90px_-58px_rgba(33,40,63,0.58)] sm:max-w-[36rem]">
+          <DialogHeader className="border-b border-moon-200/55 px-6 py-5">
+            <DialogTitle className="text-[1.08rem] text-moon-800">Pool 设置</DialogTitle>
+            <DialogDescription className="text-moon-500">
+              管理名称、启用状态和删除操作。
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-5">
-            <section className="space-y-3 border-b border-moon-200/60 pb-5">
+          <div className="min-h-0 flex-1 space-y-0 overflow-y-auto px-6">
+            <section className="space-y-4 border-b border-moon-200/50 py-5">
               <div>
-                <p className="text-sm font-medium text-moon-800">基础信息</p>
-                <p className="mt-1 text-sm text-moon-500">名称会同步显示在侧边栏、Token 和导出配置中。</p>
+                <p className="text-sm font-semibold text-moon-800">基础信息</p>
+                <p className="mt-1 text-sm leading-6 text-moon-500">
+                  名称会同步显示在侧边栏、Token 和导出配置中。
+                </p>
               </div>
               <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                 <div className="space-y-2.5">
@@ -848,22 +850,26 @@ function PoolSettingsDialog({
                     }}
                   />
                 </div>
-                <Button onClick={saveLabel} disabled={savingLabel || label.trim() === pool.label}>
+                <Button
+                  className="sm:min-w-20"
+                  onClick={saveLabel}
+                  disabled={savingLabel || label.trim() === pool.label}
+                >
                   {savingLabel ? <Loader2 className="size-4 animate-spin" /> : null}
                   保存
                 </Button>
               </div>
             </section>
 
-            <section className="space-y-3 border-b border-moon-200/60 pb-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
+            <section className="space-y-4 border-b border-moon-200/50 py-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-sm font-medium text-moon-800">运行状态</p>
-                  <p className="mt-1 text-sm text-moon-500">
+                  <p className="text-sm font-semibold text-moon-800">运行状态</p>
+                  <p className="mt-1 max-w-md text-sm leading-6 text-moon-500">
                     停用后，该 Pool 的网关请求会停止路由；Token 保留，可随时恢复。
                   </p>
                 </div>
-                <span className="rounded-full bg-moon-100/80 px-3 py-1.5 text-xs text-moon-600">
+                <span className="rounded-full border border-moon-200/55 bg-moon-100/76 px-3 py-1.5 text-xs font-medium text-moon-600">
                   {pool.enabled ? "已启用" : "已停用"}
                 </span>
               </div>
@@ -883,11 +889,11 @@ function PoolSettingsDialog({
               )}
             </section>
 
-            <section className="space-y-3">
+            <section className="space-y-4 py-5">
               <div>
-                <p className="text-sm font-medium text-status-red">危险操作</p>
-                <p className="mt-1 text-sm text-moon-500">
-                  删除会移除这个 Pool、Pool Token 和其中的 {accountCount} 个账号；这些账号也会从其他 Pool 中移除。
+                <p className="text-sm font-semibold text-status-red">删除 Pool</p>
+                <p className="mt-1 text-sm leading-6 text-moon-500">
+                  将删除该 Pool、Pool Token，以及其中的 {accountCount} 个账号。此操作不可撤销。
                 </p>
               </div>
               <Button
