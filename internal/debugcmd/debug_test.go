@@ -71,6 +71,11 @@ func TestDebugCommandsRedactCPAAccountMaterial(t *testing.T) {
 	if !strings.Contains(accountOutput, `"cpa_account_key_hash"`) {
 		t.Fatalf("expected account key hash, got %s", accountOutput)
 	}
+	if !strings.Contains(accountOutput, `"stable_diagnostic_status": "unknown"`) ||
+		!strings.Contains(accountOutput, `"last_probe_status": "not_run"`) ||
+		!strings.Contains(accountOutput, `"scheduler_status": "eligible_with_warning"`) {
+		t.Fatalf("expected default diagnostic in account output, got %s", accountOutput)
+	}
 	for _, secret := range []string{accountKey, "secret@example.com", "refresh-secret"} {
 		if strings.Contains(accountOutput, secret) {
 			t.Fatalf("account output leaked %q: %s", secret, accountOutput)
@@ -92,6 +97,33 @@ func TestDebugCommandsRedactCPAAccountMaterial(t *testing.T) {
 		if strings.Contains(cpaOutput, secret) {
 			t.Fatalf("cpa-auth output leaked %q: %s", secret, cpaOutput)
 		}
+	}
+}
+
+func TestDebugCollectIncludesAccountDiagnostics(t *testing.T) {
+	cmd, st := newDebugTestCommand(t)
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:      "Direct",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://api.example.com",
+		APIKey:     "sk-secret",
+		Provider:   "openai",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if accountID == 0 {
+		t.Fatalf("expected account id")
+	}
+
+	diag := cmd.accountDiagnosticsForCollect()
+	text := fmt.Sprint(diag)
+	if strings.Contains(text, "not_implemented") {
+		t.Fatalf("diagnostics collect still reports not_implemented: %+v", diag)
+	}
+	if !strings.Contains(text, "account_diagnostics") || !strings.Contains(text, "not_run") {
+		t.Fatalf("expected diagnostics collect payload, got %+v", diag)
 	}
 }
 

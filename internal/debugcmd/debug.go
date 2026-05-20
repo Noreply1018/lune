@@ -124,7 +124,7 @@ func (c command) summary() map[string]any {
 	defer db.Close()
 
 	counts := map[string]int64{}
-	for _, table := range []string{"accounts", "pools", "pool_members", "request_logs", "operations", "operation_items"} {
+	for _, table := range []string{"accounts", "pools", "pool_members", "request_logs", "operations", "operation_items", "account_diagnostics", "account_diagnostic_evidence"} {
 		counts[table] = countRows(db, table)
 	}
 	return map[string]any{
@@ -278,6 +278,7 @@ func (c command) account(id int64) map[string]any {
 		acct["last_error"] = sanitizeText(msg)
 	}
 	redactRows([]map[string]any{acct})
+	diagnostic, _ := c.accountDiagnostic(db, id)
 	recentLogs, _ := queryMaps(db, `SELECT request_id, status_code, success, error_message, diagnostic, stateful_probe,
 		traffic_kind, runtime_binding_status, runtime_binding_reason, created_at
 		FROM request_logs WHERE account_id = ? ORDER BY datetime(created_at) DESC, id DESC LIMIT 20`, id)
@@ -287,7 +288,7 @@ func (c command) account(id int64) map[string]any {
 		}
 	}
 	redactRows(recentLogs)
-	return map[string]any{"status": "ok", "account": acct, "recent_request_logs": recentLogs}
+	return map[string]any{"status": "ok", "account": acct, "diagnostic": diagnostic, "recent_request_logs": recentLogs}
 }
 
 func (c command) collect(args []string) error {
@@ -312,7 +313,7 @@ func (c command) collect(args []string) error {
 		"summary.txt":                       c.summary(),
 		"recent-operations.json":            c.recentOperations(),
 		"accounts.redacted.json":            c.accountsForCollect(),
-		"account-diagnostics.redacted.json": map[string]any{"status": "not_implemented", "message": "account diagnostics tables are not available yet"},
+		"account-diagnostics.redacted.json": c.accountDiagnosticsForCollect(),
 		"pools.redacted.json":               c.poolsForCollect(),
 		"cpa-auth-files.redacted.json":      c.cpaAuth(),
 		"runtime.redacted.json":             c.cpaRuntime(),
@@ -355,6 +356,43 @@ func (c command) accountsForCollect() map[string]any {
 	}
 	redactRows(rows)
 	return map[string]any{"status": "ok", "accounts": rows}
+}
+
+func (c command) accountDiagnostic(db *sql.DB, accountID int64) (map[string]any, error) {
+	rows, err := queryMaps(db, `SELECT id, account_id, account_key_hash, provider, operation_id, started_at, finished_at,
+		stable_diagnostic_status, previous_stable_diagnostic_status, last_probe_status, scheduler_status,
+		scheduler_override, safe_summary, created_at, updated_at
+		FROM account_diagnostics WHERE account_id = ?`, accountID)
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	diag := rows[0]
+	redactRows([]map[string]any{diag})
+	evidence, err := queryMaps(db, `SELECT probe_type, stage, http_status, upstream_error_code, normalized_error_code,
+		safe_message, observed_at, request_log_id
+		FROM account_diagnostic_evidence WHERE diagnostic_id = ? ORDER BY datetime(observed_at), id LIMIT 100`, diag["id"])
+	if err == nil {
+		redactRows(evidence)
+		diag["evidence"] = evidence
+	}
+	return diag, nil
+}
+
+func (c command) accountDiagnosticsForCollect() map[string]any {
+	db, err := c.openReadOnlyDB()
+	if err != nil {
+		return map[string]any{"status": "error", "error": err.Error()}
+	}
+	defer db.Close()
+	rows, err := queryMaps(db, `SELECT account_id, account_key_hash, provider, operation_id, started_at, finished_at,
+		stable_diagnostic_status, previous_stable_diagnostic_status, last_probe_status, scheduler_status,
+		scheduler_override, safe_summary, updated_at
+		FROM account_diagnostics ORDER BY account_id LIMIT ?`, maxDebugRows)
+	if err != nil {
+		return map[string]any{"status": "error", "error": err.Error()}
+	}
+	redactRows(rows)
+	return map[string]any{"status": "ok", "account_diagnostics": rows}
 }
 
 func (c command) poolsForCollect() map[string]any {

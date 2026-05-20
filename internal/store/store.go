@@ -21,7 +21,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 23
+const v3SchemaVersion = 24
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -279,6 +279,41 @@ CREATE INDEX IF NOT EXISTS idx_operations_created_at ON operations(created_at);
 CREATE INDEX IF NOT EXISTS idx_operations_type_created ON operations(operation_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_operation_items_operation ON operation_items(operation_id, item_index);
 
+CREATE TABLE IF NOT EXISTS account_diagnostics (
+    id                                  INTEGER PRIMARY KEY,
+    account_id                          INTEGER NOT NULL UNIQUE REFERENCES accounts(id) ON DELETE CASCADE,
+    account_key_hash                    TEXT NOT NULL DEFAULT '',
+    provider                            TEXT NOT NULL DEFAULT '',
+    operation_id                        TEXT NOT NULL DEFAULT '',
+    started_at                          TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at                         TEXT NOT NULL DEFAULT (datetime('now')),
+    stable_diagnostic_status            TEXT NOT NULL DEFAULT 'unknown',
+    previous_stable_diagnostic_status   TEXT NOT NULL DEFAULT '',
+    last_probe_status                   TEXT NOT NULL DEFAULT 'not_run',
+    scheduler_status                    TEXT NOT NULL DEFAULT 'eligible_with_warning',
+    scheduler_override                  TEXT NOT NULL DEFAULT '',
+    safe_summary                        TEXT NOT NULL DEFAULT '',
+    created_at                          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS account_diagnostic_evidence (
+    id                      INTEGER PRIMARY KEY,
+    diagnostic_id           INTEGER NOT NULL REFERENCES account_diagnostics(id) ON DELETE CASCADE,
+    probe_type              TEXT NOT NULL DEFAULT '',
+    stage                   TEXT NOT NULL DEFAULT '',
+    http_status             INTEGER,
+    upstream_error_code     TEXT NOT NULL DEFAULT '',
+    normalized_error_code   TEXT NOT NULL DEFAULT '',
+    safe_message            TEXT NOT NULL DEFAULT '',
+    observed_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    request_log_id          INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_diagnostics_account ON account_diagnostics(account_id);
+CREATE INDEX IF NOT EXISTS idx_account_diagnostics_operation ON account_diagnostics(operation_id);
+CREATE INDEX IF NOT EXISTS idx_account_diagnostic_evidence_diag ON account_diagnostic_evidence(diagnostic_id, observed_at);
+
 INSERT OR IGNORE INTO notification_settings (id) VALUES (1);
 
 INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_template) VALUES
@@ -355,6 +390,9 @@ func (s *Store) migrateV3(dbPath string) error {
 		}
 		if err := s.migrateOperationTables(); err != nil {
 			return fmt.Errorf("repair operation tables: %w", err)
+		}
+		if err := s.migrateAccountDiagnosticTables(); err != nil {
+			return fmt.Errorf("repair account diagnostic tables: %w", err)
 		}
 		return nil // already at latest
 	}
@@ -440,6 +478,11 @@ func (s *Store) migrateV3(dbPath string) error {
 		if ver < 23 {
 			if err := s.migrateOperationTables(); err != nil {
 				return fmt.Errorf("migrate operation tables: %w", err)
+			}
+		}
+		if ver < 24 {
+			if err := s.migrateAccountDiagnosticTables(); err != nil {
+				return fmt.Errorf("migrate account diagnostic tables: %w", err)
 			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
@@ -1082,6 +1125,110 @@ func (s *Store) migrateOperationTables() error {
 	delete(s.schemaCache, "operation_items")
 	s.schemaMu.Unlock()
 	return nil
+}
+
+func (s *Store) migrateAccountDiagnosticTables() error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS account_diagnostics (
+			id                                  INTEGER PRIMARY KEY,
+			account_id                          INTEGER NOT NULL UNIQUE REFERENCES accounts(id) ON DELETE CASCADE,
+			account_key_hash                    TEXT NOT NULL DEFAULT '',
+			provider                            TEXT NOT NULL DEFAULT '',
+			operation_id                        TEXT NOT NULL DEFAULT '',
+			started_at                          TEXT NOT NULL DEFAULT (datetime('now')),
+			finished_at                         TEXT NOT NULL DEFAULT (datetime('now')),
+			stable_diagnostic_status            TEXT NOT NULL DEFAULT 'unknown',
+			previous_stable_diagnostic_status   TEXT NOT NULL DEFAULT '',
+			last_probe_status                   TEXT NOT NULL DEFAULT 'not_run',
+			scheduler_status                    TEXT NOT NULL DEFAULT 'eligible_with_warning',
+			scheduler_override                  TEXT NOT NULL DEFAULT '',
+			safe_summary                        TEXT NOT NULL DEFAULT '',
+			created_at                          TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at                          TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE TABLE IF NOT EXISTS account_diagnostic_evidence (
+			id                      INTEGER PRIMARY KEY,
+			diagnostic_id           INTEGER NOT NULL REFERENCES account_diagnostics(id) ON DELETE CASCADE,
+			probe_type              TEXT NOT NULL DEFAULT '',
+			stage                   TEXT NOT NULL DEFAULT '',
+			http_status             INTEGER,
+			upstream_error_code     TEXT NOT NULL DEFAULT '',
+			normalized_error_code   TEXT NOT NULL DEFAULT '',
+			safe_message            TEXT NOT NULL DEFAULT '',
+			observed_at             TEXT NOT NULL DEFAULT (datetime('now')),
+			request_log_id          INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_account_diagnostics_account ON account_diagnostics(account_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_account_diagnostics_operation ON account_diagnostics(operation_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_account_diagnostic_evidence_diag ON account_diagnostic_evidence(diagnostic_id, observed_at)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	if err := s.backfillAccountDiagnostics(); err != nil {
+		return err
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "account_diagnostics")
+	delete(s.schemaCache, "account_diagnostic_evidence")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) backfillAccountDiagnostics() error {
+	exists, err := s.tableExists("accounts")
+	if err != nil || !exists {
+		return err
+	}
+	hasProvider, err := s.hasColumn("accounts", "provider")
+	if err != nil {
+		return err
+	}
+	hasCpaProvider, err := s.hasColumn("accounts", "cpa_provider")
+	if err != nil {
+		return err
+	}
+	hasEnabled, err := s.hasColumn("accounts", "enabled")
+	if err != nil {
+		return err
+	}
+	hasStatus, err := s.hasColumn("accounts", "status")
+	if err != nil {
+		return err
+	}
+
+	providerExpr := "''"
+	switch {
+	case hasProvider && hasCpaProvider:
+		providerExpr = "COALESCE(NULLIF(cpa_provider, ''), provider)"
+	case hasCpaProvider:
+		providerExpr = "cpa_provider"
+	case hasProvider:
+		providerExpr = "provider"
+	}
+	schedulerExpr := "'eligible_with_warning'"
+	if hasEnabled && hasStatus {
+		schedulerExpr = `CASE
+			WHEN enabled = 0 OR status = 'disabled' THEN 'ineligible'
+			WHEN status = 'error' THEN 'eligible_with_warning'
+			ELSE 'eligible_with_warning'
+		END`
+	} else if hasEnabled {
+		schedulerExpr = `CASE WHEN enabled = 0 THEN 'ineligible' ELSE 'eligible_with_warning' END`
+	} else if hasStatus {
+		schedulerExpr = `CASE WHEN status = 'disabled' THEN 'ineligible' ELSE 'eligible_with_warning' END`
+	}
+
+	_, err = s.db.Exec(`INSERT OR IGNORE INTO account_diagnostics (
+		account_id, account_key_hash, provider, stable_diagnostic_status, last_probe_status,
+		scheduler_status, safe_summary
+	)
+	SELECT id, '', ` + providerExpr + `, 'unknown', 'not_run', ` + schedulerExpr + `,
+		'no diagnostic has run yet'
+	FROM accounts`)
+	return err
 }
 
 func (s *Store) migrateCpaCredentialColumns() error {

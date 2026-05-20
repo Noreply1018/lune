@@ -66,10 +66,17 @@ type Account struct {
 	UpdatedAt     string  `json:"updated_at"`
 
 	// computed fields (not stored in DB)
-	APIKeySet    bool            `json:"api_key_set"`
-	APIKeyMasked string          `json:"api_key_masked"`
-	Models       []string        `json:"models"`
-	Runtime      *AccountRuntime `json:"runtime,omitempty"`
+	APIKeySet    bool               `json:"api_key_set"`
+	APIKeyMasked string             `json:"api_key_masked"`
+	Models       []string           `json:"models"`
+	Runtime      *AccountRuntime    `json:"runtime,omitempty"`
+	Diagnostic   *AccountDiagnostic `json:"diagnostic,omitempty"`
+
+	DiagnosticStatus  string `json:"diagnostic_status,omitempty"`
+	SchedulerStatus   string `json:"scheduler_status,omitempty"`
+	LastDiagnosedAt   string `json:"last_diagnosed_at,omitempty"`
+	DiagnosticSummary string `json:"diagnostic_summary,omitempty"`
+	CpaAccountKeyHash string `json:"cpa_account_key_hash,omitempty"`
 }
 
 type AccountRuntime struct {
@@ -153,6 +160,38 @@ type RequestLog struct {
 	RuntimeBindingReason string `json:"runtime_binding_reason"`
 	RouteTrace           string `json:"route_trace,omitempty"`
 	CreatedAt            string `json:"created_at"`
+}
+
+type AccountDiagnostic struct {
+	ID                             int64                       `json:"id"`
+	AccountID                      int64                       `json:"account_id"`
+	AccountKeyHash                 string                      `json:"account_key_hash,omitempty"`
+	Provider                       string                      `json:"provider,omitempty"`
+	OperationID                    string                      `json:"operation_id,omitempty"`
+	StartedAt                      string                      `json:"started_at"`
+	FinishedAt                     string                      `json:"finished_at"`
+	StableDiagnosticStatus         string                      `json:"stable_diagnostic_status"`
+	PreviousStableDiagnosticStatus string                      `json:"previous_stable_diagnostic_status,omitempty"`
+	LastProbeStatus                string                      `json:"last_probe_status"`
+	SchedulerStatus                string                      `json:"scheduler_status"`
+	SchedulerOverride              string                      `json:"scheduler_override,omitempty"`
+	SafeSummary                    string                      `json:"safe_summary,omitempty"`
+	CreatedAt                      string                      `json:"created_at"`
+	UpdatedAt                      string                      `json:"updated_at"`
+	Evidence                       []AccountDiagnosticEvidence `json:"evidence,omitempty"`
+}
+
+type AccountDiagnosticEvidence struct {
+	ID                  int64  `json:"id"`
+	DiagnosticID        int64  `json:"diagnostic_id"`
+	ProbeType           string `json:"probe_type"`
+	Stage               string `json:"stage,omitempty"`
+	HTTPStatus          *int   `json:"http_status,omitempty"`
+	UpstreamErrorCode   string `json:"upstream_error_code,omitempty"`
+	NormalizedErrorCode string `json:"normalized_error_code,omitempty"`
+	SafeMessage         string `json:"safe_message,omitempty"`
+	ObservedAt          string `json:"observed_at"`
+	RequestLogID        *int64 `json:"request_log_id,omitempty"`
 }
 
 type Operation struct {

@@ -54,7 +54,13 @@ func (s *Store) CreateAccount(a *Account) (int64, error) {
 	if a.SourceKind == "" {
 		a.SourceKind = "openai_compat"
 	}
-	res, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(
 		`INSERT INTO accounts (label, source_kind, base_url, api_key, provider,
 			cpa_service_id, cpa_provider, cpa_account_key, cpa_email, cpa_plan_type, cpa_openai_id,
 			cpa_expired_at, cpa_last_refresh_at, cpa_disabled,
@@ -78,7 +84,18 @@ func (s *Store) CreateAccount(a *Account) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	a.ID = id
+	if err := ensureAccountDiagnosticTx(tx, a); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func (s *Store) UpdateAccount(id int64, a *Account) error {
@@ -308,6 +325,9 @@ func (s *Store) UpsertCpaAccountAndPoolMemberFromImport(poolID int64, a *Account
 	var memberID int64
 	if err := tx.QueryRow(`SELECT id FROM pool_members WHERE pool_id = ? AND account_id = ?`, poolID, a.ID).Scan(&memberID); err != nil {
 		return nil, 0, false, NewCpaImportDBError("select_pool_member", sqliteErrorCode(err), poolID, a.ID, err)
+	}
+	if err := ensureAccountDiagnosticTx(tx, a); err != nil {
+		return nil, 0, false, NewCpaImportDBError("account_diagnostic", sqliteErrorCode(err), poolID, a.ID, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, 0, false, NewCpaImportDBError("commit_db", sqliteErrorCode(err), poolID, a.ID, err)

@@ -176,6 +176,7 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 	for i := range accounts {
 		h.fillAccountResponse(&accounts[i])
 	}
+	h.fillAccountDiagnostics(accounts)
 	webutil.WriteList(w, accounts, len(accounts))
 }
 
@@ -2035,6 +2036,13 @@ func (h *Handler) fillAccountResponse(a *store.Account) {
 	a.APIKeyMasked = maskKey(a.APIKey)
 	a.APIKeySet = a.APIKey != ""
 	a.APIKey = ""
+	if a.CpaAccountKey != "" {
+		a.CpaAccountKeyHash = store.AccountKeyHash(a.CpaAccountKey)
+		a.CpaAccountKey = ""
+	}
+	if a.CpaEmail != "" {
+		a.CpaEmail = maskEmail(a.CpaEmail)
+	}
 
 	// Fill models from account_models
 	models, _ := h.store.ListAccountModels(a.ID)
@@ -2059,6 +2067,39 @@ func (h *Handler) fillAccountResponse(a *store.Account) {
 			AuthMode: "bearer",
 		}
 	}
+	h.fillAccountDiagnostic(a)
+}
+
+func (h *Handler) fillAccountDiagnostics(accounts []store.Account) {
+	diagnostics, err := h.store.ListAccountDiagnostics()
+	if err != nil {
+		slog.Warn("fill account diagnostics", "err", err)
+		return
+	}
+	for i := range accounts {
+		if diag := diagnostics[accounts[i].ID]; diag != nil {
+			attachAccountDiagnostic(&accounts[i], diag)
+		}
+	}
+}
+
+func (h *Handler) fillAccountDiagnostic(a *store.Account) {
+	diag, err := h.store.GetAccountDiagnostic(a.ID)
+	if err != nil {
+		slog.Warn("fill account diagnostic", "account_id", a.ID, "err", err)
+		return
+	}
+	if diag != nil {
+		attachAccountDiagnostic(a, diag)
+	}
+}
+
+func attachAccountDiagnostic(a *store.Account, diag *store.AccountDiagnostic) {
+	a.Diagnostic = diag
+	a.DiagnosticStatus = diag.StableDiagnosticStatus
+	a.SchedulerStatus = diag.SchedulerStatus
+	a.LastDiagnosedAt = diag.FinishedAt
+	a.DiagnosticSummary = diag.SafeSummary
 }
 
 // --- CPA Login Sessions (Device Code Flow) ---

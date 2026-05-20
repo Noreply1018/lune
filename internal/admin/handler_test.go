@@ -535,6 +535,98 @@ func TestImportCpaAuthJSONBatchPartialSuccessAndDuplicate(t *testing.T) {
 	}
 }
 
+func TestListAccountsIncludesDiagnosticSummary(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:      "Direct",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://api.example.com",
+		APIKey:     "sk-secret",
+		Provider:   "openai",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/accounts", nil)
+	rr := httptest.NewRecorder()
+
+	handler.listAccounts(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data []store.Account `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != accountID {
+		t.Fatalf("unexpected accounts response: %+v", resp.Data)
+	}
+	account := resp.Data[0]
+	if account.DiagnosticStatus != "unknown" || account.SchedulerStatus != "eligible_with_warning" || account.LastDiagnosedAt == "" {
+		t.Fatalf("expected diagnostic summary fields, got %+v", account)
+	}
+	if account.Diagnostic == nil || account.Diagnostic.LastProbeStatus != "not_run" || account.Diagnostic.SafeSummary == "" {
+		t.Fatalf("expected embedded diagnostic, got %+v", account.Diagnostic)
+	}
+	if strings.Contains(rr.Body.String(), "sk-secret") {
+		t.Fatalf("account response leaked api key: %s", rr.Body.String())
+	}
+}
+
+func TestListAccountsDoesNotExposeCpaAccountKey(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountKey := "codex-secret@example.com-plus"
+	if _, err := st.CreateAccount(&store.Account{
+		Label:         "CPA",
+		SourceKind:    "cpa",
+		CpaServiceID:  &serviceID,
+		CpaProvider:   "codex",
+		CpaAccountKey: accountKey,
+		CpaEmail:      "secret@example.com",
+		CpaPlanType:   "plus",
+		Enabled:       true,
+	}); err != nil {
+		t.Fatalf("create cpa account: %v", err)
+	}
+	handler := NewHandler(st, cache, t.TempDir(), "", nil, newTestNotifier(st))
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/accounts", nil)
+	rr := httptest.NewRecorder()
+
+	handler.listAccounts(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), accountKey) {
+		t.Fatalf("account response leaked cpa account key: %s", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "secret@example.com") {
+		t.Fatalf("account response leaked cpa email: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"cpa_account_key_hash":"sha256:`) {
+		t.Fatalf("expected cpa account key hash in response: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"cpa_email":"s***t@example.com"`) {
+		t.Fatalf("expected masked cpa email in response: %s", rr.Body.String())
+	}
+}
+
 func TestImportCpaAuthJSONRejectsUnsafeInputs(t *testing.T) {
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)

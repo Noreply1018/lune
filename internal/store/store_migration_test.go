@@ -778,8 +778,8 @@ CREATE INDEX idx_request_logs_created_at ON request_logs(created_at);
 	}
 }
 
-func TestMigrateV23AddsOperationTablesFromV22(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "legacy-v22-operations.db")
+func TestMigrateV24AddsDiagnosticTablesFromV23(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-v23-diagnostics.db")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -788,7 +788,7 @@ func TestMigrateV23AddsOperationTablesFromV22(t *testing.T) {
 
 	if _, err := db.Exec(`
 CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
-INSERT INTO system_config (key, value) VALUES ('schema_version', '22');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '23');
 CREATE TABLE pools (
     id INTEGER PRIMARY KEY,
     label TEXT NOT NULL UNIQUE,
@@ -901,6 +901,41 @@ CREATE TABLE request_logs (
     route_trace TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE operations (
+    id INTEGER PRIMARY KEY,
+    operation_id TEXT NOT NULL UNIQUE,
+    operation_type TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    target_summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    error_code TEXT NOT NULL DEFAULT '',
+    safe_error_message TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE operation_items (
+    id INTEGER PRIMARY KEY,
+    operation_id TEXT NOT NULL,
+    item_index INTEGER NOT NULL DEFAULT 0,
+    client_file_name TEXT NOT NULL DEFAULT '',
+    account_key_hash TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
+    runtime_sync TEXT NOT NULL DEFAULT '',
+    error_code TEXT NOT NULL DEFAULT '',
+    safe_error_message TEXT NOT NULL DEFAULT '',
+    account_id INTEGER,
+    pool_member_id INTEGER,
+    stage TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_operations_created_at ON operations(created_at);
+CREATE INDEX idx_operations_type_created ON operations(operation_type, created_at);
+CREATE INDEX idx_operation_items_operation ON operation_items(operation_id, item_index);
 INSERT INTO pools (id, label, priority, enabled) VALUES (1, 'Legacy Pool', 0, 1);
 INSERT INTO accounts (id, label, source_kind, base_url, api_key, provider, enabled, status, probe_models)
 VALUES (1, 'Legacy Account', 'openai_compat', 'https://api.example.com', 'sk-legacy', 'openai', 1, 'healthy', '[]');
@@ -931,6 +966,22 @@ VALUES (1, 'req_legacy', 1, 1, 'Legacy Account', 200, 1, 'openai_compat');
 	}
 	for _, name := range []string{"idx_operations_created_at", "idx_operations_type_created", "idx_operation_items_operation"} {
 		requireIndex(t, st.DB(), name)
+	}
+	for _, col := range []string{"account_id", "account_key_hash", "stable_diagnostic_status", "last_probe_status", "scheduler_status", "safe_summary"} {
+		requireTableColumn(t, st.DB(), "account_diagnostics", col)
+	}
+	for _, col := range []string{"diagnostic_id", "probe_type", "stage", "normalized_error_code", "safe_message", "request_log_id"} {
+		requireTableColumn(t, st.DB(), "account_diagnostic_evidence", col)
+	}
+	for _, name := range []string{"idx_account_diagnostics_account", "idx_account_diagnostics_operation", "idx_account_diagnostic_evidence_diag"} {
+		requireIndex(t, st.DB(), name)
+	}
+	diag, err := st.GetAccountDiagnostic(1)
+	if err != nil {
+		t.Fatalf("get legacy diagnostic: %v", err)
+	}
+	if diag == nil || diag.StableDiagnosticStatus != "unknown" || diag.LastProbeStatus != "not_run" || diag.SchedulerStatus != "eligible_with_warning" {
+		t.Fatalf("unexpected legacy diagnostic: %+v", diag)
 	}
 	if acc, err := st.GetAccount(1); err != nil || acc == nil || acc.Label != "Legacy Account" {
 		t.Fatalf("legacy account not readable after migration: account=%+v err=%v", acc, err)
