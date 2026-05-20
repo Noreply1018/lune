@@ -7,10 +7,13 @@ scenario="${1:-}"
 [[ -n "$scenario" ]] || die "Usage: scripts/audit/repro.sh <scenario>"
 
 case "$scenario" in
+  cpa-import-reimport)
+    "$AUDIT_SCRIPT_DIR/collect.sh"
+    ;;
   stateful-probe)
     "$AUDIT_SCRIPT_DIR/collect.sh"
     ;;
-  cpa-import-reimport|runtime-reload|pool-delete|quota-refresh|routing-failover)
+  runtime-reload|pool-delete|quota-refresh|routing-failover)
     die "scenario_not_implemented: $scenario requires isolated fixture data and API choreography before it can be run safely"
     ;;
   *)

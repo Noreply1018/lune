@@ -41,7 +41,7 @@
 | AUD-10 | 工具容器构建 | 本机可访问 Docker daemon | 执行 `scripts/audit/build-tools.sh` | 成功构建 `lune-audit-tools:local`，不改变生产 `Dockerfile` runtime 工具集 |
 | AUD-11 | 工具容器命令封装 | 目标 `lune` 容器存在 | 执行 `scripts/audit/run-tools.sh jq --version` 和 `sqlite3 --version` | 命令在工具容器内执行，容器退出后不遗留 |
 | AUD-12 | 只读 evidence 采集 | 目标 `lune` 容器和 `lune-data` volume 存在 | 执行 `scripts/audit/collect.sh` | 输出 `audit-output/<timestamp>/`，数据卷只读挂载，正式容器不被重启、删除或写入 |
-| AUD-13 | 核心复现场景必须实现 | 目标 `lune` 容器存在 | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 完成删除后重导入复现并输出脱敏 evidence；不得返回 `scenario_not_implemented` |
+| AUD-13 | 核心复现场景必须实现 | 已在隔离容器完成删除后重导入矩阵 | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 输出该真实容器的脱敏 evidence；不得返回 `scenario_not_implemented` |
 | AUD-14 | 辅助未实现场景显式失败 | 调用非发布阻塞且尚无安全编排的辅助场景 | 执行对应 `scripts/audit/repro.sh <scenario>` | 返回 `scenario_not_implemented`，不得伪造成功或静默降级 |
 
 ## 账号真实状态诊断

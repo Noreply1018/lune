@@ -51,7 +51,7 @@ v0.2.0 需要从“日志 + 现象审计”升级为“操作事件 + 阶段错�
 | `status` | `running / succeeded / failed / partial` |
 | `error_code` | 机器可读错误码 |
 | `safe_error_message` | 可展示、可审计、已脱敏的错误摘要 |
-| `correlation_id` | 单次 HTTP 请求、后台任务或 runtime 子任务的链路 ID；同一 `operation_id` 可以关联多个 `correlation_id` |
+| `correlation_id` | 单次 HTTP 请求、后台任务或 runtime 子任务的链路 ID；同一 `operation_id` 允许关联多个 `correlation_id` |
 
 ## 2. 阶段错误模型
 
@@ -89,7 +89,7 @@ target=account_key_hash:sha256:...
 
 ## 3. 统一关联 ID
 
-每次用户操作或系统批处理都必须生成 `operation_id`，作为跨 DB、日志、API 和前端的主关联键。每个 HTTP 请求、后台子任务、runtime reload、notification delivery 可以另外生成 `correlation_id`；多个 `correlation_id` 可以归属于同一个 `operation_id`。
+每次用户操作或系统批处理都必须生成 `operation_id`，作为跨 DB、日志、API 和前端的主关联键。每个 HTTP 请求、后台子任务、runtime reload、notification delivery 允许另外生成 `correlation_id`；多个 `correlation_id` 允许归属于同一个 `operation_id`。
 
 `operation_id` 必须贯穿：
 
@@ -191,7 +191,9 @@ scripts/audit/collect.sh
 scripts/audit/redact.sh <input> <output>
 ```
 
-脚本职责：
+脚本按场景分为两类职责。
+
+已完成安全编排的场景必须由 `repro.sh` 负责完整复现：
 
 1. 创建临时容器、临时 volume、临时端口。
 2. 按场景需要以只读方式挂载用户提供的数据目录。
@@ -199,6 +201,14 @@ scripts/audit/redact.sh <input> <output>
 4. 抓取 HTTP 响应、docker logs、DB 摘要和 auth 目录摘要。
 5. 输出脱敏 evidence。
 6. 删除临时容器和临时 volume。
+
+需要外部发布矩阵先完成操作的核心场景，`repro.sh` 必须作为证据采集入口：
+
+1. 要求调用者通过 `LUNE_CONTAINER` 指向已经完成目标矩阵的隔离容器。
+2. 只读挂载该容器的数据卷。
+3. 抓取 DB 摘要、auth 摘要、debug 输出和环境摘要。
+4. 输出脱敏 evidence。
+5. 不重启、不删除、不写入目标容器。
 
 初始场景至少包括：
 
@@ -211,7 +221,7 @@ scripts/audit/redact.sh <input> <output>
 
 脚本必须依赖工具容器提供 `curl`、`jq`、`sqlite3`，不得把这些工具打进生产镜像。
 
-核心发布阻塞场景不得返回 `scenario_not_implemented`。v0.2.0 中 `cpa-import-reimport` 是 CPA 删除后重导入修复的核心复现场景，必须实现并通过真实容器验证。
+核心发布阻塞场景不得返回 `scenario_not_implemented`。v0.2.0 中 `cpa-import-reimport` 是 CPA 删除后重导入修复的核心证据采集场景；删除、重导入和断言由发布矩阵执行，脚本必须在矩阵完成后导出真实容器的脱敏 evidence。
 
 已经声明但不属于本版本发布阻塞、且尚未具备安全复现编排的辅助场景，必须显式返回 `scenario_not_implemented`，不得静默降级为采集日志或伪造成功。
 
@@ -281,5 +291,5 @@ lune-audit-<timestamp>.tar.gz
 | AUD-08 | 保留窗口 | 制造超过保留数量的操作 | 旧记录按策略清理，清理动作有审计事件 |
 | AUD-09 | 工具容器构建 | 执行 `scripts/audit/build-tools.sh` | 成功构建 `lune-audit-tools:local`，生产镜像不增加审计工具 |
 | AUD-10 | 工具容器只读采集 | 执行 `scripts/audit/collect.sh` | 生成脱敏 evidence，`/data` 为只读挂载，正式 `lune` 容器不被重启、删除或写入 |
-| AUD-11 | 核心复现场景必须实现 | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 完成删除后重导入复现并输出脱敏 evidence；不得返回 `scenario_not_implemented` |
+| AUD-11 | 核心复现场景必须实现 | 在发布矩阵完成删除后重导入后执行 `scripts/audit/repro.sh cpa-import-reimport` | 输出该真实容器的脱敏 evidence；不得返回 `scenario_not_implemented` |
 | AUD-12 | 辅助未实现场景显式失败 | 执行非发布阻塞且尚未安全编排的辅助场景 | 返回 `scenario_not_implemented`，不得伪造成功或静默降级 |

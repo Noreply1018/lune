@@ -27,7 +27,7 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 | --- | --- | --- |
 | 证据层 | 记录每个探测接口的原始安全结果 | auth refresh、models、subscription、quota、chat probe、account page hint |
 | 判定层 | 根据多路证据推导机器可读状态 | `banned`、`quota_exhausted`、`quota_probe_auth_failed_but_usable` |
-| 展示层 | 把状态翻译成 UI 标签和运维建议 | 已封号、额度不足、额度接口异常但可用 |
+| 展示层 | 把状态翻译成 UI 标签和运维处置 | 已封号、额度不足、额度接口异常但可用 |
 
 任何单个 probe 的失败都只能先进入证据层。只有当判定规则满足时，才允许改变账号的最终 `diagnostic_status` 或调度可用性。
 
@@ -65,7 +65,7 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 | `auth_invalid_signal` | refresh/access token 无效且无法恢复 |
 | `transient_error` | 5xx、超时、网络、429、代理等暂态问题 |
 
-状态命名是机器接口，不应直接依赖前端文案。前端可以展示更友好的中文标签，但必须保留稳定状态、最近 probe 事件、调度状态、证据摘要和最后诊断时间。
+状态命名是机器接口，不应直接依赖前端文案。前端允许展示更友好的中文标签，但必须保留稳定状态、最近 probe 事件、调度状态、证据摘要和最后诊断时间。
 
 ## 多路证据要求
 
@@ -93,7 +93,7 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 
 ### 封号
 
-满足以下任一条件时，可以判定为 `banned`：
+满足以下任一条件时，必须判定为 `banned`：
 
 - `auth_refresh`、`subscription_probe` 或 `chat_probe` 返回明确的 account banned、account deactivated、account disabled、abuse lock、policy lock 等上游语义。
 - 多个关键接口在同一诊断窗口内返回一致的账号主体不可用语义。
@@ -103,7 +103,7 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 
 ### 额度不足
 
-满足以下条件时，可以判定为 `quota_exhausted`：
+满足以下条件时，必须判定为 `quota_exhausted`：
 
 - 账号身份仍有效，至少一个身份或元数据接口能证明账号主体存在。
 - `chat_probe` 或真实业务请求返回明确的额度不足、余额不足、usage limit、insufficient quota、billing hard limit 等语义。
@@ -157,7 +157,7 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 
 v0.2.0 必须持久化最近诊断结果，且能在请求结束后恢复证据。
 
-建议结构：
+持久化结构必须表达以下字段；实际表名允许不同：
 
 ```text
 account_diagnostics
@@ -196,7 +196,7 @@ account_diagnostic_evidence
 - `quota_probe_auth_failed_but_usable` 默认仍可调度，但应降低置信度或显示运维告警。
 - `banned`、`auth_invalid`、`quota_exhausted` 默认不可调度，除非用户显式覆盖。
 - 手动 refresh、自动 health refresh、真实请求失败回写都必须走同一套归一化状态模型。
-- `diagnostic_status` 对外兼容时必须等价于 `stable_diagnostic_status`；UI 可以额外显示 `last_probe_status`，但不得把暂态事件展示成最终账号状态。
+- `diagnostic_status` 对外兼容时必须等价于 `stable_diagnostic_status`；UI 允许额外显示 `last_probe_status`，但不得把暂态事件展示成最终账号状态。
 
 ## 可审计性要求
 
