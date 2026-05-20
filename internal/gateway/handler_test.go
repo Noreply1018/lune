@@ -578,6 +578,10 @@ func TestGatewayCpaSuccessDoesNotClearQuotaState(t *testing.T) {
 			acc.CpaQuotaLastError == "HTTP 403" &&
 			acc.CpaSubscriptionStatus == "active"
 	})
+	diag := waitForAccountDiagnosticStatus(t, st, accountID, "usable", "succeeded")
+	if diag.SchedulerStatus != "eligible" || diag.Evidence[0].ProbeType != "routing_observation" || diag.Evidence[0].Stage != "model_request" {
+		t.Fatalf("expected usable routing observation evidence, got %+v", diag)
+	}
 }
 
 func TestGatewayCodexCpa429RecordsQuotaEvidenceAndCooldown(t *testing.T) {
@@ -624,6 +628,10 @@ func TestGatewayCodexCpa429RecordsQuotaEvidenceAndCooldown(t *testing.T) {
 	if !strings.Contains(acc.CpaQuotaLastError, "HTTP 429 from model request") || !strings.Contains(acc.CpaQuotaLastError, "rate limit reached") {
 		t.Fatalf("expected safe quota evidence message, got %q", acc.CpaQuotaLastError)
 	}
+	diag := waitForAccountDiagnosticStatus(t, st, accountID, "quota_exhausted", "quota_exhausted_signal")
+	if diag.SchedulerStatus != "ineligible" || diag.Evidence[0].HTTPStatus == nil || *diag.Evidence[0].HTTPStatus != http.StatusTooManyRequests {
+		t.Fatalf("expected quota exhausted diagnostic evidence, got %+v", diag)
+	}
 }
 
 func TestGatewayCodexCpaBare429RecordsWarningQuotaEvidence(t *testing.T) {
@@ -662,6 +670,56 @@ func TestGatewayCodexCpaBare429RecordsWarningQuotaEvidence(t *testing.T) {
 	}
 	if acc.CpaQuotaStatus != "error" || acc.CpaQuotaLastError != "HTTP 429 from model request" {
 		t.Fatalf("expected warning quota evidence, got %+v", acc)
+	}
+}
+
+func TestGatewayTransientErrorDoesNotOverwriteStableDiagnosticStatus(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	if err := st.SetSetting("max_retry_attempts", "1"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"temporary upstream failure"}}`))
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "transient-cpa", "codex", "gpt-5-codex")
+	if err := st.UpdateAccountDiagnostic(accountID, store.AccountDiagnosticUpdate{
+		StableDiagnosticStatus: "usable",
+		LastProbeStatus:        "succeeded",
+		SafeSummary:            "known usable before transient failure",
+	}); err != nil {
+		t.Fatalf("UpdateAccountDiagnostic: %v", err)
+	}
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	diag := waitForAccountDiagnosticStatus(t, st, accountID, "usable", "transient_error")
+	if diag.SchedulerStatus != "eligible" || len(diag.Evidence) == 0 {
+		t.Fatalf("expected transient evidence to preserve usable scheduler state, got %+v", diag)
+	}
+	last := diag.Evidence[len(diag.Evidence)-1]
+	if last.NormalizedErrorCode != "rate_limited" && last.NormalizedErrorCode != "upstream_request_failed" && last.NormalizedErrorCode != "stream_failed" && last.NormalizedErrorCode != "upstream_transient_error" {
+		t.Fatalf("expected normalized transient evidence, got %+v", last)
 	}
 }
 
@@ -1735,6 +1793,20 @@ func waitForGatewayTest(t *testing.T, condition func() bool) {
 	if !condition() {
 		t.Fatalf("condition not met before timeout")
 	}
+}
+
+func waitForAccountDiagnosticStatus(t *testing.T, st *store.Store, accountID int64, stable, probe string) *store.AccountDiagnostic {
+	t.Helper()
+	var diag *store.AccountDiagnostic
+	waitForGatewayTest(t, func() bool {
+		var err error
+		diag, err = st.GetAccountDiagnostic(accountID)
+		return err == nil && diag != nil &&
+			diag.StableDiagnosticStatus == stable &&
+			diag.LastProbeStatus == probe &&
+			len(diag.Evidence) > 0
+	})
+	return diag
 }
 
 func assertCpaRuntimeLog(t *testing.T, log store.RequestLog, accountID int64, accountKey, authIndex, authID string) {

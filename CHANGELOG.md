@@ -8,7 +8,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ### v0.2.0
 
-状态：本轮已完成 CPA 删除后重导入核心修复、生命周期 operation 审计和隔离容器复现；完整 v0.2.0 发布仍需按规格矩阵继续验收。
+状态：本轮已完成 CPA 删除后重导入核心修复、生命周期 operation 审计、账号真实请求诊断 evidence 回写和隔离容器复现；完整 v0.2.0 发布仍需按规格矩阵继续验收。
 
 ### CPA Auth JSON 删除后重导入
 
@@ -21,6 +21,17 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 - `tool-collect` 现在会排除 `/data/audit-cpa-import/*` staging 文件，避免审计包泄露临时导入副本。
 - 审计包、最近操作快照和恢复脚本的输出口径已对齐 v0.2.0 规格。
+- `stateful-probe` 复现场景现在走隔离容器，旧数据卷会先复制到临时卷再由新镜像迁移验证，不直接写入或重启旧容器。
+- `stateful-probe` 会区分账号级 evidence 与路由级失败；当前真实 volume 可用样本返回 `request_log_collected`，不会伪装成诊断 evidence 已采集。
+
+### 账号真实状态诊断
+
+- 真实模型请求观察现在会写入 `account_diagnostics` 和 `account_diagnostic_evidence`。
+- Codex CPA 模型请求成功会记录 `usable / succeeded`，带安全的 routing observation evidence。
+- 业务请求 quota/limit 语义的 429 会记录 `quota_exhausted / quota_exhausted_signal`，并默认映射为不可调度。
+- CPA 上游认证失败会记录 `auth_invalid / auth_invalid_signal`。
+- 5xx、网络错误、裸 429 等暂态事件只更新 `last_probe_status=transient_error` 和 evidence，不覆盖已有稳定状态；人工 scheduler override 会被保留。
+- diagnostic evidence 的 `safe_message` 使用固定短文案，不写入上游原始响应、token、完整 auth JSON 或完整 account key。
 
 ### 验证
 
@@ -28,6 +39,8 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - `bash -n scripts/audit/*.sh`
 - `git diff --check`
 - 隔离容器复现 `cpa-import-reimport`
+- 隔离容器复现 `stateful-probe`，当前真实 volume 样本证据为 `request_log_collected / http_code=503 / account_log_matched=0 / diagnostic_evidence_count=0`
+- subagent 严格审计通过
 
 ## [0.1.9] - 2026-05-17
 

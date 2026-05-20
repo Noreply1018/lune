@@ -181,8 +181,9 @@ SQL
     exit 1
   }
 
-  local before_id body http_code response_file response_bytes
+  local before_id before_probe_at body http_code response_file response_bytes
   before_id="$(sqlite3 -readonly "$db_file" "SELECT COALESCE(MAX(id), 0) FROM request_logs;")"
+  before_probe_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   body="$(jq -n --arg model "$model" '{model:$model, messages:[{role:"user", content:"lune audit stateful probe"}]}')"
   response_file="$tmp_dir/stateful-probe-response.raw"
   http_code="$(curl -sS -o "$response_file" -w '%{http_code}' \
@@ -194,13 +195,18 @@ SQL
     "$api_base/v1/chat/completions")"
   response_bytes="$(wc -c < "$response_file" | tr -d ' ')"
 
-  local found
+  local found account_log_matched
   found=""
+  account_log_matched=1
   for _ in $(seq 1 30); do
     found="$(sqlite3 -readonly "$db_file" "SELECT id FROM request_logs WHERE id > $before_id AND account_id=$account_id AND pool_id=$pool_id AND force_account=1 AND stateful_probe=1 AND traffic_kind='stateful_probe' ORDER BY id DESC LIMIT 1;")"
     [[ -n "$found" ]] && break
     sleep 1
   done
+  if [[ -z "$found" ]]; then
+    account_log_matched=0
+    found="$(sqlite3 -readonly "$db_file" "SELECT id FROM request_logs WHERE id > $before_id AND force_account=1 AND stateful_probe=1 AND traffic_kind='stateful_probe' ORDER BY id DESC LIMIT 1;" 2>/dev/null || true)"
+  fi
   [[ -n "$found" ]] || {
     echo "error: stateful probe request log was not recorded" >&2
     exit 1
@@ -209,17 +215,51 @@ SQL
   sqlite3 -readonly "$db_file" -json \
     "SELECT id, request_id, pool_id, account_id, status_code, success, diagnostic, force_account, stateful_probe, traffic_kind, model_requested, source_kind, created_at FROM request_logs WHERE id=$found;" \
     > "$out/redacted/scenario/stateful-probe-log.json"
+  sqlite3 -readonly "$db_file" -json \
+    "SELECT id, source_kind, cpa_service_id, cpa_provider, cpa_plan_type, cpa_credential_status, cpa_access_status, cpa_quota_status, serving_status, enabled, status, updated_at FROM accounts WHERE id=$account_id;" \
+    > "$out/redacted/scenario/stateful-probe-account.json"
+  sqlite3 -readonly "$db_file" -json <<SQL > "$out/redacted/scenario/stateful-probe-diagnostic.json"
+SELECT ad.account_id, ad.account_key_hash, ad.provider, ad.operation_id, ad.stable_diagnostic_status, ad.previous_stable_diagnostic_status, ad.last_probe_status, ad.scheduler_status, ad.scheduler_override, ad.safe_summary, ad.updated_at
+FROM account_diagnostics ad
+WHERE ad.account_id = $account_id;
+SQL
+  local evidence_count
+  evidence_count=0
+  for _ in $(seq 1 30); do
+    evidence_count="$(sqlite3 -readonly "$db_file" "SELECT COUNT(*) FROM account_diagnostic_evidence ade JOIN account_diagnostics ad ON ad.id = ade.diagnostic_id WHERE ad.account_id = $account_id AND datetime(replace(ade.observed_at, 'T', ' ')) >= datetime(replace('$before_probe_at', 'T', ' '));" 2>/dev/null || echo 0)"
+    [[ "$evidence_count" -gt 0 ]] && break
+    sleep 1
+  done
+  sqlite3 -readonly "$db_file" -json <<SQL > "$out/redacted/scenario/stateful-probe-diagnostic-evidence.json"
+SELECT ade.probe_type, ade.stage, ade.http_status, ade.upstream_error_code, ade.normalized_error_code, ade.safe_message, ade.observed_at, ade.request_log_id
+FROM account_diagnostic_evidence ade
+JOIN account_diagnostics ad ON ad.id = ade.diagnostic_id
+WHERE ad.account_id = $account_id
+  AND datetime(replace(ade.observed_at, 'T', ' ')) >= datetime(replace('$before_probe_at', 'T', ' '))
+ORDER BY datetime(ade.observed_at) DESC, ade.id DESC
+LIMIT 20;
+SQL
 
+  local request_success
+  request_success="$(sqlite3 -readonly "$db_file" "SELECT COALESCE(success, 0) FROM request_logs WHERE id=$found;" 2>/dev/null || echo 0)"
+  local status
+  status="evidence_collected"
+  if [[ "$evidence_count" -eq 0 ]]; then
+    status="request_log_collected"
+  fi
   jq -n \
     --arg scenario "stateful-probe" \
-    --arg status "ok" \
+    --arg status "$status" \
     --arg http_code "$http_code" \
     --arg pool_id "$pool_id" \
     --arg account_id "$account_id" \
     --arg model "$model" \
     --arg request_log_id "$found" \
     --arg response_bytes "$response_bytes" \
-    '{scenario:$scenario,status:$status,http_code:($http_code|tonumber),response_bytes:($response_bytes|tonumber),pool_id:($pool_id|tonumber),account_id:($account_id|tonumber),model:$model,request_log_id:($request_log_id|tonumber)}' \
+    --arg request_success "$request_success" \
+    --argjson account_log_matched "$account_log_matched" \
+    --argjson diagnostic_evidence_count "$evidence_count" \
+    '{scenario:$scenario,status:$status,http_code:($http_code|tonumber),request_success:($request_success|tonumber),response_bytes:($response_bytes|tonumber),pool_id:($pool_id|tonumber),account_id:($account_id|tonumber),model:$model,request_log_id:($request_log_id|tonumber),account_log_matched:$account_log_matched,diagnostic_evidence_count:$diagnostic_evidence_count}' \
     > "$out/redacted/scenario/stateful-probe-summary.json"
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 )
 
 func AccountKeyHash(accountKey string) string {
@@ -168,6 +169,18 @@ type AccountDiagnosticUpdate struct {
 	SchedulerStatus                string
 	SchedulerOverride              string
 	SafeSummary                    string
+	PreserveStableStatus           bool
+}
+
+type AccountDiagnosticEvidenceInput struct {
+	ProbeType           string
+	Stage               string
+	HTTPStatus          *int
+	UpstreamErrorCode   string
+	NormalizedErrorCode string
+	SafeMessage         string
+	RequestLogID        *int64
+	ObservedAt          string
 }
 
 func (s *Store) UpdateAccountDiagnostic(accountID int64, update AccountDiagnosticUpdate) error {
@@ -210,6 +223,102 @@ func (s *Store) UpdateAccountDiagnostic(accountID int64, update AccountDiagnosti
 		update.LastProbeStatus, update.SchedulerStatus, update.SchedulerOverride, update.SafeSummary, accountID,
 	)
 	return err
+}
+
+func (s *Store) UpdateAccountDiagnosticWithEvidence(accountID int64, update AccountDiagnosticUpdate, evidence AccountDiagnosticEvidenceInput) error {
+	update.StableDiagnosticStatus = strings.ToLower(strings.TrimSpace(update.StableDiagnosticStatus))
+	update.LastProbeStatus = strings.TrimSpace(update.LastProbeStatus)
+	update.SchedulerStatus = strings.ToLower(strings.TrimSpace(update.SchedulerStatus))
+	update.SchedulerOverride = strings.TrimSpace(update.SchedulerOverride)
+	update.SafeSummary = strings.TrimSpace(update.SafeSummary)
+	if err := ValidateDiagnosticStatus(update.StableDiagnosticStatus); err != nil {
+		return err
+	}
+	if update.LastProbeStatus == "" {
+		update.LastProbeStatus = "not_run"
+	}
+	if update.SchedulerOverride == "" {
+		update.SchedulerStatus = SchedulerStatusForStableDiagnostic(update.StableDiagnosticStatus)
+	} else if err := ValidateSchedulerStatus(update.SchedulerStatus); err != nil {
+		return err
+	}
+	if update.SafeSummary == "" {
+		update.SafeSummary = "diagnostic status updated"
+	}
+	if strings.TrimSpace(evidence.ProbeType) == "" {
+		evidence.ProbeType = "routing_observation"
+	}
+	if strings.TrimSpace(evidence.ObservedAt) == "" {
+		evidence.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := s.EnsureAccountDiagnostic(accountID); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var diagnosticID int64
+	var previousStable, currentSchedulerStatus, currentSchedulerOverride string
+	if err := tx.QueryRow(
+		`SELECT id, stable_diagnostic_status, scheduler_status, scheduler_override FROM account_diagnostics WHERE account_id = ?`,
+		accountID,
+	).Scan(&diagnosticID, &previousStable, &currentSchedulerStatus, &currentSchedulerOverride); err != nil {
+		return err
+	}
+	if update.PreserveStableStatus {
+		update.StableDiagnosticStatus = previousStable
+		update.SchedulerStatus = currentSchedulerStatus
+		update.SchedulerOverride = currentSchedulerOverride
+		if strings.TrimSpace(update.SchedulerStatus) == "" {
+			update.SchedulerStatus = SchedulerStatusForStableDiagnostic(previousStable)
+		}
+	}
+	if strings.TrimSpace(update.PreviousStableDiagnosticStatus) == "" {
+		update.PreviousStableDiagnosticStatus = previousStable
+	}
+	_, err = tx.Exec(
+		`UPDATE account_diagnostics
+		 SET operation_id=?,
+		     started_at=COALESCE(NULLIF(started_at, ''), datetime('now')),
+		     finished_at=datetime('now'),
+		     stable_diagnostic_status=?,
+		     previous_stable_diagnostic_status=?,
+		     last_probe_status=?,
+		     scheduler_status=?,
+		     scheduler_override=?,
+		     safe_summary=?,
+		     updated_at=datetime('now')
+		 WHERE account_id=?`,
+		update.OperationID, update.StableDiagnosticStatus, update.PreviousStableDiagnosticStatus,
+		update.LastProbeStatus, update.SchedulerStatus, update.SchedulerOverride, update.SafeSummary, accountID,
+	)
+	if err != nil {
+		return err
+	}
+	var httpStatus any
+	if evidence.HTTPStatus != nil {
+		httpStatus = *evidence.HTTPStatus
+	}
+	var requestLogID any
+	if evidence.RequestLogID != nil {
+		requestLogID = *evidence.RequestLogID
+	}
+	_, err = tx.Exec(
+		`INSERT INTO account_diagnostic_evidence (
+			diagnostic_id, probe_type, stage, http_status, upstream_error_code,
+			normalized_error_code, safe_message, observed_at, request_log_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		diagnosticID, strings.TrimSpace(evidence.ProbeType), strings.TrimSpace(evidence.Stage), httpStatus,
+		strings.TrimSpace(evidence.UpstreamErrorCode), strings.TrimSpace(evidence.NormalizedErrorCode),
+		strings.TrimSpace(evidence.SafeMessage), strings.TrimSpace(evidence.ObservedAt), requestLogID,
+	)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func SchedulerStatusForStableDiagnostic(status string) string {

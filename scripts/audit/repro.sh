@@ -12,10 +12,10 @@ validate_repro_output() {
   local scenario_dir="$host_out/redacted/scenario"
   local summary="$scenario_dir/$scenario_name-summary.json"
   [[ -s "$summary" ]] || die "missing scenario summary: $summary"
-  grep -q '"status": "ok"' "$summary" || die "scenario summary did not report ok: $summary"
 
   case "$scenario_name" in
     cpa-import-reimport)
+      grep -q '"status": "ok"' "$summary" || die "scenario summary did not report ok: $summary"
       for file in \
         cpa-import-reimport-import-response.json \
         cpa-import-reimport-delete-response.json \
@@ -29,7 +29,11 @@ validate_repro_output() {
       grep -q '"reimport_batch_id":' "$summary" || die "missing reimport batch id in $summary"
       ;;
     stateful-probe)
+      grep -Eq '"status": "(evidence_collected|request_log_collected)"' "$summary" || die "stateful-probe summary did not report collected evidence state: $summary"
       [[ -s "$scenario_dir/stateful-probe-log.json" ]] || die "missing stateful-probe log evidence"
+      [[ -s "$scenario_dir/stateful-probe-account.json" ]] || die "missing stateful-probe account evidence"
+      [[ -s "$scenario_dir/stateful-probe-diagnostic.json" ]] || die "missing stateful-probe diagnostic evidence"
+      [[ -f "$scenario_dir/stateful-probe-diagnostic-evidence.json" ]] || die "missing stateful-probe diagnostic item evidence"
       grep -q '"traffic_kind":' "$scenario_dir/stateful-probe-log.json" || die "stateful-probe log missing traffic kind"
       ;;
   esac
@@ -151,8 +155,7 @@ case "$scenario" in
     run_isolated_repro "$scenario"
     ;;
   stateful-probe)
-    ensure_lune_container
-    run_repro_on_container "$scenario" "$LUNE_CONTAINER" "$(resolve_lune_data_volume)"
+    run_isolated_repro "$scenario"
     ;;
   runtime-reload|pool-delete|quota-refresh|routing-failover)
     die "scenario_not_implemented: $scenario requires isolated fixture data and API choreography before it can be run safely"

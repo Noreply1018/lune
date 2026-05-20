@@ -302,6 +302,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if result.HealthImpact && !diagnostic && !statefulProbe {
 				h.recordServingFailure(resolved.AccountID, result.Err.Error())
 			}
+			if resolved.Account.SourceKind == "cpa" && (!diagnostic || statefulProbe) {
+				h.recordAccountDiagnosticObservation(resolved.Account, "transient_error", "transient_error", "gateway request failed", 0, "upstream_request_failed", result.Err.Error())
+			}
 
 			if !IsRetryable(result.Err) {
 				webutil.WriteGatewayError(w, 502, "upstream_failed", result.Err.Error())
@@ -317,6 +320,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if !diagnostic || statefulProbe {
 					msg := fmt.Sprintf("HTTP %d", result.StatusCode)
 					h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
+					h.recordAccountDiagnosticObservation(resolved.Account, "auth_invalid", "auth_invalid_signal", "account authentication failed", result.StatusCode, "auth_invalid", errMsg)
 				}
 				result.WriteResponse(w)
 				h.logRequestWithBindingTrace(requestID, accessToken, model, resolved, result.StatusCode, start, isStream, r, false, errMsg, result.Usage, resolved.Account.SourceKind, attemptsUsed, bindingLog, diagnostic, routeTrace)
@@ -324,6 +328,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if result.StatusCode == http.StatusTooManyRequests && (!diagnostic || statefulProbe) {
 				h.recordCodexQuotaRateLimitEvidence(resolved.Account, result.Body, errMsg)
+				if bodyHasQuotaLimitSignal(result.Body) || textHasQuotaLimitSignal(errMsg) {
+					h.recordAccountDiagnosticObservation(resolved.Account, "quota_exhausted", "quota_exhausted_signal", "quota exhausted by model request", result.StatusCode, "quota_exhausted", errMsg)
+				} else {
+					h.recordAccountDiagnosticObservation(resolved.Account, "unknown", "transient_error", "rate limited by model request", result.StatusCode, "rate_limited", errMsg)
+				}
+			} else if resolved.Account.SourceKind == "cpa" && (!diagnostic || statefulProbe) {
+				h.recordAccountDiagnosticObservation(resolved.Account, "unknown", "transient_error", "transient upstream error", result.StatusCode, "upstream_transient_error", errMsg)
 			}
 			if result.HealthImpact && !diagnostic && !statefulProbe {
 				h.recordServingFailure(resolved.AccountID, errMsg)
@@ -385,12 +396,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaProvider, "codex") && (!diagnostic || statefulProbe) {
 				_ = h.store.ClearAccountCodexModelRequestQuotaEvidence(resolved.AccountID)
 				_ = h.store.UpdateAccountCpaAccessStatus(resolved.AccountID, "eligible", "model_request_success", "", time.Now().UTC().Format(time.RFC3339))
+				h.recordAccountDiagnosticObservation(resolved.Account, "usable", "succeeded", "model request succeeded", result.StatusCode, "", "")
 				h.cache.Invalidate()
 			}
 		} else if resolved.Account.SourceKind == "cpa" && isCpaAccountUpstreamAuthFailure(result.StatusCode, result.Body) {
 			if !diagnostic || statefulProbe {
 				msg := fmt.Sprintf("HTTP %d", result.StatusCode)
 				h.updateCpaCredential(resolved.AccountID, "needs_login", gatewayCredentialReason(result.Body), msg)
+				h.recordAccountDiagnosticObservation(resolved.Account, "auth_invalid", "auth_invalid_signal", "account authentication failed", result.StatusCode, "auth_invalid", errMsg)
 			}
 		} else if resolved.Account.SourceKind != "cpa" && isGatewayAuthFailure(result.StatusCode, result.Body) {
 			if !diagnostic && !statefulProbe {
@@ -399,6 +412,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if result.Stream != nil && result.Stream.Failed {
 			if !diagnostic && !statefulProbe && result.Stream.HealthImpact {
 				h.recordServingFailure(resolved.AccountID, errMsg)
+			}
+			if resolved.Account.SourceKind == "cpa" && (!diagnostic || statefulProbe) {
+				h.recordAccountDiagnosticObservation(resolved.Account, "unknown", "transient_error", "stream failed", result.StatusCode, "stream_failed", errMsg)
 			}
 		}
 
@@ -639,6 +655,95 @@ func (h *Handler) recordCodexQuotaRateLimitEvidence(account store.Account, body 
 	}
 	_ = h.store.UpdateAccountCodexQuotaStatus(account.ID, status, msg, time.Now().UTC().Format(time.RFC3339))
 	h.cache.Invalidate()
+}
+
+func (h *Handler) recordAccountDiagnosticObservation(account store.Account, stableStatus, probeStatus, safeSummary string, httpStatus int, normalizedCode, upstreamMessage string) {
+	if account.ID <= 0 {
+		return
+	}
+	current, err := h.store.GetAccountDiagnostic(account.ID)
+	if err != nil {
+		slog.Warn("load account diagnostic for observation", "account_id", account.ID, "err", err)
+		return
+	}
+	previousStable := "unknown"
+	if current != nil && strings.TrimSpace(current.StableDiagnosticStatus) != "" {
+		previousStable = current.StableDiagnosticStatus
+	}
+	nextStable := strings.ToLower(strings.TrimSpace(stableStatus))
+	preserveStable := strings.EqualFold(probeStatus, "transient_error")
+	if nextStable == "" {
+		nextStable = previousStable
+	}
+	if preserveStable {
+		nextStable = previousStable
+		if nextStable == "" {
+			nextStable = "unknown"
+		}
+	}
+	if err := store.ValidateDiagnosticStatus(nextStable); err != nil {
+		nextStable = "unknown"
+	}
+	status := httpStatus
+	var statusPtr *int
+	if status > 0 {
+		statusPtr = &status
+	}
+	if strings.TrimSpace(safeSummary) == "" {
+		safeSummary = "routing observation recorded"
+	}
+	operationID := store.AccountKeyHash(fmt.Sprintf("account-diagnostic:%d:%s", account.ID, time.Now().UTC().Format(time.RFC3339Nano)))
+	err = h.store.UpdateAccountDiagnosticWithEvidence(account.ID, store.AccountDiagnosticUpdate{
+		OperationID:                    operationID,
+		StableDiagnosticStatus:         nextStable,
+		PreviousStableDiagnosticStatus: previousStable,
+		LastProbeStatus:                firstNonEmptyString(probeStatus, "succeeded"),
+		SafeSummary:                    safeSummary,
+		PreserveStableStatus:           preserveStable,
+	}, store.AccountDiagnosticEvidenceInput{
+		ProbeType:           "routing_observation",
+		Stage:               "model_request",
+		HTTPStatus:          statusPtr,
+		UpstreamErrorCode:   normalizedCode,
+		NormalizedErrorCode: normalizedCode,
+		SafeMessage:         safeDiagnosticObservationMessage(normalizedCode, safeSummary),
+		ObservedAt:          time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		slog.Warn("record account diagnostic observation", "account_id", account.ID, "err", err)
+		return
+	}
+	h.cache.Invalidate()
+}
+
+func safeDiagnosticObservationMessage(normalizedCode, fallback string) string {
+	switch strings.TrimSpace(normalizedCode) {
+	case "quota_exhausted":
+		return "quota exhausted by model request"
+	case "rate_limited":
+		return "rate limited by model request"
+	case "auth_invalid":
+		return "account authentication failed"
+	case "upstream_request_failed":
+		return "upstream request failed"
+	case "upstream_transient_error":
+		return "transient upstream error"
+	case "stream_failed":
+		return "stream failed"
+	}
+	if strings.TrimSpace(fallback) == "" {
+		return "routing observation recorded"
+	}
+	return truncateStreamError(fallback, 120)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (h *Handler) updateCpaCredential(accountID int64, status, reason, lastError string) {
