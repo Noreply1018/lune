@@ -100,7 +100,7 @@ target=account_key_hash:sha256:...
 - notification delivery。
 - 前端结果页或错误页。
 
-目标是审计时可以按一个 ID 收敛证据：
+目标是审计时能够按一个 ID 收敛证据：
 
 ```bash
 docker logs lune | rg op_...
@@ -127,7 +127,7 @@ v0.2.0 的最近操作快照必须至少保留：
 - 关联 request id / operation id。
 - 安全目标摘要。
 
-超出保留窗口后可以按数据保留策略清理，但清理动作本身也应有审计事件。
+超出保留窗口后必须按数据保留策略清理，且清理动作本身也应有审计事件。
 
 ## 5. 只读 `lune debug`
 
@@ -168,16 +168,31 @@ sha256:621ca...   codex     a***6@hotmail.com  plus  yes   yes  yes
 
 仓库应提供标准化审计复现脚本，用于无法从现有现场恢复真实错因时创建隔离容器复现。
 
-必须提供以下标准入口；实现可以拆分内部脚本，但该入口必须可用：
+标准路径必须是“工具容器 + 仓库脚本”：
+
+- 生产 `lune` 容器不内置 `jq`、`sqlite3`、Node 等审计工具。
+- 仓库提供 `docker/audit-tools/Dockerfile` 构建 `lune-audit-tools:local`。
+- 工具容器内置 `bash`、`curl`、`jq`、`sqlite3`、`coreutils`、`findutils`、`procps`。
+- 工具容器默认通过 `--network container:lune` 贴近目标容器网络。
+- 工具容器默认以只读方式挂载 `lune-data:/data:ro` 和仓库目录。
+- 审计输出只能写入宿主机 `audit-output/` 或显式指定的输出目录。
+- 工具容器写出审计产物时必须使用宿主机当前 UID/GID，避免产生宿主机用户无法清理的 root-owned 文件。
+- 工具容器必须使用 `--rm`，单次执行结束后不遗留容器。
+
+必须提供以下标准入口；允许拆分内部脚本，但该入口必须可用：
 
 ```bash
+scripts/audit/build-tools.sh
+scripts/audit/run-tools.sh <command>
 scripts/audit/repro.sh <scenario>
+scripts/audit/collect.sh
+scripts/audit/redact.sh <input> <output>
 ```
 
 脚本职责：
 
 1. 创建临时容器、临时 volume、临时端口。
-2. 可选只读挂载用户提供的数据目录。
+2. 按场景需要以只读方式挂载用户提供的数据目录。
 3. 调用 Admin API 或 Gateway API 复现场景。
 4. 抓取 HTTP 响应、docker logs、DB 摘要和 auth 目录摘要。
 5. 输出脱敏 evidence。
@@ -192,13 +207,15 @@ scripts/audit/repro.sh <scenario>
 - `stateful-probe`
 - `routing-failover`
 
-脚本可以依赖工具容器提供 `curl`、`jq`、`sqlite3`，不要求把这些工具打进生产镜像。
+脚本必须依赖工具容器提供 `curl`、`jq`、`sqlite3`，不得把这些工具打进生产镜像。
+
+已经声明但尚未具备安全复现编排的场景，必须显式返回 `scenario_not_implemented`，不得静默降级为采集日志或伪造成功。
 
 ## 7. 脱敏审计包
 
 v0.2.0 必须提供一键脱敏审计包导出能力，便于用户把现场证据交给维护者。
 
-必须提供以下命令；输出内容可以随实现扩展，但脱敏和只读语义不能放宽：
+必须提供以下命令；允许扩展输出内容，但脱敏和只读语义不能放宽：
 
 ```bash
 lune debug collect --redact
@@ -254,6 +271,9 @@ lune-audit-<timestamp>.tar.gz
 | AUD-03 | 关联 ID | 执行一次批量导入 | API log、operation record、runtime reload log 可按同一 ID 对齐 |
 | AUD-04 | 脱敏 | 导出审计记录和审计包 | 不包含 token、完整 auth JSON、完整 account key、完整 API key |
 | AUD-05 | debug 只读 | 执行 `lune debug summary` 和 `lune debug cpa-auth` | 不修改 DB、文件或 runtime；输出稳定且脱敏 |
-| AUD-06 | 隔离复现脚本 | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 自动创建临时容器和 volume，输出 evidence，最终清理资源 |
+| AUD-06 | 隔离复现脚本 | 执行 `scripts/audit/repro.sh stateful-probe` | 通过工具容器输出脱敏 evidence，最终清理资源 |
 | AUD-07 | 审计包导出 | 执行 `lune debug collect --redact` | 生成结构化脱敏包，可用于离线审计 |
 | AUD-08 | 保留窗口 | 制造超过保留数量的操作 | 旧记录按策略清理，清理动作有审计事件 |
+| AUD-09 | 工具容器构建 | 执行 `scripts/audit/build-tools.sh` | 成功构建 `lune-audit-tools:local`，生产镜像不增加审计工具 |
+| AUD-10 | 工具容器只读采集 | 执行 `scripts/audit/collect.sh` | 生成脱敏 evidence，`/data` 为只读挂载，正式 `lune` 容器不被重启、删除或写入 |
+| AUD-11 | 未实现场景显式失败 | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 返回 `scenario_not_implemented`，不得伪造成功或静默降级 |

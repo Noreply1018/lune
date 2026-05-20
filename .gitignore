@@ -18,6 +18,7 @@ docs/superpowers/
 tmp/
 wget-log
 audit-*.png
+audit-output/
 # Stray screenshots dropped at repo root by playwright / manual captures
 /*.png
 /*.jpg

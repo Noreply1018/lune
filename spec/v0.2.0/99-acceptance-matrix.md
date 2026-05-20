@@ -29,10 +29,14 @@
 | AUD-03 | 关联 ID | 执行一次批量导入 | 对齐 API log、operation record、runtime reload log | 同一 operation id 能贯穿多处证据 |
 | AUD-04 | 最近操作快照 | 连续执行多次成功和失败操作 | 查询 recent operations | 请求结束后仍可恢复最近操作和 item 明细 |
 | AUD-05 | 只读 debug | 在容器内执行 `lune debug summary`、`lune debug cpa-auth` | 检查 DB、文件、runtime 状态 | 输出脱敏且不修改任何状态 |
-| AUD-06 | 隔离复现脚本 | 使用临时容器和临时 volume | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 自动复现、导出 evidence、清理临时资源 |
+| AUD-06 | 隔离复现脚本 | 目标 `lune` 容器存在 | 执行 `scripts/audit/repro.sh stateful-probe` | 通过工具容器导出脱敏 evidence，清理临时工具容器 |
 | AUD-07 | 脱敏审计包 | 有账号、Pool、request log、operation record | 执行 `lune debug collect --redact` | 生成结构化审计包，不含敏感凭据 |
 | AUD-08 | 数据保留 | 超过最近操作保留窗口 | 触发清理 | 清理按策略执行，清理本身可审计 |
 | AUD-09 | 后续 spec 约束 | 新增涉及状态变更或 runtime 行为的 spec | 审阅 spec | 必须包含可审计性小节，说明阶段、错误、关联 ID、脱敏和容器矩阵 |
+| AUD-10 | 工具容器构建 | 本机可访问 Docker daemon | 执行 `scripts/audit/build-tools.sh` | 成功构建 `lune-audit-tools:local`，不改变生产 `Dockerfile` runtime 工具集 |
+| AUD-11 | 工具容器命令封装 | 目标 `lune` 容器存在 | 执行 `scripts/audit/run-tools.sh jq --version` 和 `sqlite3 --version` | 命令在工具容器内执行，容器退出后不遗留 |
+| AUD-12 | 只读 evidence 采集 | 目标 `lune` 容器和 `lune-data` volume 存在 | 执行 `scripts/audit/collect.sh` | 输出 `audit-output/<timestamp>/`，数据卷只读挂载，正式容器不被重启、删除或写入 |
+| AUD-13 | 未实现场景显式失败 | 调用尚无安全编排的场景 | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 返回 `scenario_not_implemented`，不得伪造成功或静默降级 |
 
 ## 关键反例
 
@@ -46,6 +50,8 @@
 | NEG-06 | 只靠日志猜测 | 关键失败不得只能通过时间窗口和日志猜测根因 |
 | NEG-07 | debug 修改现场 | `lune debug` 命令不得修复、重载、写 DB 或删除文件 |
 | NEG-08 | 审计包泄密 | 审计包不得包含 token、完整 auth JSON、完整 account key 或完整 API key |
+| NEG-09 | 工具容器污染生产镜像 | 不得为了审计把 `jq`、`sqlite3` 等工具打入生产 runtime 镜像 |
+| NEG-10 | 未实现场景假成功 | 未完成安全编排的复现场景不得返回成功 |
 
 ## 容器验收要求
 

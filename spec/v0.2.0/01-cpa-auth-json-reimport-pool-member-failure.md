@@ -124,7 +124,7 @@ entrypoint restarting embedded CPA after Lune reload signal
 
 因此，删除后的 runtime reload、导入中的 per-item reload、CPA watcher、异步健康刷新和 SQLite 写事务存在竞态窗口。该竞态会使部分 item 在 Pool membership 阶段失败并回滚。
 
-等待一段时间让删除后的 reload 和异步刷新收敛后，再次导入同一批文件可以全部成功。这进一步说明问题是删除后立即重导入的时序问题，不是 auth JSON 内容问题。
+等待一段时间让删除后的 reload 和异步刷新收敛后，再次导入同一批文件会全部成功。这进一步说明问题是删除后立即重导入的时序问题，不是 auth JSON 内容问题。
 
 ## 解决思路
 
@@ -137,11 +137,11 @@ entrypoint restarting embedded CPA after Lune reload signal
 3. 批次结束后只触发一次 CPA runtime reload。
 4. 对成功 item 统一标记 `runtime_sync=pending` 或在可确认时标记 `synced`。
 
-这样可以避免 CPA runtime 在批次中途扫描半完成状态。
+这样必须避免 CPA runtime 在批次中途扫描半完成状态。
 
 ### 2. 删除账号 reload 与导入互斥
 
-CPA auth file 删除、CPA auth file 批量导入和 embedded CPA reload 必须有一致的生命周期协调。可选实现：
+CPA auth file 删除、CPA auth file 批量导入和 embedded CPA reload 必须有一致的生命周期协调。v0.2.0 必须采用下列实现之一：
 
 - 复用 `cpaImportMu` 或新增 CPA auth lifecycle mutex，覆盖删除账号、批量导入和 reload signal 写入。
 - 删除账号时删除 auth file 和 DB account 后只请求一次 reload；如果连续删除多个账号，前端或后端应支持批量删除或 debounce reload。
@@ -172,7 +172,7 @@ CPA auth file 删除、CPA auth file 批量导入和 embedded CPA reload 必须�
 - created account id / pool member id
 - created at
 
-Activity 或 Settings 中可以不做完整 UI，但 DB 或 admin API 必须能用于审计。
+Activity 或 Settings 不要求提供完整 UI，但 DB 或 admin API 必须能用于审计。
 
 ### 5. 回滚与结果页语义保持一致
 
