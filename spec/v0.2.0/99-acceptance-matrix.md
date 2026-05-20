@@ -1,6 +1,6 @@
 # 99. v0.2.0 验收矩阵
 
-状态：验收矩阵已确认。本轮已完成 CPA 删除后重导入核心复现、生命周期审计补强、真实请求诊断 evidence 回写和隔离 `stateful-probe` 证据采集；真实账号状态矩阵和其余条目仍按本矩阵验收。
+状态：验收矩阵已确认。本轮已完成 CPA 删除后重导入核心复现、生命周期审计补强、真实请求诊断 evidence 回写、数据保留清理审计和隔离 `stateful-probe` 证据采集；真实账号状态矩阵和其余条目仍按本矩阵验收。
 
 ## CPA Auth JSON 删除后重导入
 
@@ -36,7 +36,7 @@
 | AUD-05 | 只读 debug | 在容器内执行全部 debug 命令 | 执行 `summary`、`recent-operations`、`operation <id>`、`db-integrity`、`cpa-auth`、`cpa-runtime`、`account <id>` | 输出脱敏且不修改 DB、文件或 runtime 状态 |
 | AUD-06 | stateful-probe 必须实现 | 目标 `lune` 容器存在 | 执行 `scripts/audit/repro.sh stateful-probe` | 通过工具容器导出脱敏 evidence，清理临时工具容器；不得返回 `scenario_not_implemented` |
 | AUD-07 | 脱敏审计包 | 有账号、Pool、request log、operation record | 执行 `lune debug collect --redact` | 生成结构化审计包，不含敏感凭据 |
-| AUD-08 | 数据保留 | 超过最近操作保留窗口 | 触发清理 | 清理按策略执行，清理本身可审计 |
+| AUD-08 | 数据保留 | 超过最近操作保留窗口 | 触发清理 | 清理按策略执行，旧 `operations`/`operation_items` 按窗口清理，清理本身可审计 |
 | AUD-09 | 后续 spec 约束 | 新增涉及状态变更或 runtime 行为的 spec | 审阅 spec | 必须包含可审计性小节，说明阶段、错误、关联 ID、脱敏和容器矩阵 |
 | AUD-10 | 工具容器构建 | 本机可访问 Docker daemon | 执行 `scripts/audit/build-tools.sh` | 成功构建 `lune-audit-tools:local`，不改变生产 `Dockerfile` runtime 工具集 |
 | AUD-11 | 工具容器命令封装 | 目标 `lune` 容器存在 | 执行 `scripts/audit/run-tools.sh jq --version` 和 `sqlite3 --version` | 命令在工具容器内执行，容器退出后不遗留 |

@@ -1241,21 +1241,10 @@ func (h *Handler) pruneDataRetention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	retentionDays := syscfg.ParseNonNegativeInt(settings["data_retention_days"], syscfg.DefaultDataRetentionDays)
-	deleted, err := h.store.PruneRequestLogs(retentionDays)
+	result, err := h.store.PruneDataRetention(retentionDays, "admin_api")
 	if err != nil {
 		h.internalError(w, err)
 		return
-	}
-	deletedDeliveries, deletedOutbox, err := h.store.PruneNotificationHistory(retentionDays)
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	if retentionDays > 0 {
-		if err := h.store.RecordPruneRun(deleted, deletedDeliveries, deletedOutbox); err != nil {
-			h.internalError(w, err)
-			return
-		}
 	}
 	summary, err := h.store.GetDataRetentionSummary(retentionDays)
 	if err != nil {
@@ -1264,9 +1253,11 @@ func (h *Handler) pruneDataRetention(w http.ResponseWriter, r *http.Request) {
 	}
 	webutil.WriteData(w, 200, map[string]any{
 		"retention_days":                  summary.RetentionDays,
-		"deleted_logs":                    deleted,
-		"deleted_notification_deliveries": deletedDeliveries,
-		"deleted_notification_outbox":     deletedOutbox,
+		"deleted_logs":                    result.DeletedLogs,
+		"deleted_notification_deliveries": result.DeletedDeliveries,
+		"deleted_notification_outbox":     result.DeletedOutbox,
+		"deleted_operations":              result.DeletedOperations,
+		"deleted_operation_items":         result.DeletedOperationItems,
 		"total_logs":                      summary.TotalLogs,
 		"oldest_log_at":                   summary.OldestLogAt,
 		"newest_log_at":                   summary.NewestLogAt,

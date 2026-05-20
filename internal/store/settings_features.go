@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"lune/internal/syscfg"
@@ -320,6 +321,8 @@ func (s *Store) GetDataRetentionSummary(retentionDays int) (*DataRetentionSummar
 	summary.LastPruneDeletedLogs = parseInt64(settings["last_prune_deleted_logs"])
 	summary.LastPruneDeletedDeliveries = parseInt64(settings["last_prune_deleted_deliveries"])
 	summary.LastPruneDeletedOutbox = parseInt64(settings["last_prune_deleted_outbox"])
+	summary.LastPruneDeletedOperations = parseInt64(settings["last_prune_deleted_operations"])
+	summary.LastPruneDeletedOperationItems = parseInt64(settings["last_prune_deleted_operation_items"])
 
 	return &summary, nil
 }
@@ -383,6 +386,39 @@ func (s *Store) GetDataRetentionPreview(retentionDays int) (*DataRetentionPrevie
 	).Scan(&preview.OutboxToDelete); err != nil {
 		return nil, err
 	}
+	if err := s.db.QueryRow(
+		`WITH keep AS (
+			SELECT operation_id
+			FROM operations
+			ORDER BY datetime(created_at) DESC, id DESC
+			LIMIT 200
+		)
+		 SELECT COUNT(*)
+		 FROM operations o
+		 LEFT JOIN keep k ON k.operation_id = o.operation_id
+		 WHERE k.operation_id IS NULL
+		   AND o.created_at < ?`,
+		deliveryCutoff,
+	).Scan(&preview.OperationsToDelete); err != nil {
+		return nil, err
+	}
+	if err := s.db.QueryRow(
+		`WITH keep AS (
+			SELECT operation_id
+			FROM operations
+			ORDER BY datetime(created_at) DESC, id DESC
+			LIMIT 200
+		)
+		 SELECT COUNT(*)
+		 FROM operation_items oi
+		 JOIN operations o ON o.operation_id = oi.operation_id
+		 LEFT JOIN keep k ON k.operation_id = oi.operation_id
+		 WHERE k.operation_id IS NULL
+		   AND o.created_at < ?`,
+		deliveryCutoff,
+	).Scan(&preview.OperationItemsToDelete); err != nil {
+		return nil, err
+	}
 
 	return preview, nil
 }
@@ -409,16 +445,244 @@ func (s *Store) PruneRequestLogs(retentionDays int) (int64, error) {
 	return res.RowsAffected()
 }
 
+func (s *Store) PruneDataRetention(retentionDays int, source string) (*DataRetentionPruneResult, error) {
+	result := &DataRetentionPruneResult{RetentionDays: retentionDays}
+	if retentionDays <= 0 {
+		return result, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format("2006-01-02 15:04:05")
+	safetyDays := retentionDays
+	if safetyDays < 7 {
+		safetyDays = 7
+	}
+	outboxCutoff := time.Now().UTC().AddDate(0, 0, -safetyDays).Format("2006-01-02 15:04:05")
+
+	res, err := tx.Exec(`DELETE FROM request_logs WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	result.DeletedLogs, err = res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	res, err = tx.Exec(`DELETE FROM notification_deliveries WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	result.DeletedDeliveries, err = res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	res, err = tx.Exec(`DELETE FROM notification_outbox WHERE status = 'dropped' AND created_at < ?`, outboxCutoff)
+	if err != nil {
+		return nil, err
+	}
+	result.DeletedOutbox, err = res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.QueryRow(
+		`WITH keep AS (
+			SELECT operation_id
+			FROM operations
+			ORDER BY datetime(created_at) DESC, id DESC
+			LIMIT 200
+		)
+		 SELECT COUNT(*)
+		 FROM operation_items oi
+		 JOIN operations o ON o.operation_id = oi.operation_id
+		 LEFT JOIN keep k ON k.operation_id = oi.operation_id
+		 WHERE k.operation_id IS NULL
+		   AND o.created_at < ?`,
+		cutoff,
+	).Scan(&result.DeletedOperationItems); err != nil {
+		return nil, err
+	}
+	res, err = tx.Exec(
+		`DELETE FROM operations
+		 WHERE operation_id IN (
+			SELECT o.operation_id
+			FROM operations o
+			LEFT JOIN (
+				SELECT operation_id
+				FROM operations
+				ORDER BY datetime(created_at) DESC, id DESC
+				LIMIT 200
+			) keep ON keep.operation_id = o.operation_id
+			WHERE keep.operation_id IS NULL
+			  AND o.created_at < ?
+		 )`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	result.DeletedOperations, err = res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := recordPruneRunTx(tx, now, result); err != nil {
+		return nil, err
+	}
+	if shouldRecordPruneOperation(result, source) {
+		if err := recordDataRetentionPruneOperationTx(tx, result, source, now); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // RecordPruneRun persists the outcome of the most recent prune (auto or
 // manual) into system_config. The fields are exposed back via
 // GetDataRetentionSummary so the UI can show users "auto-prune is alive,
 // last run X minutes ago, cleared Y rows" without keeping its own state.
-func (s *Store) RecordPruneRun(deletedLogs, deletedDeliveries, deletedOutbox int64) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	return s.UpdateSettings(map[string]string{
-		"last_prune_at":                 now,
-		"last_prune_deleted_logs":       strconv.FormatInt(deletedLogs, 10),
-		"last_prune_deleted_deliveries": strconv.FormatInt(deletedDeliveries, 10),
-		"last_prune_deleted_outbox":     strconv.FormatInt(deletedOutbox, 10),
+func (s *Store) RecordPruneRun(result *DataRetentionPruneResult) error {
+	if result == nil {
+		result = &DataRetentionPruneResult{}
+	}
+	return s.UpdateSettings(pruneRunSettings(time.Now().UTC().Format(time.RFC3339), result))
+}
+
+func pruneRunSettings(now string, result *DataRetentionPruneResult) map[string]string {
+	if result == nil {
+		result = &DataRetentionPruneResult{}
+	}
+	return map[string]string{
+		"last_prune_at":                      now,
+		"last_prune_deleted_logs":            strconv.FormatInt(result.DeletedLogs, 10),
+		"last_prune_deleted_deliveries":      strconv.FormatInt(result.DeletedDeliveries, 10),
+		"last_prune_deleted_outbox":          strconv.FormatInt(result.DeletedOutbox, 10),
+		"last_prune_deleted_operations":      strconv.FormatInt(result.DeletedOperations, 10),
+		"last_prune_deleted_operation_items": strconv.FormatInt(result.DeletedOperationItems, 10),
+	}
+}
+
+func recordPruneRunTx(tx *sql.Tx, now string, result *DataRetentionPruneResult) error {
+	stmt, err := tx.Prepare(`INSERT INTO system_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for k, v := range pruneRunSettings(now, result) {
+		if _, err := stmt.Exec(k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) recordDataRetentionPruneOperation(result *DataRetentionPruneResult, source string) error {
+	if result == nil {
+		return nil
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "system"
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	return s.RecordOperation(&Operation{
+		OperationID:   "op_retention_prune_" + time.Now().UTC().Format("20060102T150405.000000000Z"),
+		OperationType: "data_retention_prune",
+		Source:        source,
+		TargetType:    "data_retention",
+		TargetID:      strconv.Itoa(result.RetentionDays),
+		TargetSummary: fmt.Sprintf("retention_days=%d deleted_logs=%d deleted_operations=%d deleted_operation_items=%d deleted_deliveries=%d deleted_outbox=%d",
+			result.RetentionDays, result.DeletedLogs, result.DeletedOperations, result.DeletedOperationItems, result.DeletedDeliveries, result.DeletedOutbox),
+		Status:     "succeeded",
+		StartedAt:  now,
+		FinishedAt: now,
+		Items: []OperationItem{
+			{ItemIndex: 1, Action: "prune", Status: "succeeded", Stage: "request_logs", SafeErrorMessage: strconv.FormatInt(result.DeletedLogs, 10)},
+			{ItemIndex: 2, Action: "prune", Status: "succeeded", Stage: "operations", SafeErrorMessage: strconv.FormatInt(result.DeletedOperations, 10)},
+			{ItemIndex: 3, Action: "prune", Status: "succeeded", Stage: "operation_items", SafeErrorMessage: strconv.FormatInt(result.DeletedOperationItems, 10)},
+			{ItemIndex: 4, Action: "prune", Status: "succeeded", Stage: "notification_deliveries", SafeErrorMessage: strconv.FormatInt(result.DeletedDeliveries, 10)},
+			{ItemIndex: 5, Action: "prune", Status: "succeeded", Stage: "notification_outbox", SafeErrorMessage: strconv.FormatInt(result.DeletedOutbox, 10)},
+		},
 	})
+}
+
+func shouldRecordPruneOperation(result *DataRetentionPruneResult, source string) bool {
+	if result == nil {
+		return false
+	}
+	if strings.TrimSpace(source) != "health_checker" {
+		return true
+	}
+	return result.DeletedLogs > 0 || result.DeletedDeliveries > 0 || result.DeletedOutbox > 0 ||
+		result.DeletedOperations > 0 || result.DeletedOperationItems > 0
+}
+
+func recordDataRetentionPruneOperationTx(tx *sql.Tx, result *DataRetentionPruneResult, source string, nowRFC3339 string) error {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "system"
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	if parsed, err := time.Parse(time.RFC3339, nowRFC3339); err == nil {
+		now = parsed.UTC().Format("2006-01-02 15:04:05")
+	}
+	op := Operation{
+		OperationID:   "op_retention_prune_" + time.Now().UTC().Format("20060102T150405.000000000Z"),
+		OperationType: "data_retention_prune",
+		Source:        source,
+		TargetType:    "data_retention",
+		TargetID:      strconv.Itoa(result.RetentionDays),
+		TargetSummary: fmt.Sprintf("retention_days=%d deleted_logs=%d deleted_operations=%d deleted_operation_items=%d deleted_deliveries=%d deleted_outbox=%d",
+			result.RetentionDays, result.DeletedLogs, result.DeletedOperations, result.DeletedOperationItems, result.DeletedDeliveries, result.DeletedOutbox),
+		Status:     "succeeded",
+		StartedAt:  now,
+		FinishedAt: now,
+		Items: []OperationItem{
+			{ItemIndex: 1, Action: "prune", Status: "succeeded", Stage: "request_logs", SafeErrorMessage: strconv.FormatInt(result.DeletedLogs, 10)},
+			{ItemIndex: 2, Action: "prune", Status: "succeeded", Stage: "operations", SafeErrorMessage: strconv.FormatInt(result.DeletedOperations, 10)},
+			{ItemIndex: 3, Action: "prune", Status: "succeeded", Stage: "operation_items", SafeErrorMessage: strconv.FormatInt(result.DeletedOperationItems, 10)},
+			{ItemIndex: 4, Action: "prune", Status: "succeeded", Stage: "notification_deliveries", SafeErrorMessage: strconv.FormatInt(result.DeletedDeliveries, 10)},
+			{ItemIndex: 5, Action: "prune", Status: "succeeded", Stage: "notification_outbox", SafeErrorMessage: strconv.FormatInt(result.DeletedOutbox, 10)},
+		},
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO operations (
+			operation_id, operation_type, source, target_type, target_id, target_summary,
+			status, error_code, safe_error_message, correlation_id, started_at, finished_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		op.OperationID, op.OperationType, op.Source, op.TargetType, op.TargetID, op.TargetSummary,
+		op.Status, op.ErrorCode, sanitizeOperationMessage(op.SafeErrorMessage), op.CorrelationID, op.StartedAt, op.FinishedAt,
+	); err != nil {
+		return err
+	}
+	items := op.Items
+	if len(items) > maxOperationItemsPerRecord {
+		items = items[:maxOperationItemsPerRecord]
+	}
+	for i, item := range items {
+		itemIndex := item.ItemIndex
+		if itemIndex == 0 {
+			itemIndex = i + 1
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO operation_items (
+				operation_id, item_index, client_file_name, account_key_hash, action, status,
+				runtime_sync, error_code, safe_error_message, account_id, pool_member_id, stage
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			op.OperationID, itemIndex, item.ClientFileName, item.AccountKeyHash, item.Action, item.Status,
+			item.RuntimeSync, item.ErrorCode, sanitizeOperationMessage(item.SafeErrorMessage), nil, nil, item.Stage,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }

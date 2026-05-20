@@ -239,7 +239,6 @@ func TestGetDataRetentionPreviewReturnsCountsAndBytes(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed outbox: %v", err)
 	}
-
 	preview, err := st.GetDataRetentionPreview(30)
 	if err != nil {
 		t.Fatalf("get preview: %v", err)
@@ -255,6 +254,9 @@ func TestGetDataRetentionPreviewReturnsCountsAndBytes(t *testing.T) {
 	}
 	if preview.OutboxToDelete != 1 {
 		t.Fatalf("expected 1 outbox to delete, got %d", preview.OutboxToDelete)
+	}
+	if preview.OperationsToDelete != 0 || preview.OperationItemsToDelete != 0 {
+		t.Fatalf("expected recent operations to be retained, got %+v", preview)
 	}
 	if preview.OutboxSafetyDays < 7 {
 		t.Fatalf("expected outbox safety window >= 7 days, got %d", preview.OutboxSafetyDays)
@@ -276,6 +278,181 @@ func TestGetDataRetentionPreviewReturnsCountsAndBytes(t *testing.T) {
 	}
 	if disabled.LogsToDelete != 0 || disabled.LogsToDeleteSizeBytes != 0 {
 		t.Fatalf("expected zeros when disabled, got %+v", disabled)
+	}
+}
+
+func TestPruneDataRetentionDeletesOldOperationsAndAuditsRun(t *testing.T) {
+	st := newTestStore(t)
+
+	oldAt := time.Now().UTC().AddDate(0, 0, -31).Format("2006-01-02 15:04:05")
+	newAt := time.Now().UTC().AddDate(0, 0, -5).Format("2006-01-02 15:04:05")
+	for i := 0; i < 201; i++ {
+		id := fmt.Sprintf("op-prune-%03d", i)
+		at := newAt
+		if i == 0 {
+			at = oldAt
+		}
+		if err := st.RecordOperation(&Operation{
+			OperationID:   id,
+			OperationType: "cpa_import_batch",
+			Status:        "succeeded",
+			StartedAt:     at,
+			FinishedAt:    at,
+			Items: []OperationItem{
+				{Status: "succeeded", Stage: "write_file"},
+				{Status: "succeeded", Stage: "insert_pool_member"},
+			},
+		}); err != nil {
+			t.Fatalf("seed operation %s: %v", id, err)
+		}
+		if _, err := st.db.Exec(`UPDATE operations SET created_at = ? WHERE operation_id = ?`, at, id); err != nil {
+			t.Fatalf("age operation %s: %v", id, err)
+		}
+	}
+
+	preview, err := st.GetDataRetentionPreview(30)
+	if err != nil {
+		t.Fatalf("get preview: %v", err)
+	}
+	if preview.OperationsToDelete != 1 || preview.OperationItemsToDelete != 2 {
+		t.Fatalf("preview should match operation prune result, got %+v", preview)
+	}
+
+	result, err := st.PruneDataRetention(30, "unit_test")
+	if err != nil {
+		t.Fatalf("prune data retention: %v", err)
+	}
+	if result.DeletedOperations != 1 || result.DeletedOperationItems != 2 {
+		t.Fatalf("expected one old operation outside recent 200 to be deleted, got %+v", result)
+	}
+	if op, err := st.GetOperation("op-prune-000"); err != nil || op != nil {
+		t.Fatalf("old operation should be pruned, op=%+v err=%v", op, err)
+	}
+	if op, err := st.GetOperation("op-prune-200"); err != nil || op == nil || len(op.Items) != 2 {
+		t.Fatalf("fresh operation should remain with items, op=%+v err=%v", op, err)
+	}
+
+	ops, err := st.ListRecentOperations(10)
+	if err != nil {
+		t.Fatalf("list operations: %v", err)
+	}
+	foundPrune := false
+	for _, op := range ops {
+		if op.OperationType == "data_retention_prune" {
+			foundPrune = true
+			if op.Source != "unit_test" || op.Status != "succeeded" {
+				t.Fatalf("unexpected prune operation: %+v", op)
+			}
+			detail, err := st.GetOperation(op.OperationID)
+			if err != nil {
+				t.Fatalf("get prune operation: %v", err)
+			}
+			if detail == nil || len(detail.Items) != 5 {
+				t.Fatalf("expected prune operation items, got %+v", detail)
+			}
+		}
+	}
+	if !foundPrune {
+		t.Fatalf("missing data_retention_prune operation: %+v", ops)
+	}
+
+	summary, err := st.GetDataRetentionSummary(30)
+	if err != nil {
+		t.Fatalf("get summary: %v", err)
+	}
+	if summary.LastPruneAt == nil || summary.LastPruneDeletedOperations != 1 || summary.LastPruneDeletedOperationItems != 2 {
+		t.Fatalf("summary missing prune result: %+v", summary)
+	}
+}
+
+func TestPruneDataRetentionRetainsRecentTwoHundredExpiredOperations(t *testing.T) {
+	st := newTestStore(t)
+
+	oldAt := time.Now().UTC().AddDate(0, 0, -31).Format("2006-01-02 15:04:05")
+	for i := 0; i < 200; i++ {
+		id := fmt.Sprintf("op-retained-%03d", i)
+		if err := st.RecordOperation(&Operation{
+			OperationID:   id,
+			OperationType: "cpa_import_batch",
+			Status:        "succeeded",
+			StartedAt:     oldAt,
+			FinishedAt:    oldAt,
+			Items:         []OperationItem{{Status: "succeeded", Stage: "write_file"}},
+		}); err != nil {
+			t.Fatalf("seed operation %s: %v", id, err)
+		}
+		if _, err := st.db.Exec(`UPDATE operations SET created_at = ? WHERE operation_id = ?`, oldAt, id); err != nil {
+			t.Fatalf("age operation %s: %v", id, err)
+		}
+	}
+
+	preview, err := st.GetDataRetentionPreview(30)
+	if err != nil {
+		t.Fatalf("get preview: %v", err)
+	}
+	if preview.OperationsToDelete != 0 || preview.OperationItemsToDelete != 0 {
+		t.Fatalf("recent 200 expired operations must be retained, got %+v", preview)
+	}
+	result, err := st.PruneDataRetention(30, "unit_test")
+	if err != nil {
+		t.Fatalf("prune data retention: %v", err)
+	}
+	if result.DeletedOperations != 0 || result.DeletedOperationItems != 0 {
+		t.Fatalf("recent 200 expired operations must not be pruned, got %+v", result)
+	}
+}
+
+func TestPruneDataRetentionHealthNoopDoesNotWriteOperation(t *testing.T) {
+	st := newTestStore(t)
+
+	result, err := st.PruneDataRetention(30, "health_checker")
+	if err != nil {
+		t.Fatalf("prune data retention: %v", err)
+	}
+	if result.DeletedLogs != 0 || result.DeletedOperations != 0 || result.DeletedOperationItems != 0 {
+		t.Fatalf("expected no deletions, got %+v", result)
+	}
+	ops, err := st.ListRecentOperations(10)
+	if err != nil {
+		t.Fatalf("list operations: %v", err)
+	}
+	for _, op := range ops {
+		if op.OperationType == "data_retention_prune" {
+			t.Fatalf("health no-op prune must not write operation, got %+v", op)
+		}
+	}
+	summary, err := st.GetDataRetentionSummary(30)
+	if err != nil {
+		t.Fatalf("get summary: %v", err)
+	}
+	if summary.LastPruneAt == nil {
+		t.Fatalf("health no-op prune should still record last_prune_at")
+	}
+}
+
+func TestPruneDataRetentionDisabledDoesNotWriteOperationOrSummary(t *testing.T) {
+	st := newTestStore(t)
+
+	result, err := st.PruneDataRetention(0, "admin_api")
+	if err != nil {
+		t.Fatalf("prune data retention: %v", err)
+	}
+	if result.DeletedLogs != 0 || result.DeletedOperations != 0 || result.DeletedOperationItems != 0 {
+		t.Fatalf("expected no deletions when disabled, got %+v", result)
+	}
+	ops, err := st.ListRecentOperations(10)
+	if err != nil {
+		t.Fatalf("list operations: %v", err)
+	}
+	if len(ops) != 0 {
+		t.Fatalf("disabled prune should not write operations, got %+v", ops)
+	}
+	summary, err := st.GetDataRetentionSummary(0)
+	if err != nil {
+		t.Fatalf("get summary: %v", err)
+	}
+	if summary.LastPruneAt != nil {
+		t.Fatalf("disabled prune should not record last_prune_at, got %+v", summary)
 	}
 }
 

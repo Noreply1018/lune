@@ -290,7 +290,7 @@ lune-audit-<timestamp>.tar.gz
 | AUD-05 | debug 只读 | 执行 `lune debug summary` 和 `lune debug cpa-auth` | 不修改 DB、文件或 runtime；输出稳定且脱敏 |
 | AUD-06 | stateful-probe 必须实现 | 执行 `scripts/audit/repro.sh stateful-probe` | 通过工具容器输出脱敏 evidence，最终清理资源；不得返回 `scenario_not_implemented` |
 | AUD-07 | 审计包导出 | 执行 `lune debug collect --redact` | 生成结构化脱敏包，可用于离线审计 |
-| AUD-08 | 保留窗口 | 制造超过保留数量的操作 | 旧记录按策略清理，清理动作有审计事件 |
+| AUD-08 | 保留窗口 | 制造超过保留数量的操作 | 旧记录按策略清理，`request_logs`、`notification_*`、`operations`、`operation_items` 均受控清理，清理动作有审计事件 |
 | AUD-09 | 工具容器构建 | 执行 `scripts/audit/build-tools.sh` | 成功构建 `lune-audit-tools:local`，生产镜像不增加审计工具 |
 | AUD-10 | 工具容器只读采集 | 执行 `scripts/audit/collect.sh` | 生成脱敏 evidence，`/data` 为只读挂载，正式 `lune` 容器不被重启、删除或写入 |
 | AUD-11 | 核心复现场景必须实现 | 在发布矩阵完成删除后重导入后执行 `scripts/audit/repro.sh cpa-import-reimport` | 输出该真实容器的脱敏 evidence；不得返回 `scenario_not_implemented` |

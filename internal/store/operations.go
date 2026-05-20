@@ -6,6 +6,7 @@ import (
 )
 
 const maxOperationMessageBytes = 2048
+const maxOperationItemsPerRecord = 1000
 
 func (s *Store) RecordOperation(op *Operation) error {
 	if op == nil || strings.TrimSpace(op.OperationID) == "" || strings.TrimSpace(op.OperationType) == "" {
@@ -47,7 +48,11 @@ func (s *Store) RecordOperation(op *Operation) error {
 	if _, err := tx.Exec(`DELETE FROM operation_items WHERE operation_id = ?`, op.OperationID); err != nil {
 		return err
 	}
-	for i, item := range op.Items {
+	items := op.Items
+	if len(items) > maxOperationItemsPerRecord {
+		items = items[:maxOperationItemsPerRecord]
+	}
+	for i, item := range items {
 		itemIndex := item.ItemIndex
 		if itemIndex == 0 {
 			itemIndex = i + 1

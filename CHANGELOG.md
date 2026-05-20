@@ -8,7 +8,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ### v0.2.0
 
-状态：本轮已完成 CPA 删除后重导入核心修复、生命周期 operation 审计、账号真实请求诊断 evidence 回写和隔离容器复现；完整 v0.2.0 发布仍需按规格矩阵继续验收。
+状态：本轮已完成 CPA 删除后重导入核心修复、生命周期 operation 审计、账号真实请求诊断 evidence 回写、数据保留清理审计和隔离容器复现；完整 v0.2.0 发布仍需按规格矩阵继续验收。
 
 ### CPA Auth JSON 删除后重导入
 
@@ -21,6 +21,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 - `tool-collect` 现在会排除 `/data/audit-cpa-import/*` staging 文件，避免审计包泄露临时导入副本。
 - 审计包、最近操作快照和恢复脚本的输出口径已对齐 v0.2.0 规格。
+- 最近操作快照与数据保留清理现在会一并覆盖 `request_logs`、`notification_*`、`operations` 和 `operation_items`，清理动作本身也会落 `data_retention_prune` operation。
 - `stateful-probe` 复现场景现在走隔离容器，旧数据卷会先复制到临时卷再由新镜像迁移验证，不直接写入或重启旧容器。
 - `stateful-probe` 会区分账号级 evidence 与路由级失败；当前真实 volume 可用样本返回 `request_log_collected`，不会伪装成诊断 evidence 已采集。
 
@@ -39,6 +40,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - `bash -n scripts/audit/*.sh`
 - `git diff --check`
 - 隔离容器复现 `cpa-import-reimport`
+- 隔离容器验证 `data-retention prune`，清理 operation 可在 `recent-operations` 中恢复
 - 隔离容器复现 `stateful-probe`，当前真实 volume 样本证据为 `request_log_collected / http_code=503 / account_log_matched=0 / diagnostic_evidence_count=0`
 - subagent 严格审计通过
 

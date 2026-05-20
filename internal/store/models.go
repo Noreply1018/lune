@@ -349,15 +349,28 @@ type DataRetentionSummary struct {
 	LastPruneDeletedLogs           int64   `json:"last_prune_deleted_logs"`
 	LastPruneDeletedDeliveries     int64   `json:"last_prune_deleted_deliveries"`
 	LastPruneDeletedOutbox         int64   `json:"last_prune_deleted_outbox"`
+	LastPruneDeletedOperations     int64   `json:"last_prune_deleted_operations"`
+	LastPruneDeletedOperationItems int64   `json:"last_prune_deleted_operation_items"`
 }
 
 type DataRetentionPreview struct {
+	RetentionDays          int   `json:"retention_days"`
+	LogsToDelete           int64 `json:"logs_to_delete"`
+	LogsToDeleteSizeBytes  int64 `json:"logs_to_delete_size_bytes"`
+	DeliveriesToDelete     int64 `json:"deliveries_to_delete"`
+	OutboxToDelete         int64 `json:"outbox_to_delete"`
+	OperationsToDelete     int64 `json:"operations_to_delete"`
+	OperationItemsToDelete int64 `json:"operation_items_to_delete"`
+	OutboxSafetyDays       int   `json:"outbox_safety_days"`
+}
+
+type DataRetentionPruneResult struct {
 	RetentionDays         int   `json:"retention_days"`
-	LogsToDelete          int64 `json:"logs_to_delete"`
-	LogsToDeleteSizeBytes int64 `json:"logs_to_delete_size_bytes"`
-	DeliveriesToDelete    int64 `json:"deliveries_to_delete"`
-	OutboxToDelete        int64 `json:"outbox_to_delete"`
-	OutboxSafetyDays      int   `json:"outbox_safety_days"`
+	DeletedLogs           int64 `json:"deleted_logs"`
+	DeletedDeliveries     int64 `json:"deleted_notification_deliveries"`
+	DeletedOutbox         int64 `json:"deleted_notification_outbox"`
+	DeletedOperations     int64 `json:"deleted_operations"`
+	DeletedOperationItems int64 `json:"deleted_operation_items"`
 }
 
 // LatencyBucket holds percentile latencies for a single time bucket.
