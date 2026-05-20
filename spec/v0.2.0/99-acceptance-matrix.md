@@ -1,6 +1,6 @@
 # 99. v0.2.0 验收矩阵
 
-状态：验收矩阵已确认。本轮已完成 CPA 删除后重导入核心复现、生命周期审计补强、真实请求诊断 evidence 回写、数据保留清理审计和隔离 `stateful-probe` 证据采集；真实账号状态矩阵和其余条目继续按本矩阵验收。
+状态：验收矩阵已确认。本轮已完成 CPA 删除后重导入核心复现、生命周期审计补强、真实请求诊断 evidence 回写、数据保留清理审计和隔离 `stateful-probe` 证据采集；真实账号状态矩阵尚未完成，v0.2.0 仍未达到严格发布完成标准。
 
 ## CPA Auth JSON 删除后重导入
 
@@ -94,7 +94,7 @@
 | REL-04 | 清理 | 测试结束删除临时容器和临时数据卷 |
 | REL-05 | 审计 | 修改完成后由 subagent 严格审计，审计通过后提交 Git commit |
 | REL-06 | 后续 spec 审查 | 后续涉及状态变更、运行时、外部服务或异步任务的 spec 必须包含可审计性要求 |
-| REL-07 | 真实账号状态矩阵 | `al`、`c`、quota 鉴权失败但可用案例必须至少在一次隔离真实容器验收中跑通 |
+| REL-07 | 真实账号状态矩阵 | `al`、`c`、quota 鉴权失败但可用案例必须至少在一次隔离真实容器验收中跑通；在完成前，v0.2.0 不能宣称严格发布完成 |
 | REL-08 | fake upstream 不替代真实验收 | fake upstream 可用于 CI 回归，但不能作为真实账号状态识别的唯一证据 |
 | REL-09 | 旧数据卷升级 | 使用 v0.1.9 真实或模拟数据卷副本启动 v0.2.0 | schema migration 成功；旧账号、Pool、request log 可读；旧账号诊断初始化为 `stable_diagnostic_status=unknown`、`last_probe_status=not_run` 或空值；`scheduler_status` 按旧启停/健康字段保守映射，旧启用账号不得仅因缺少诊断历史被自动禁用；新增 operation/diagnostic 表兼容空历史 |
 | REL-10 | 重启恢复 | 在导入、删除、reload、诊断中断后重启容器 | 启动流程自动 reconcile 收敛；只读 debug 可验证；无长期 running；状态可审计 |
