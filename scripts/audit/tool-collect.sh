@@ -61,6 +61,22 @@ else
   echo "no sqlite db found under $data_dir" > "$raw_tmp/db-tables.txt"
 fi
 
+if [[ -n "$db_file" ]] && command -v lune >/dev/null 2>&1; then
+  for cmd in summary recent-operations db-integrity cpa-auth cpa-runtime; do
+    lune debug "$cmd" > "$raw_tmp/debug-$cmd.json" 2>&1 || true
+  done
+  first_operation_id="$(sqlite3 -readonly "$db_file" "SELECT operation_id FROM operations ORDER BY datetime(created_at) DESC, id DESC LIMIT 1;" 2>/dev/null || true)"
+  if [[ -n "$first_operation_id" ]]; then
+    lune debug operation "$first_operation_id" > "$raw_tmp/debug-operation.json" 2>&1 || true
+  fi
+  first_account_id="$(sqlite3 -readonly "$db_file" "SELECT id FROM accounts ORDER BY id LIMIT 1;" 2>/dev/null || true)"
+  if [[ -n "$first_account_id" ]]; then
+    lune debug account "$first_account_id" > "$raw_tmp/debug-account.json" 2>&1 || true
+  fi
+elif ! command -v lune >/dev/null 2>&1; then
+  echo "lune binary not available in audit tools container" > "$raw_tmp/debug-unavailable.txt"
+fi
+
 for file in "$raw_tmp"/*; do
   [[ -f "$file" ]] || continue
   /work/scripts/audit/redact.sh "$file" "$out/redacted/$(basename "$file")"

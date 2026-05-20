@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"lune/internal/app"
+	"lune/internal/debugcmd"
 )
 
 var (
@@ -32,8 +33,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "debug":
+		if err := debugcmd.Run(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\nUsage: lune [up|version|check]\n", cmd)
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\nUsage: lune [up|version|check|debug]\n", cmd)
 		os.Exit(1)
 	}
 }

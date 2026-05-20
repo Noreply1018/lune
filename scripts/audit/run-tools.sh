@@ -25,6 +25,8 @@ docker run --rm "${tty_args[@]}" \
   --user "$(id -u):$(id -g)" \
   -e "LUNE_CONTAINER=$LUNE_CONTAINER" \
   -e "LUNE_DATA_DIR=/data" \
+  -e "LUNE_CPA_FILES_DIR=/data/cpa-auth" \
+  -e "LUNE_CPA_BASE_URL=http://127.0.0.1:8317" \
   -e "LUNE_AUDIT_OUT=/out" \
   -v "$data_volume:/data:ro" \
   -v "$REPO_ROOT:/work:ro" \
