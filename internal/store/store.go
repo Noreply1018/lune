@@ -21,7 +21,7 @@ type Store struct {
 	schemaCache map[string]map[string]bool
 }
 
-const v3SchemaVersion = 22
+const v3SchemaVersion = 23
 
 const v3Schema = `
 CREATE TABLE IF NOT EXISTS system_config (
@@ -240,6 +240,45 @@ CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending ON notification_outbo
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_active_unique ON notification_outbox(dedup_key) WHERE status IN ('pending', 'retrying');
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_created ON notification_deliveries(created_at);
 
+CREATE TABLE IF NOT EXISTS operations (
+    id                  INTEGER PRIMARY KEY,
+    operation_id        TEXT NOT NULL UNIQUE,
+    operation_type      TEXT NOT NULL,
+    source              TEXT NOT NULL DEFAULT '',
+    target_type         TEXT NOT NULL DEFAULT '',
+    target_id           TEXT NOT NULL DEFAULT '',
+    target_summary      TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL,
+    error_code          TEXT NOT NULL DEFAULT '',
+    safe_error_message  TEXT NOT NULL DEFAULT '',
+    correlation_id      TEXT NOT NULL DEFAULT '',
+    started_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS operation_items (
+    id                  INTEGER PRIMARY KEY,
+    operation_id        TEXT NOT NULL,
+    item_index          INTEGER NOT NULL DEFAULT 0,
+    client_file_name    TEXT NOT NULL DEFAULT '',
+    account_key_hash    TEXT NOT NULL DEFAULT '',
+    action              TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT '',
+    runtime_sync        TEXT NOT NULL DEFAULT '',
+    error_code          TEXT NOT NULL DEFAULT '',
+    safe_error_message  TEXT NOT NULL DEFAULT '',
+    account_id          INTEGER,
+    pool_member_id      INTEGER,
+    stage               TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(operation_id) REFERENCES operations(operation_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_operations_created_at ON operations(created_at);
+CREATE INDEX IF NOT EXISTS idx_operations_type_created ON operations(operation_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_operation_items_operation ON operation_items(operation_id, item_index);
+
 INSERT OR IGNORE INTO notification_settings (id) VALUES (1);
 
 INSERT OR IGNORE INTO notification_subscriptions (event, subscribed, body_template) VALUES
@@ -313,6 +352,9 @@ func (s *Store) migrateV3(dbPath string) error {
 		}
 		if err := s.migrateCpaQuotaBackoffColumns(); err != nil {
 			return fmt.Errorf("repair CPA quota backoff columns: %w", err)
+		}
+		if err := s.migrateOperationTables(); err != nil {
+			return fmt.Errorf("repair operation tables: %w", err)
 		}
 		return nil // already at latest
 	}
@@ -393,6 +435,11 @@ func (s *Store) migrateV3(dbPath string) error {
 		if ver < 22 {
 			if err := s.migrateCpaQuotaBackoffColumns(); err != nil {
 				return fmt.Errorf("migrate CPA quota backoff columns: %w", err)
+			}
+		}
+		if ver < 23 {
+			if err := s.migrateOperationTables(); err != nil {
+				return fmt.Errorf("migrate operation tables: %w", err)
 			}
 		}
 		return s.SetSetting("schema_version", strconv.Itoa(v3SchemaVersion))
@@ -982,6 +1029,57 @@ func (s *Store) migrateCpaQuotaBackoffColumns() error {
 	}
 	s.schemaMu.Lock()
 	delete(s.schemaCache, "accounts")
+	s.schemaMu.Unlock()
+	return nil
+}
+
+func (s *Store) migrateOperationTables() error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS operations (
+			id                  INTEGER PRIMARY KEY,
+			operation_id        TEXT NOT NULL UNIQUE,
+			operation_type      TEXT NOT NULL,
+			source              TEXT NOT NULL DEFAULT '',
+			target_type         TEXT NOT NULL DEFAULT '',
+			target_id           TEXT NOT NULL DEFAULT '',
+			target_summary      TEXT NOT NULL DEFAULT '',
+			status              TEXT NOT NULL,
+			error_code          TEXT NOT NULL DEFAULT '',
+			safe_error_message  TEXT NOT NULL DEFAULT '',
+			correlation_id      TEXT NOT NULL DEFAULT '',
+			started_at          TEXT NOT NULL DEFAULT (datetime('now')),
+			finished_at         TEXT NOT NULL DEFAULT (datetime('now')),
+			created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE TABLE IF NOT EXISTS operation_items (
+			id                  INTEGER PRIMARY KEY,
+			operation_id        TEXT NOT NULL,
+			item_index          INTEGER NOT NULL DEFAULT 0,
+			client_file_name    TEXT NOT NULL DEFAULT '',
+			account_key_hash    TEXT NOT NULL DEFAULT '',
+			action              TEXT NOT NULL DEFAULT '',
+			status              TEXT NOT NULL DEFAULT '',
+			runtime_sync        TEXT NOT NULL DEFAULT '',
+			error_code          TEXT NOT NULL DEFAULT '',
+			safe_error_message  TEXT NOT NULL DEFAULT '',
+			account_id          INTEGER,
+			pool_member_id      INTEGER,
+			stage               TEXT NOT NULL DEFAULT '',
+			created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY(operation_id) REFERENCES operations(operation_id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_operations_created_at ON operations(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_operations_type_created ON operations(operation_type, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_operation_items_operation ON operation_items(operation_id, item_index)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	s.schemaMu.Lock()
+	delete(s.schemaCache, "operations")
+	delete(s.schemaCache, "operation_items")
 	s.schemaMu.Unlock()
 	return nil
 }

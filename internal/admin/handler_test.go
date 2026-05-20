@@ -464,8 +464,8 @@ func TestImportCpaAuthJSONBatchPartialSuccessAndDuplicate(t *testing.T) {
 	if resp.Data.BatchID == "" {
 		t.Fatalf("expected batch id in import response")
 	}
-	if resp.Data.Summary.PendingRuntimeSync != 0 {
-		t.Fatalf("expected no runtime sync pending without checker, got %+v", resp.Data.Summary)
+	if resp.Data.Summary.PendingRuntimeSync != 2 {
+		t.Fatalf("expected successful imports to remain runtime pending without checker, got %+v", resp.Data.Summary)
 	}
 	accounts, err := st.ListAccounts()
 	if err != nil {
@@ -480,6 +480,58 @@ func TestImportCpaAuthJSONBatchPartialSuccessAndDuplicate(t *testing.T) {
 	}
 	if len(members) != 2 {
 		t.Fatalf("expected two pool members, got %d", len(members))
+	}
+	op, err := st.GetOperation(resp.Data.BatchID)
+	if err != nil {
+		t.Fatalf("get import operation: %v", err)
+	}
+	if op == nil {
+		t.Fatalf("expected persisted import operation")
+	}
+	if op.OperationType != "cpa_import_batch" || op.Status != "partial" || op.TargetID != fmt.Sprint(poolID) {
+		t.Fatalf("unexpected operation: %+v", op)
+	}
+	if len(op.Items) != 4 {
+		t.Fatalf("expected 4 operation items, got %d", len(op.Items))
+	}
+	var seenDuplicate, seenInvalid bool
+	for _, item := range op.Items {
+		if strings.Contains(item.SafeErrorMessage, "refresh-first") || strings.Contains(item.SafeErrorMessage, "refresh-second") {
+			t.Fatalf("operation item leaked refresh token: %+v", item)
+		}
+		if strings.Contains(item.AccountKeyHash, "first@example.com") || strings.Contains(item.AccountKeyHash, "codex-first") {
+			t.Fatalf("operation item leaked account key: %+v", item)
+		}
+		if item.ErrorCode == "duplicate_in_batch" && item.Status == "skipped" && item.RuntimeSync == "not_applicable" {
+			seenDuplicate = true
+		}
+		if item.ErrorCode == "invalid_auth_json" && item.Status == "failed" && item.Stage == "parse_input" {
+			seenInvalid = true
+		}
+	}
+	if !seenDuplicate || !seenInvalid {
+		t.Fatalf("expected duplicate and invalid operation items, got %+v", op.Items)
+	}
+
+	reqRecent := httptest.NewRequest(http.MethodGet, "/admin/api/operations/recent", nil)
+	rrRecent := httptest.NewRecorder()
+	handler.listRecentOperations(rrRecent, reqRecent)
+	if rrRecent.Code != http.StatusOK {
+		t.Fatalf("expected recent operations 200, got %d: %s", rrRecent.Code, rrRecent.Body.String())
+	}
+	if !strings.Contains(rrRecent.Body.String(), resp.Data.BatchID) {
+		t.Fatalf("recent operations did not include batch id: %s", rrRecent.Body.String())
+	}
+
+	reqOp := httptest.NewRequest(http.MethodGet, "/admin/api/operations/"+resp.Data.BatchID, nil)
+	reqOp.SetPathValue("operation_id", resp.Data.BatchID)
+	rrOp := httptest.NewRecorder()
+	handler.getOperation(rrOp, reqOp)
+	if rrOp.Code != http.StatusOK {
+		t.Fatalf("expected operation detail 200, got %d: %s", rrOp.Code, rrOp.Body.String())
+	}
+	if strings.Contains(rrOp.Body.String(), "refresh-first") || strings.Contains(rrOp.Body.String(), "refresh-second") {
+		t.Fatalf("operation detail leaked token: %s", rrOp.Body.String())
 	}
 }
 
@@ -648,6 +700,169 @@ func TestImportCpaAuthJSONBatchRequestsSingleRuntimeReload(t *testing.T) {
 	}
 }
 
+func TestImportCpaAuthJSONBatchPersistsRuntimeReloadFailure(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	reloadSignal := filepath.Join(t.TempDir(), "cpa-reload.signal")
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "http://127.0.0.1:1",
+		APIKey:  "service-key",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Codex", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	checker := health.NewChecker(st, cache, authDir, "", newTestNotifier(st))
+	checker.SetCpaReloadSignalPath(reloadSignal)
+	handler := NewHandler(st, cache, authDir, "", checker, newTestNotifier(st))
+
+	body, contentType := multipartAuthJSONBatchBody(t, map[string]string{
+		"pool_id": fmt.Sprint(poolID),
+	}, map[string]string{
+		"first.json": codexAuthJSON(t, "reload-fail@example.com", "acct_reload_fail", "refresh-reload-fail"),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json-batch", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+
+	handler.importCpaAuthJSONBatch(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data cpaAuthJSONBatchResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.Summary.Created != 1 || resp.Data.Summary.Failed != 0 || resp.Data.Summary.FailedRuntimeSync != 1 {
+		t.Fatalf("unexpected import summary: %+v", resp.Data.Summary)
+	}
+	op, err := st.GetOperation(resp.Data.BatchID)
+	if err != nil {
+		t.Fatalf("get operation: %v", err)
+	}
+	if op == nil || op.Status != "partial" || len(op.Items) != 1 {
+		t.Fatalf("unexpected operation: %+v", op)
+	}
+	item := op.Items[0]
+	if item.Status != "created" || item.RuntimeSync != "failed" || item.ErrorCode != "runtime_reload_failed" || item.Stage != "request_runtime_reload" {
+		t.Fatalf("expected runtime reload failure evidence, got %+v", item)
+	}
+	if strings.Contains(item.SafeErrorMessage, "refresh-reload-fail") || strings.Contains(item.AccountKeyHash, "reload-fail@example.com") {
+		t.Fatalf("operation item leaked sensitive data: %+v", item)
+	}
+}
+
+func TestImportCpaAuthJSONBatchFailsWhenAuditPersistFails(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		APIKey:  "service-key",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Codex", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	if _, err := st.DB().Exec(`DROP TABLE operation_items`); err != nil {
+		t.Fatalf("drop operation_items: %v", err)
+	}
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+
+	body, contentType := multipartAuthJSONBatchBody(t, map[string]string{
+		"pool_id": fmt.Sprint(poolID),
+	}, map[string]string{
+		"first.json": codexAuthJSON(t, "audit-fail@example.com", "acct_audit_fail", "refresh-audit-fail"),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json-batch", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+
+	handler.importCpaAuthJSONBatch(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when audit persistence fails, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "audit_persist_failed") {
+		t.Fatalf("expected audit_persist_failed response, got %s", rr.Body.String())
+	}
+}
+
+func TestImportCpaAuthJSONBatchPersistsPoolMemberFailureStage(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		APIKey:  "service-key",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Codex", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	if _, err := st.DB().Exec(`CREATE TRIGGER fail_pool_member_insert BEFORE INSERT ON pool_members BEGIN SELECT RAISE(FAIL, 'forced pool member insert failure'); END`); err != nil {
+		t.Fatalf("create pool member failure trigger: %v", err)
+	}
+	handler := NewHandler(st, cache, authDir, "", nil, newTestNotifier(st))
+
+	body, contentType := multipartAuthJSONBatchBody(t, map[string]string{
+		"pool_id": fmt.Sprint(poolID),
+	}, map[string]string{
+		"first.json": codexAuthJSON(t, "missing-pool@example.com", "acct_missing_pool", "refresh-missing-pool"),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json-batch", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+
+	handler.importCpaAuthJSONBatch(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data cpaAuthJSONBatchResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.Summary.Failed != 1 {
+		t.Fatalf("expected failed item, got %+v", resp.Data.Summary)
+	}
+	op, err := st.GetOperation(resp.Data.BatchID)
+	if err != nil {
+		t.Fatalf("get operation: %v", err)
+	}
+	if op == nil || op.Status != "failed" || len(op.Items) != 1 {
+		t.Fatalf("unexpected operation: %+v", op)
+	}
+	item := op.Items[0]
+	if item.Status != "failed" || item.ErrorCode == "" || item.Stage == "" || item.SafeErrorMessage == "" {
+		t.Fatalf("expected structured DB failure evidence, got %+v", item)
+	}
+	if item.Stage != "select_max_position" && item.Stage != "select_pool_member" && item.Stage != "insert_pool_member" {
+		t.Fatalf("expected pool member stage, got %+v", item)
+	}
+	if strings.Contains(item.SafeErrorMessage, "refresh-missing-pool") || strings.Contains(item.AccountKeyHash, "missing-pool@example.com") {
+		t.Fatalf("operation item leaked sensitive data: %+v", item)
+	}
+}
+
 func TestReloadFailureLogDoesNotExposeFullAccountKey(t *testing.T) {
 	st := newTestStore(t)
 	cache := store.NewRoutingCache(st)
@@ -665,13 +880,16 @@ func TestReloadFailureLogDoesNotExposeFullAccountKey(t *testing.T) {
 	})
 
 	fullKey := "codex-secret.user@example.com-plus"
-	status := handler.reloadCpaRuntimeAfterAuthImport(&store.CpaService{
+	status, code, message := handler.reloadCpaRuntimeAfterAuthImport(&store.CpaService{
 		Label:   "CPA",
 		BaseURL: "http://127.0.0.1:1",
 		Enabled: true,
 	}, shortHash(fullKey), "upload")
 	if status != "failed" {
 		t.Fatalf("expected failed runtime sync, got %q", status)
+	}
+	if code != "runtime_reload_failed" || message == "" {
+		t.Fatalf("expected runtime reload error detail, got code=%q message=%q", code, message)
 	}
 	text := logs.String()
 	if strings.Contains(text, fullKey) || strings.Contains(text, "secret.user@example.com") {

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -227,11 +228,11 @@ func (s *Store) UpdateCpaAccountFromImport(id int64, a *Account) error {
 
 func (s *Store) UpsertCpaAccountAndPoolMemberFromImport(poolID int64, a *Account) (*Account, int64, bool, error) {
 	if a == nil || a.CpaServiceID == nil {
-		return nil, 0, false, sql.ErrNoRows
+		return nil, 0, false, NewCpaImportDBError("validate_identity", "invalid_account", poolID, 0, sql.ErrNoRows)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, 0, false, err
+		return nil, 0, false, NewCpaImportDBError("begin_db", sqliteErrorCode(err), poolID, 0, err)
 	}
 	defer tx.Rollback()
 
@@ -260,16 +261,16 @@ func (s *Store) UpsertCpaAccountAndPoolMemberFromImport(poolID int64, a *Account
 			a.Enabled, "healthy", a.Notes, a.QuotaDisplay,
 		)
 		if err != nil {
-			return nil, 0, false, err
+			return nil, 0, false, NewCpaImportDBError("upsert_account", sqliteErrorCode(err), poolID, 0, err)
 		}
 		id, err := res.LastInsertId()
 		if err != nil {
-			return nil, 0, false, err
+			return nil, 0, false, NewCpaImportDBError("upsert_account", sqliteErrorCode(err), poolID, 0, err)
 		}
 		a.ID = id
 		created = true
 	} else if err != nil {
-		return nil, 0, false, err
+		return nil, 0, false, NewCpaImportDBError("upsert_account", sqliteErrorCode(err), poolID, 0, err)
 	} else {
 		a.ID = existing.ID
 		_, err := tx.Exec(
@@ -289,30 +290,112 @@ func (s *Store) UpsertCpaAccountAndPoolMemberFromImport(poolID int64, a *Account
 			a.Enabled, a.Notes, existing.ID,
 		)
 		if err != nil {
-			return nil, 0, false, err
+			return nil, 0, false, NewCpaImportDBError("upsert_account", sqliteErrorCode(err), poolID, a.ID, err)
 		}
 	}
 
 	var maxPos sql.NullInt64
 	if err := tx.QueryRow(`SELECT MAX(position) FROM pool_members WHERE pool_id = ?`, poolID).Scan(&maxPos); err != nil {
-		return nil, 0, false, err
+		return nil, 0, false, NewCpaImportDBError("select_max_position", sqliteErrorCode(err), poolID, a.ID, err)
 	}
 	nextPos := 0
 	if maxPos.Valid {
 		nextPos = int(maxPos.Int64) + 1
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO pool_members (pool_id, account_id, position, enabled) VALUES (?, ?, ?, 1)`, poolID, a.ID, nextPos); err != nil {
-		return nil, 0, false, err
+		return nil, 0, false, NewCpaImportDBError("insert_pool_member", sqliteErrorCode(err), poolID, a.ID, err)
 	}
 	var memberID int64
 	if err := tx.QueryRow(`SELECT id FROM pool_members WHERE pool_id = ? AND account_id = ?`, poolID, a.ID).Scan(&memberID); err != nil {
-		return nil, 0, false, err
+		return nil, 0, false, NewCpaImportDBError("select_pool_member", sqliteErrorCode(err), poolID, a.ID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, 0, false, err
+		return nil, 0, false, NewCpaImportDBError("commit_db", sqliteErrorCode(err), poolID, a.ID, err)
 	}
 	imported, err := s.GetAccount(a.ID)
+	if err != nil {
+		return nil, 0, false, NewCpaImportDBError("select_imported_account", sqliteErrorCode(err), poolID, a.ID, err)
+	}
 	return imported, memberID, created, err
+}
+
+type CpaImportDBError struct {
+	Stage      string
+	Code       string
+	PoolID     int64
+	AccountID  int64
+	Cause      error
+	SafeDetail string
+}
+
+func NewCpaImportDBError(stage, code string, poolID, accountID int64, cause error) *CpaImportDBError {
+	if code == "" {
+		code = "db_error"
+	}
+	err := &CpaImportDBError{
+		Stage:     stage,
+		Code:      code,
+		PoolID:    poolID,
+		AccountID: accountID,
+		Cause:     cause,
+	}
+	err.SafeDetail = fmt.Sprintf("%s at %s while importing CPA account into pool %d", code, stage, poolID)
+	if accountID > 0 {
+		err.SafeDetail += fmt.Sprintf(" account %d", accountID)
+	}
+	return err
+}
+
+func (e *CpaImportDBError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.SafeDetail
+}
+
+func (e *CpaImportDBError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func sqliteErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	type sqliteCoder interface {
+		Code() int
+	}
+	if coder, ok := err.(sqliteCoder); ok {
+		switch coder.Code() & 0xff {
+		case 5:
+			return "sqlite_busy"
+		case 6:
+			return "sqlite_locked"
+		case 8:
+			return "sqlite_readonly"
+		case 13:
+			return "sqlite_full"
+		case 19:
+			return "constraint_failed"
+		}
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "database is locked"):
+		return "sqlite_locked"
+	case strings.Contains(text, "busy"):
+		return "sqlite_busy"
+	case strings.Contains(text, "constraint"):
+		return "constraint_failed"
+	case strings.Contains(text, "foreign key"):
+		return "foreign_key"
+	case strings.Contains(text, "readonly"):
+		return "sqlite_readonly"
+	default:
+		return "db_error"
+	}
 }
 
 func (s *Store) RestoreCpaAccountImportSnapshot(a *Account) error {

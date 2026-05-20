@@ -79,6 +79,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, wrap func(http.Handler) htt
 
 	// Accounts
 	handle("GET /admin/api/accounts", h.listAccounts)
+	handle("GET /admin/api/operations/recent", h.listRecentOperations)
+	handle("GET /admin/api/operations/{operation_id}", h.getOperation)
 	handle("POST /admin/api/accounts", h.createAccount)
 	handle("PUT /admin/api/accounts/{id}", h.updateAccount)
 	handle("POST /admin/api/accounts/{id}/enable", h.enableAccount)
@@ -2883,9 +2885,46 @@ func (h *Handler) importCpaAuthJSONBatch(w http.ResponseWriter, r *http.Request)
 	h.applyBatchRuntimeSync(svc, resp.Items, changedAccountKeys, batchID)
 	resp.Summary.SyncedRuntimeSync, resp.Summary.PendingRuntimeSync, resp.Summary.FailedRuntimeSync = summarizeRuntimeSync(resp.Items)
 	h.refreshImportedAccountsAsync(changedAccountIDs)
+	if err := h.recordCpaAuthJSONBatchOperation(resp, poolID); err != nil {
+		webutil.WriteAdminError(w, 500, "audit_persist_failed", "import completed but audit record could not be persisted")
+		return
+	}
 	h.recordCpaAuthJSONBatchAudit(resp, poolID)
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, resp)
+}
+
+func (h *Handler) listRecentOperations(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			limit = n
+		}
+	}
+	ops, err := h.store.ListRecentOperations(limit)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	webutil.WriteList(w, ops, len(ops))
+}
+
+func (h *Handler) getOperation(w http.ResponseWriter, r *http.Request) {
+	operationID := strings.TrimSpace(r.PathValue("operation_id"))
+	if operationID == "" {
+		webutil.WriteAdminError(w, 400, "bad_request", "operation_id is required")
+		return
+	}
+	op, err := h.store.GetOperation(operationID)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+	if op == nil {
+		webutil.WriteAdminError(w, 404, "not_found", "operation not found")
+		return
+	}
+	webutil.WriteData(w, 200, op)
 }
 
 func (h *Handler) prepareCpaAuthJSONBatch(w http.ResponseWriter, r *http.Request, requireWritableAuthDir bool) (*store.CpaService, int64, []cpaAuthJSONBatchItem, bool) {
@@ -3030,7 +3069,13 @@ func (h *Handler) importSingleCpaAuthJSONBatchItem(svc *store.CpaService, poolID
 		if !rollbackAuthFile() {
 			return failCpaAuthJSONBatchItem(item, "compensation_failed", "pool membership failed and rollback failed")
 		}
-		return failCpaAuthJSONBatchItem(item, "pool_member_failed", "failed to add imported account to pool")
+		failed := failCpaAuthJSONBatchItem(item, "pool_member_failed", "failed to add imported account to pool")
+		if dbErr, ok := err.(*store.CpaImportDBError); ok {
+			failed.ErrorCode = firstNonEmpty(dbErr.Code, failed.ErrorCode)
+			failed.ErrorMessage = dbErr.SafeDetail
+			failed.ErrorStage = dbErr.Stage
+		}
+		return failed
 	}
 	item.AccountID = account.ID
 	item.PoolMemberID = memberID
@@ -3039,23 +3084,26 @@ func (h *Handler) importSingleCpaAuthJSONBatchItem(svc *store.CpaService, poolID
 	} else {
 		item.Status = "updated"
 	}
-	if h.healthChecker != nil {
-		item.RuntimeSync = "pending"
-	} else {
-		item.RuntimeSync = "not_applicable"
-	}
+	item.RuntimeSync = "pending"
 	return item
 }
 
 func (h *Handler) applyBatchRuntimeSync(svc *store.CpaService, items []cpaAuthJSONBatchItem, changedAccountKeys []string, batchID string) {
-	if len(changedAccountKeys) == 0 || h.healthChecker == nil {
+	if len(changedAccountKeys) == 0 {
+		return
+	}
+	if h.healthChecker == nil {
 		return
 	}
 	target := fmt.Sprintf("batch=%s accounts=%d", batchID, len(changedAccountKeys))
-	status := h.reloadCpaRuntimeAfterAuthImport(svc, target, "batch_upload")
+	status, code, message := h.reloadCpaRuntimeAfterAuthImport(svc, target, "batch_upload")
 	for i := range items {
 		if items[i].Status == "created" || items[i].Status == "updated" {
 			items[i].RuntimeSync = status
+			if status == "failed" {
+				items[i].RuntimeErrorCode = code
+				items[i].RuntimeErrorMessage = message
+			}
 		}
 	}
 }
@@ -3089,6 +3137,80 @@ func (h *Handler) refreshImportedAccountsAsync(accountIDs []int64) {
 			Subscription:  true,
 			WaitAuthIndex: true,
 		})
+	}
+}
+
+func (h *Handler) recordCpaAuthJSONBatchOperation(resp cpaAuthJSONBatchResponse, poolID int64) error {
+	status := "succeeded"
+	if resp.Summary.Failed > 0 && (resp.Summary.Created > 0 || resp.Summary.Updated > 0 || resp.Summary.Skipped > 0) {
+		status = "partial"
+	} else if resp.Summary.Failed > 0 {
+		status = "failed"
+	}
+	if resp.Summary.FailedRuntimeSync > 0 && status == "succeeded" {
+		status = "partial"
+	}
+	items := make([]store.OperationItem, 0, len(resp.Items))
+	for i, item := range resp.Items {
+		action := item.Action
+		if action == "" && (item.Status == "created" || item.Status == "updated") {
+			action = item.Status
+		}
+		items = append(items, store.OperationItem{
+			ItemIndex:        i + 1,
+			ClientFileName:   item.ClientFileName,
+			AccountKeyHash:   item.AccountKeyHash,
+			Action:           action,
+			Status:           item.Status,
+			RuntimeSync:      item.RuntimeSync,
+			ErrorCode:        firstNonEmpty(item.ErrorCode, item.RuntimeErrorCode),
+			SafeErrorMessage: firstNonEmpty(item.ErrorMessage, item.RuntimeErrorMessage),
+			AccountID:        item.AccountID,
+			PoolMemberID:     item.PoolMemberID,
+			Stage:            cpaImportStageForItem(item),
+		})
+	}
+	op := &store.Operation{
+		OperationID:   resp.BatchID,
+		OperationType: "cpa_import_batch",
+		Source:        "admin_api",
+		TargetType:    "pool",
+		TargetID:      strconv.FormatInt(poolID, 10),
+		TargetSummary: fmt.Sprintf("pool=%d files=%d", poolID, len(resp.Items)),
+		Status:        status,
+		Items:         items,
+	}
+	return h.store.RecordOperation(op)
+}
+
+func cpaImportStageForItem(item cpaAuthJSONBatchItem) string {
+	switch item.ErrorCode {
+	case "":
+		if item.RuntimeSync == "failed" {
+			return "request_runtime_reload"
+		}
+		if item.Status == "created" || item.Status == "updated" {
+			return "request_runtime_reload"
+		}
+		return ""
+	case "sqlite_busy", "sqlite_locked", "sqlite_readonly", "sqlite_full", "constraint_failed", "foreign_key", "db_error":
+		return firstNonEmpty(item.ErrorStage, "insert_pool_member")
+	case "invalid_auth_json", "missing_file", "read_failed":
+		return "parse_input"
+	case "duplicate_in_batch", "identity_mismatch":
+		return "validate_identity"
+	case "read_existing_failed":
+		return "read_file"
+	case "write_failed", "compensation_failed":
+		return "write_file"
+	case "lookup_failed":
+		return "validate_identity"
+	case "pool_member_failed":
+		return "insert_pool_member"
+	case "upsert_failed":
+		return "upsert_account"
+	default:
+		return "unknown"
 	}
 }
 
@@ -3130,17 +3252,17 @@ func (h *Handler) recordCpaAuthJSONBatchAudit(resp cpaAuthJSONBatchResponse, poo
 	})
 }
 
-func (h *Handler) reloadCpaRuntimeAfterAuthImport(svc *store.CpaService, targetSummary, phase string) string {
+func (h *Handler) reloadCpaRuntimeAfterAuthImport(svc *store.CpaService, targetSummary, phase string) (string, string, string) {
 	if h.healthChecker == nil {
-		return "not_applicable"
+		return "pending", "", ""
 	}
 	reloadCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := h.healthChecker.RequestCpaRuntimeReload(reloadCtx, svc); err != nil {
 		slog.Warn("importCpaAuthJSON: CPA runtime reload failed", "target", targetSummary, "phase", phase, "err", err)
-		return "failed"
+		return "failed", "runtime_reload_failed", "CPA runtime reload failed after import"
 	}
-	return "pending"
+	return "pending", "", ""
 }
 
 const maxUploadedAuthJSONBytes = 256 << 10
@@ -3171,8 +3293,11 @@ type cpaAuthJSONBatchItem struct {
 	ErrorMessage    string `json:"error_message,omitempty"`
 	Action          string `json:"action,omitempty"`
 
-	authFile   *cpa.CpaAuthFile
-	accountKey string
+	authFile            *cpa.CpaAuthFile
+	accountKey          string
+	ErrorStage          string `json:"-"`
+	RuntimeErrorCode    string `json:"-"`
+	RuntimeErrorMessage string `json:"-"`
 }
 
 type cpaAuthJSONBatchResponse struct {

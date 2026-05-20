@@ -155,6 +155,41 @@ type RequestLog struct {
 	CreatedAt            string `json:"created_at"`
 }
 
+type Operation struct {
+	ID               int64           `json:"id"`
+	OperationID      string          `json:"operation_id"`
+	OperationType    string          `json:"operation_type"`
+	Source           string          `json:"source"`
+	TargetType       string          `json:"target_type"`
+	TargetID         string          `json:"target_id"`
+	TargetSummary    string          `json:"target_summary"`
+	Status           string          `json:"status"`
+	ErrorCode        string          `json:"error_code,omitempty"`
+	SafeErrorMessage string          `json:"safe_error_message,omitempty"`
+	CorrelationID    string          `json:"correlation_id,omitempty"`
+	StartedAt        string          `json:"started_at"`
+	FinishedAt       string          `json:"finished_at"`
+	CreatedAt        string          `json:"created_at"`
+	Items            []OperationItem `json:"items,omitempty"`
+}
+
+type OperationItem struct {
+	ID               int64  `json:"id"`
+	OperationID      string `json:"operation_id"`
+	ItemIndex        int    `json:"item_index"`
+	ClientFileName   string `json:"client_file_name"`
+	AccountKeyHash   string `json:"account_key_hash,omitempty"`
+	Action           string `json:"action,omitempty"`
+	Status           string `json:"status"`
+	RuntimeSync      string `json:"runtime_sync,omitempty"`
+	ErrorCode        string `json:"error_code,omitempty"`
+	SafeErrorMessage string `json:"safe_error_message,omitempty"`
+	AccountID        int64  `json:"account_id,omitempty"`
+	PoolMemberID     int64  `json:"pool_member_id,omitempty"`
+	Stage            string `json:"stage,omitempty"`
+	CreatedAt        string `json:"created_at"`
+}
+
 type AccountModel struct {
 	ID        int64  `json:"id"`
 	AccountID int64  `json:"account_id"`

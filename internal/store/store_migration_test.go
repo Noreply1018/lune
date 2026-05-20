@@ -777,3 +777,169 @@ CREATE INDEX idx_request_logs_created_at ON request_logs(created_at);
 		requireIndex(t, st.DB(), name)
 	}
 }
+
+func TestMigrateV23AddsOperationTablesFromV22(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-v22-operations.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`
+CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+INSERT INTO system_config (key, value) VALUES ('schema_version', '22');
+CREATE TABLE pools (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL UNIQUE,
+    priority INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    routing_policy TEXT NOT NULL DEFAULT 'health_first',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE accounts (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'openai_compat',
+    base_url TEXT NOT NULL DEFAULT '',
+    api_key TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    cpa_service_id INTEGER,
+    cpa_provider TEXT NOT NULL DEFAULT '',
+    cpa_account_key TEXT NOT NULL DEFAULT '',
+    cpa_email TEXT NOT NULL DEFAULT '',
+    cpa_plan_type TEXT NOT NULL DEFAULT '',
+    cpa_openai_id TEXT NOT NULL DEFAULT '',
+    cpa_expired_at TEXT NOT NULL DEFAULT '',
+    cpa_last_refresh_at TEXT NOT NULL DEFAULT '',
+    cpa_disabled INTEGER NOT NULL DEFAULT 0,
+    cpa_credential_status TEXT NOT NULL DEFAULT 'unknown',
+    cpa_credential_reason TEXT NOT NULL DEFAULT '',
+    cpa_credential_last_error TEXT NOT NULL DEFAULT '',
+    cpa_credential_checked_at TEXT NOT NULL DEFAULT '',
+    cpa_subscription_expires_at TEXT NOT NULL DEFAULT '',
+    cpa_subscription_fetched_at TEXT NOT NULL DEFAULT '',
+    cpa_subscription_last_error TEXT NOT NULL DEFAULT '',
+    cpa_subscription_status TEXT NOT NULL DEFAULT 'unknown',
+    cpa_access_status TEXT NOT NULL DEFAULT 'unknown',
+    cpa_access_reason TEXT NOT NULL DEFAULT '',
+    cpa_access_last_error TEXT NOT NULL DEFAULT '',
+    cpa_access_checked_at TEXT NOT NULL DEFAULT '',
+    codex_quota_json TEXT NOT NULL DEFAULT '',
+    codex_quota_fetched_at TEXT NOT NULL DEFAULT '',
+    cpa_quota_status TEXT NOT NULL DEFAULT 'unknown',
+    cpa_quota_last_error TEXT NOT NULL DEFAULT '',
+    cpa_quota_checked_at TEXT NOT NULL DEFAULT '',
+    cpa_quota_backoff_until TEXT NOT NULL DEFAULT '',
+    cpa_quota_backoff_count INTEGER NOT NULL DEFAULT 0,
+    serving_status TEXT NOT NULL DEFAULT 'healthy',
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_failure_at TEXT NOT NULL DEFAULT '',
+    last_success_at TEXT NOT NULL DEFAULT '',
+    cooldown_until TEXT NOT NULL DEFAULT '',
+    probe_models TEXT NOT NULL DEFAULT '[]',
+    last_probe_status TEXT NOT NULL DEFAULT '',
+    last_probe_at TEXT,
+    last_probe_error TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    notes TEXT NOT NULL DEFAULT '',
+    quota_display TEXT NOT NULL DEFAULT '',
+    last_checked_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE pool_members (
+    id INTEGER PRIMARY KEY,
+    pool_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(pool_id, account_id)
+);
+CREATE TABLE account_models (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL,
+    model_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(account_id, model_id)
+);
+CREATE TABLE request_logs (
+    id INTEGER PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    access_token_name TEXT NOT NULL DEFAULT '',
+    model_requested TEXT NOT NULL DEFAULT '',
+    model_actual TEXT NOT NULL DEFAULT '',
+    pool_id INTEGER,
+    account_id INTEGER,
+    account_label_snapshot TEXT NOT NULL DEFAULT '',
+    status_code INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    stream INTEGER NOT NULL DEFAULT 0,
+    request_ip TEXT NOT NULL DEFAULT '',
+    success INTEGER NOT NULL DEFAULT 1,
+    error_message TEXT NOT NULL DEFAULT '',
+    error_fingerprint TEXT NOT NULL DEFAULT '',
+    error_repeat_count INTEGER NOT NULL DEFAULT 1,
+    error_last_seen_at TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    diagnostic INTEGER NOT NULL DEFAULT 0,
+    force_account INTEGER NOT NULL DEFAULT 0,
+    stateful_probe INTEGER NOT NULL DEFAULT 0,
+    traffic_kind TEXT NOT NULL DEFAULT 'ordinary',
+    runtime_auth_index TEXT NOT NULL DEFAULT '',
+    runtime_auth_id TEXT NOT NULL DEFAULT '',
+    runtime_account_key TEXT NOT NULL DEFAULT '',
+    runtime_binding_status TEXT NOT NULL DEFAULT '',
+    runtime_binding_reason TEXT NOT NULL DEFAULT '',
+    route_trace TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO pools (id, label, priority, enabled) VALUES (1, 'Legacy Pool', 0, 1);
+INSERT INTO accounts (id, label, source_kind, base_url, api_key, provider, enabled, status, probe_models)
+VALUES (1, 'Legacy Account', 'openai_compat', 'https://api.example.com', 'sk-legacy', 'openai', 1, 'healthy', '[]');
+INSERT INTO pool_members (id, pool_id, account_id, position, enabled) VALUES (1, 1, 1, 0, 1);
+INSERT INTO request_logs (id, request_id, pool_id, account_id, account_label_snapshot, status_code, success, source_kind)
+VALUES (1, 'req_legacy', 1, 1, 'Legacy Account', 200, 1, 'openai_compat');
+`); err != nil {
+		t.Fatalf("seed v22 schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	st, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("open store with migration: %v", err)
+	}
+	defer st.Close()
+
+	if st.SchemaVersion() != v3SchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", v3SchemaVersion, st.SchemaVersion())
+	}
+	for _, col := range []string{"operation_id", "operation_type", "target_summary", "status", "safe_error_message", "correlation_id"} {
+		requireTableColumn(t, st.DB(), "operations", col)
+	}
+	for _, col := range []string{"operation_id", "client_file_name", "account_key_hash", "runtime_sync", "safe_error_message", "stage"} {
+		requireTableColumn(t, st.DB(), "operation_items", col)
+	}
+	for _, name := range []string{"idx_operations_created_at", "idx_operations_type_created", "idx_operation_items_operation"} {
+		requireIndex(t, st.DB(), name)
+	}
+	if acc, err := st.GetAccount(1); err != nil || acc == nil || acc.Label != "Legacy Account" {
+		t.Fatalf("legacy account not readable after migration: account=%+v err=%v", acc, err)
+	}
+	if pool, err := st.GetPool(1); err != nil || pool == nil || pool.Label != "Legacy Pool" {
+		t.Fatalf("legacy pool not readable after migration: pool=%+v err=%v", pool, err)
+	}
+	logs, total, err := st.ListLogs(10, 0)
+	if err != nil || total != 1 || len(logs) != 1 || logs[0].RequestID != "req_legacy" {
+		t.Fatalf("legacy request log not readable after migration: total=%d logs=%+v err=%v", total, logs, err)
+	}
+}
