@@ -204,6 +204,8 @@ Activity 或 Settings 不要求提供完整 UI，但 DB 或 admin API 必须能�
 - DB 已提交但 runtime 未同步的账号必须保留为 `runtime_sync=pending` 或重新排队 reload。
 - 已进入回滚阶段的 item 必须完成回滚或标记为 `failed` 并留下安全错误摘要。
 
+reconcile 是启动流程或专用维护流程的写入行为，不属于 `lune debug`。`lune debug` 只能在 reconcile 后只读验证 operation、DB、auth file 和 runtime 状态。
+
 ## 测试矩阵
 
 | ID | 场景 | 操作 | 期望 |

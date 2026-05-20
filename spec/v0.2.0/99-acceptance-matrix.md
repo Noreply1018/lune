@@ -22,7 +22,7 @@
 | IMP-14 | identity mismatch | 磁盘已有同 key 但身份字段不一致 | 导入身份不一致的 auth JSON | 返回 `identity_mismatch`；不覆盖已有 auth file；runtime 不消费错误文件 |
 | IMP-15 | 更新失败恢复旧文件 | 已有账号和 auth file，构造更新后 DB/Pool member 失败 | 再次导入同 key 更新文件 | 新文件回滚，旧 auth file 恢复，DB 保持旧账号一致状态 |
 | IMP-16 | runtime 原子视图 | 构造导入中途 watcher 扫描 auth 目录 | 执行批量导入并观察 runtime | runtime 不读取半写、staging 或已回滚文件，只消费已提交快照 |
-| IMP-17 | 崩溃恢复 | 在导入写文件后、DB 提交前、reload 前分别终止容器 | 重启容器并执行 debug/reconcile | operation 被标记 `interrupted` 或恢复完成；不遗留半写文件；pending reload 可恢复 |
+| IMP-17 | 崩溃恢复 | 在导入写文件后、DB 提交前、reload 前分别终止容器 | 重启容器，等待启动流程自动 reconcile，再用只读 debug 验证 | operation 被标记 `interrupted` 或恢复完成；不遗留半写文件；pending reload 可恢复 |
 | IMP-18 | 并发生命周期 | 双管理员同时导入、导入时删除账号/Pool、导入时 health/quota refresh 运行 | 并发执行矩阵 | 同一账号/Pool 生命周期状态串行化；reload 合并；无重复 member、无半写 runtime 状态 |
 
 ## 通用可审计性
@@ -34,7 +34,7 @@
 | AUD-03 | 关联 ID | 执行一次批量导入 | 对齐 API log、operation record、runtime reload log | 同一 `operation_id` 能贯穿多处证据；多个 `correlation_id` 可归属同一 operation |
 | AUD-04 | 最近操作快照 | 连续执行多次成功和失败操作 | 查询 recent operations | 请求结束后仍可恢复最近操作和 item 明细 |
 | AUD-05 | 只读 debug | 在容器内执行全部 debug 命令 | 执行 `summary`、`recent-operations`、`operation <id>`、`db-integrity`、`cpa-auth`、`cpa-runtime`、`account <id>` | 输出脱敏且不修改 DB、文件或 runtime 状态 |
-| AUD-06 | 隔离复现脚本 | 目标 `lune` 容器存在 | 执行 `scripts/audit/repro.sh stateful-probe` | 通过工具容器导出脱敏 evidence，清理临时工具容器 |
+| AUD-06 | stateful-probe 必须实现 | 目标 `lune` 容器存在 | 执行 `scripts/audit/repro.sh stateful-probe` | 通过工具容器导出脱敏 evidence，清理临时工具容器；不得返回 `scenario_not_implemented` |
 | AUD-07 | 脱敏审计包 | 有账号、Pool、request log、operation record | 执行 `lune debug collect --redact` | 生成结构化审计包，不含敏感凭据 |
 | AUD-08 | 数据保留 | 超过最近操作保留窗口 | 触发清理 | 清理按策略执行，清理本身可审计 |
 | AUD-09 | 后续 spec 约束 | 新增涉及状态变更或 runtime 行为的 spec | 审阅 spec | 必须包含可审计性小节，说明阶段、错误、关联 ID、脱敏和容器矩阵 |
@@ -55,12 +55,12 @@
 | DIA-05 | 单一 quota 失败不判死 | fake upstream 或真实账号返回 quota/history 401/403，其他关键 probe 正常 | 触发完整诊断 | 不得判定为 `banned`、`auth_invalid` 或全局不可用 |
 | DIA-06 | 业务额度不足归一化 | fake upstream 或真实账号在 chat/真实请求返回 insufficient quota | 触发诊断或真实请求失败回写 | 判定为 `quota_exhausted`；错误归因到额度阶段；不污染 token/auth 状态 |
 | DIA-07 | 暂态上游错误 | 构造 models/quota/chat 任一 probe 超时、429 或 5xx | 触发诊断 | 记录 `last_probe_status=transient_error`；保留上一 `stable_diagnostic_status`；不得覆盖为封号或额度不足 |
-| DIA-08 | 调度行为一致 | 准备 `banned`、`quota_exhausted`、`quota_probe_auth_failed_but_usable` 三类账号 | 通过 Pool 发起请求 | 前两类默认不调度；quota probe 鉴权失败但可用账号默认可调度并带告警 |
+| DIA-08 | 调度行为一致 | 准备 `usable`、`banned`、`auth_invalid`、`quota_exhausted`、`quota_probe_auth_failed_but_usable`、`unknown` 账号 | 通过 Pool 发起请求 | 符合 scheduler 映射表；暂态错误沿用上一稳定调度；用户覆盖可审计且不改写机器诊断 |
 | DIA-09 | UI/API 展示一致 | 已完成一次包含多种状态的诊断 | 查询账号列表、账号详情和 debug 输出 | 三处展示同一机器状态、调度状态、最后诊断时间和安全证据摘要 |
 | DIA-10 | 诊断脱敏 | 查询诊断 DB、debug 输出、审计包和日志 | 检查敏感字段 | 不出现 token、完整 auth JSON、完整 account key、完整上游响应体 |
 | DIA-11 | fake upstream 回放 | 无法长期保留真实账号时 | 回放 `al`、`c`、quota 鉴权失败可用三类上游语义 | fake upstream 结果与真实案例期望一致，但不能替代至少一次真实容器验收 |
 | DIA-12 | auth invalid | 构造 refresh/access token 无效且无法恢复的账号 | 触发完整诊断 | 最终 `stable_diagnostic_status=auth_invalid`；不得误判为封号或额度不足；默认不可调度 |
-| DIA-13 | 真实案例治理 | 准备 `al`、`c`、quota 鉴权失败但可用案例 | 检查验收输入和审计输出 | 凭据只来自 secret；记录脱敏 case id、采集时间、预期状态和过期策略；状态漂移时不得用 fake upstream 静默放行 |
+| DIA-13 | 真实案例治理 | 准备 `al`、`c`、quota 鉴权失败但可用案例 | 检查验收输入和审计输出 | 凭据只来自 secret；记录脱敏 case id、采集时间、采集人或环境、当时真实状态、预期状态、可接受证据和过期策略；状态漂移时不得用 fake upstream 静默放行 |
 
 ## 关键反例
 
@@ -96,6 +96,6 @@
 | REL-06 | 后续 spec 审查 | 后续涉及状态变更、运行时、外部服务或异步任务的 spec 必须包含可审计性要求 |
 | REL-07 | 真实账号状态矩阵 | `al`、`c`、quota 鉴权失败但可用案例必须至少在一次隔离真实容器验收中跑通 |
 | REL-08 | fake upstream 不替代真实验收 | fake upstream 可用于 CI 回归，但不能作为真实账号状态识别的唯一证据 |
-| REL-09 | 旧数据卷升级 | 使用 v0.1.9 真实或模拟数据卷副本启动 v0.2.0 | schema migration 成功；旧账号、Pool、request log 可读；新增 operation/diagnostic 表兼容空历史 |
-| REL-10 | 重启恢复 | 在导入、删除、reload、诊断中断后重启容器 | operation journal/reconcile 收敛；无长期 running；状态可审计 |
+| REL-09 | 旧数据卷升级 | 使用 v0.1.9 真实或模拟数据卷副本启动 v0.2.0 | schema migration 成功；旧账号、Pool、request log 可读；旧账号诊断初始化为 `stable_diagnostic_status=unknown`、`last_probe_status` 为空或 `not_run`，`scheduler_status` 按旧启停状态保守映射；新增 operation/diagnostic 表兼容空历史 |
+| REL-10 | 重启恢复 | 在导入、删除、reload、诊断中断后重启容器 | 启动流程自动 reconcile 收敛；只读 debug 可验证；无长期 running；状态可审计 |
 | REL-11 | 并发压力 | 同时运行导入、删除、health/quota refresh、诊断和 routing 请求 | 无数据竞争导致的半写状态；调度、UI、debug 结果一致 |

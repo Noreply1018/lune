@@ -67,6 +67,21 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 
 状态命名是机器接口，不应直接依赖前端文案。前端允许展示更友好的中文标签，但必须保留稳定状态、最近 probe 事件、调度状态、证据摘要和最后诊断时间。
 
+`scheduler_status` 的规范映射如下：
+
+| stable_diagnostic_status | last_probe_status | user override | scheduler_status |
+| --- | --- | --- | --- |
+| `usable` | 任意非致命事件 | 无 | `eligible` |
+| `quota_probe_auth_failed_but_usable` | 任意 | 无 | `eligible_with_warning` |
+| `banned` | 任意 | 无 | `ineligible` |
+| `auth_invalid` | 任意 | 无 | `ineligible` |
+| `quota_exhausted` | 任意 | 无 | `ineligible` |
+| `unknown` | `transient_error` 或未探测 | 无 | 保持旧调度状态；没有旧状态时为 `eligible_with_warning` |
+| 任意稳定状态 | `transient_error` | 无 | 沿用上一稳定诊断对应的调度状态，并记录告警 |
+| 任意稳定状态 | 任意 | 有 | `scheduler_status` 可按用户覆盖变更，但必须记录 override actor、时间、原因和原机器判定 |
+
+用户覆盖不得改写 `stable_diagnostic_status`，只能影响调度决策，并且必须可审计。
+
 ## 多路证据要求
 
 每次账号诊断至少记录以下证据项；具体接口可按 provider 能力调整，但字段语义不能缺失：
@@ -157,6 +172,14 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 
 v0.2.0 必须持久化最近诊断结果，且能在请求结束后恢复证据。
 
+从 v0.1.9 或更早数据卷升级时，旧账号没有诊断历史。迁移必须按以下规则初始化：
+
+- `stable_diagnostic_status=unknown`。
+- `last_probe_status` 为空或 `not_run`。
+- `scheduler_status` 按旧账号启停/可用字段保守映射；旧账号原本启用时不得仅因缺少诊断历史而自动禁用。
+- 首次 v0.2.0 诊断必须生成完整 evidence，并可覆盖 `unknown`。
+- 迁移不得伪造历史 probe 结果。
+
 持久化结构必须表达以下字段；实际表名允许不同：
 
 ```text
@@ -172,6 +195,7 @@ account_diagnostics
   previous_stable_diagnostic_status
   last_probe_status
   scheduler_status
+  scheduler_override
   safe_summary
 
 account_diagnostic_evidence

@@ -48,7 +48,7 @@ v0.2.0 需要从“日志 + 现象审计”升级为“操作事件 + 阶段错�
 | `actor/source` | UI、API、health checker、entrypoint、system 等安全来源 |
 | `target` | pool id、account id、account key hash、service id 等脱敏目标 |
 | `started_at / finished_at` | 操作时间窗口 |
-| `status` | `running / succeeded / failed / partial` |
+| `status` | `running / succeeded / failed / partial / interrupted` |
 | `error_code` | 机器可读错误码 |
 | `safe_error_message` | 可展示、可审计、已脱敏的错误摘要 |
 | `correlation_id` | 单次 HTTP 请求、后台任务或 runtime 子任务的链路 ID；同一 `operation_id` 允许关联多个 `correlation_id` |
@@ -223,6 +223,8 @@ scripts/audit/redact.sh <input> <output>
 
 核心发布阻塞场景不得返回 `scenario_not_implemented`。v0.2.0 中 `cpa-import-reimport` 是 CPA 删除后重导入修复的核心证据采集场景；删除、重导入和断言由发布矩阵执行，脚本必须在矩阵完成后导出真实容器的脱敏 evidence。
 
+`stateful-probe` 也是 v0.2.0 通用审计基础能力的发布阻塞场景，必须在目标容器存在时输出脱敏 evidence，不得返回 `scenario_not_implemented`。
+
 已经声明但不属于本版本发布阻塞、且尚未具备安全复现编排的辅助场景，必须显式返回 `scenario_not_implemented`，不得静默降级为采集日志或伪造成功。
 
 ## 7. 脱敏审计包
@@ -286,7 +288,7 @@ lune-audit-<timestamp>.tar.gz
 | AUD-03 | 关联 ID | 执行一次批量导入 | API log、operation record、runtime reload log 可按同一 ID 对齐 |
 | AUD-04 | 脱敏 | 导出审计记录和审计包 | 不包含 token、完整 auth JSON、完整 account key、完整 API key |
 | AUD-05 | debug 只读 | 执行 `lune debug summary` 和 `lune debug cpa-auth` | 不修改 DB、文件或 runtime；输出稳定且脱敏 |
-| AUD-06 | 隔离复现脚本 | 执行 `scripts/audit/repro.sh stateful-probe` | 通过工具容器输出脱敏 evidence，最终清理资源 |
+| AUD-06 | stateful-probe 必须实现 | 执行 `scripts/audit/repro.sh stateful-probe` | 通过工具容器输出脱敏 evidence，最终清理资源；不得返回 `scenario_not_implemented` |
 | AUD-07 | 审计包导出 | 执行 `lune debug collect --redact` | 生成结构化脱敏包，可用于离线审计 |
 | AUD-08 | 保留窗口 | 制造超过保留数量的操作 | 旧记录按策略清理，清理动作有审计事件 |
 | AUD-09 | 工具容器构建 | 执行 `scripts/audit/build-tools.sh` | 成功构建 `lune-audit-tools:local`，生产镜像不增加审计工具 |
