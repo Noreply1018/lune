@@ -137,21 +137,22 @@ entrypoint restarting embedded CPA after Lune reload signal
 3. 批次结束后只触发一次 CPA runtime reload。
 4. 对成功 item 统一标记 `runtime_sync=pending` 或在可确认时标记 `synced`。
 
-这样必须避免 CPA runtime 在批次中途扫描半完成状态。
+这样必须避免 CPA runtime 在批次中途扫描半完成状态。v0.2.0 不强制唯一实现，但必须满足结果型约束：runtime 只能消费 DB 已提交、auth file 已完整发布的原子视图。可接受实现包括 staging 目录后原子发布、manifest/symlink 快照切换、不可变 auth snapshot，或等价机制。单纯减少 reload signal 不足以证明满足该约束。
 
 ### 2. 删除账号 reload 与导入互斥
 
 CPA auth file 删除、CPA auth file 批量导入和 embedded CPA reload 必须有一致的生命周期协调。v0.2.0 必须采用下列实现之一：
 
-- 复用 `cpaImportMu` 或新增 CPA auth lifecycle mutex，覆盖删除账号、批量导入和 reload signal 写入。
+- 复用 `cpaImportMu`、新增 CPA auth lifecycle mutex，或实现账号/Pool 生命周期队列，覆盖删除账号、批量导入、诊断写回和 reload signal 写入。
 - 删除账号时删除 auth file 和 DB account 后只请求一次 reload；如果连续删除多个账号，前端或后端应支持批量删除或 debounce reload。
-- 导入开始前确认上一次 reload 已收敛，或把 reload 变成可排队的批次级动作。
+- 导入开始前确认上一次 reload 已收敛，或把 reload 变成可排队、可合并的批次级动作。
+- 同一账号或 Pool 的删除、导入、health refresh、quota refresh、subscription refresh 和诊断写回不得并发修改同一生命周期状态。
 
 ### 3. DB 错误必须可审计
 
 `pool_member_failed` 必须保留底层安全错误摘要，至少包含：
 
-- 阶段：`insert_account`、`update_account`、`select_max_position`、`insert_pool_member`、`select_pool_member`、`commit`。
+- 阶段：复用通用阶段枚举，至少包括 `upsert_account`、`select_max_position`、`insert_pool_member`、`select_pool_member`、`commit_db`。如实现内部仍区分 `insert_account` / `update_account`，必须映射到 `upsert_account` 并保留安全子阶段。
 - SQLite 错误类别：如 `sqlite_busy`、`constraint_failed`、`foreign_key`。
 - 安全上下文：pool id、account id、account key hash、client file name。
 
@@ -174,6 +175,17 @@ CPA auth file 删除、CPA auth file 批量导入和 embedded CPA reload 必须�
 
 Activity 或 Settings 不要求提供完整 UI，但 DB 或 admin API 必须能用于审计。
 
+`runtime_sync` 必须是明确状态机，允许值至少包括：
+
+| runtime_sync | 语义 | 允许的 item 主状态 |
+| --- | --- | --- |
+| `not_applicable` | item 未产生需要 runtime 同步的账号变更，如 invalid、skipped、duplicate | `skipped`、`failed` |
+| `pending` | DB/auth file 已提交，等待 runtime reload 或确认 | `created`、`updated` |
+| `synced` | runtime 已看到并加载该账号 | `created`、`updated` |
+| `failed` | DB/auth file 已提交，但 runtime reload 或确认失败 | `created`、`updated` |
+
+不得把 runtime sync 失败反向改写成导入失败；也不得在 DB/auth file 未提交的失败 item 上返回 `pending`。
+
 ### 5. 回滚与结果页语义保持一致
 
 如果 auth file 已写入后 DB/Pool membership 失败：
@@ -182,6 +194,15 @@ Activity 或 Settings 不要求提供完整 UI，但 DB 或 admin API 必须能�
 - 已有 auth file 必须恢复。
 - item 必须返回 `status=failed` 和可行动错误码。
 - 结果页不得只显示“失败 / 不适用”，必须能展示安全原因，例如“加入 Pool 失败，已回滚”。
+
+### 6. 崩溃与重启恢复
+
+导入、删除和 reload 必须持久化 operation journal 或等价状态机。容器重启后必须能 reconcile：
+
+- 启动时发现 `running` 操作超过安全窗口，必须标记为 `interrupted` 或继续完成可恢复阶段。
+- 已写 staging 但未提交 DB 的 auth file 不得被 runtime 消费，启动时必须清理或隔离。
+- DB 已提交但 runtime 未同步的账号必须保留为 `runtime_sync=pending` 或重新排队 reload。
+- 已进入回滚阶段的 item 必须完成回滚或标记为 `failed` 并留下安全错误摘要。
 
 ## 测试矩阵
 

@@ -31,9 +31,19 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 
 任何单个 probe 的失败都只能先进入证据层。只有当判定规则满足时，才允许改变账号的最终 `diagnostic_status` 或调度可用性。
 
-## 目标状态模型
+## 状态模型
 
-账号诊断结果必须至少能表达以下状态：
+账号诊断必须拆成三个不同字段，不得把一次 probe 事件直接写成最终账号状态：
+
+| 字段 | 语义 | 示例 |
+| --- | --- | --- |
+| `stable_diagnostic_status` | 最近一次有充分证据支持的稳定账号状态 | `usable`、`banned`、`quota_exhausted` |
+| `last_probe_status` | 最近一次诊断或真实请求观察到的事件状态 | `succeeded`、`quota_probe_auth_failed`、`transient_error` |
+| `scheduler_status` | 调度层当前采用的可用性决策 | `eligible`、`ineligible`、`eligible_with_warning` |
+
+`diagnostic_status` 如作为 API 兼容字段，只能映射到 `stable_diagnostic_status`，不能用暂态 probe 事件覆盖。
+
+稳定账号状态必须至少能表达以下值：
 
 | 状态 | 语义 | 调度默认行为 |
 | --- | --- | --- |
@@ -42,10 +52,20 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 | `quota_exhausted` | 账号身份有效，但业务请求因额度耗尽失败 | 不可调度，等待额度恢复或人工处理 |
 | `quota_probe_auth_failed_but_usable` | quota/history 类接口鉴权失败，但业务请求或其他关键证据显示账号仍可用 | 可调度，但显示诊断告警 |
 | `auth_invalid` | refresh token/access token 无效，无法恢复认证 | 不可调度 |
-| `probe_transient_error` | 上游 5xx、网络、超时、限流等暂态失败，证据不足以判死 | 保持上一稳定状态，记录告警 |
 | `unknown` | 证据不足或首次探测未完成 | 不主动判死 |
 
-状态命名是机器接口，不应直接依赖前端文案。前端可以展示更友好的中文标签，但必须保留机器状态、证据摘要和最后诊断时间。
+最近 probe 事件状态必须至少能表达：
+
+| 事件状态 | 语义 |
+| --- | --- |
+| `succeeded` | probe 成功或真实请求成功 |
+| `quota_probe_auth_failed` | quota/history/usage 类接口鉴权失败 |
+| `upstream_banned_signal` | 上游返回明确封号语义 |
+| `quota_exhausted_signal` | 上游返回明确额度不足语义 |
+| `auth_invalid_signal` | refresh/access token 无效且无法恢复 |
+| `transient_error` | 5xx、超时、网络、429、代理等暂态问题 |
+
+状态命名是机器接口，不应直接依赖前端文案。前端可以展示更友好的中文标签，但必须保留稳定状态、最近 probe 事件、调度状态、证据摘要和最后诊断时间。
 
 ## 多路证据要求
 
@@ -101,7 +121,9 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 
 ### 暂态错误
 
-网络错误、超时、上游 429、5xx、DNS、TLS、代理错误等不得直接覆盖上一稳定状态。必须记录为 `probe_transient_error`，并保留上一稳定诊断状态用于调度。
+网络错误、超时、上游 429、5xx、DNS、TLS、代理错误等不得直接覆盖上一稳定状态。必须记录为 `last_probe_status=transient_error`，并保留上一稳定诊断状态用于调度。
+
+实现上应把这类事件写入 `last_probe_status=transient_error` 和 evidence。`stable_diagnostic_status` 继续保留上一稳定值；如果没有上一稳定值，则保持 `unknown`。
 
 ## 真实案例沉淀
 
@@ -121,7 +143,15 @@ Lune v0.2.0 应建立“证据层”和“判定层”分离的账号诊断模�
 4. 查询只读 debug 输出、DB 诊断记录、request log 和前端/API 展示。
 5. 验证最终状态、证据明细、调度行为和脱敏都符合预期。
 
-如果真实账号无法长期保留，必须提供 fake upstream 场景重放同样的上游响应语义。fake upstream 只能用于补充自动化覆盖，不能替代至少一次真实容器验收。
+### 真实案例治理
+
+真实案例是发布验收输入，必须可治理、可脱敏、可替换：
+
+- 凭据只能通过本地环境变量、CI secret 或人工验收环境注入，不得提交到仓库、日志、审计包或 fixture。
+- 每个真实案例必须记录脱敏 case id、采集日期、采集人或环境、当时真实状态、预期状态、可接受证据和过期时间。
+- 如果真实账号状态发生漂移、凭据过期或不再可用，不能静默改用 fake upstream 让发布通过；必须由维护者确认新的真实样本，或明确记录该发布阻塞项未通过。
+- fake upstream 必须沉淀为 golden fixture，用于长期 CI 回归同样的上游响应语义；它只能证明归一化规则没有回退，不能替代至少一次真实容器验收。
+- 真实案例验收只要求安全证据和最终归类可复核，不要求保存完整上游响应。
 
 ## 数据结构要求
 
@@ -138,8 +168,9 @@ account_diagnostics
   operation_id
   started_at
   finished_at
-  diagnostic_status
-  previous_stable_status
+  stable_diagnostic_status
+  previous_stable_diagnostic_status
+  last_probe_status
   scheduler_status
   safe_summary
 
@@ -165,6 +196,7 @@ account_diagnostic_evidence
 - `quota_probe_auth_failed_but_usable` 默认仍可调度，但应降低置信度或显示运维告警。
 - `banned`、`auth_invalid`、`quota_exhausted` 默认不可调度，除非用户显式覆盖。
 - 手动 refresh、自动 health refresh、真实请求失败回写都必须走同一套归一化状态模型。
+- `diagnostic_status` 对外兼容时必须等价于 `stable_diagnostic_status`；UI 可以额外显示 `last_probe_status`，但不得把暂态事件展示成最终账号状态。
 
 ## 可审计性要求
 
@@ -176,7 +208,8 @@ account_diagnostic_evidence
 - account hash
 - provider
 - 每个 probe 的阶段和结果
-- 最终 `diagnostic_status`
+- 最终 `stable_diagnostic_status`
+- 最近 `last_probe_status`
 - `scheduler_status`
 - 是否改变上一稳定状态
 - 安全摘要
@@ -190,6 +223,7 @@ account_diagnostic_evidence
 - quota/history 接口 401/403 后直接把账号标记为封号。
 - chat 返回额度不足后把账号标记为封号。
 - 只有 transient 5xx 或网络错误时覆盖上一稳定状态。
+- 把 `transient_error` 当成最终账号状态写入 `diagnostic_status`。
 - UI 只显示“不可用”，不展示机器状态和证据摘要。
 - request log 里能看到错误，但账号诊断记录里无法恢复原因。
 - 调度层和 UI 使用两套不一致的状态判断。

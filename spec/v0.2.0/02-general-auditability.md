@@ -43,7 +43,7 @@ v0.2.0 需要从“日志 + 现象审计”升级为“操作事件 + 阶段错�
 
 | 字段 | 要求 |
 | --- | --- |
-| `operation_id` | 稳定关联 ID，贯穿 API、日志、DB 和结果页 |
+| `operation_id` | 业务操作主键，贯穿 API、日志、DB 和结果页 |
 | `operation_type` | 如 `cpa_import_batch`、`delete_account`、`runtime_reload` |
 | `actor/source` | UI、API、health checker、entrypoint、system 等安全来源 |
 | `target` | pool id、account id、account key hash、service id 等脱敏目标 |
@@ -51,7 +51,7 @@ v0.2.0 需要从“日志 + 现象审计”升级为“操作事件 + 阶段错�
 | `status` | `running / succeeded / failed / partial` |
 | `error_code` | 机器可读错误码 |
 | `safe_error_message` | 可展示、可审计、已脱敏的错误摘要 |
-| `correlation_id` | 与 request log / runtime log / notification 关联的 ID |
+| `correlation_id` | 单次 HTTP 请求、后台任务或 runtime 子任务的链路 ID；同一 `operation_id` 可以关联多个 `correlation_id` |
 
 ## 2. 阶段错误模型
 
@@ -89,7 +89,9 @@ target=account_key_hash:sha256:...
 
 ## 3. 统一关联 ID
 
-每次用户操作或系统批处理都必须生成 `operation_id` 或等价关联 ID。该 ID 必须贯穿：
+每次用户操作或系统批处理都必须生成 `operation_id`，作为跨 DB、日志、API 和前端的主关联键。每个 HTTP 请求、后台子任务、runtime reload、notification delivery 可以另外生成 `correlation_id`；多个 `correlation_id` 可以归属于同一个 `operation_id`。
+
+`operation_id` 必须贯穿：
 
 - Admin API access log。
 - 业务日志。
@@ -100,7 +102,7 @@ target=account_key_hash:sha256:...
 - notification delivery。
 - 前端结果页或错误页。
 
-目标是审计时能够按一个 ID 收敛证据：
+目标是审计时能够先按 `operation_id` 收敛完整证据，再按 `correlation_id` 下钻单次请求或子任务：
 
 ```bash
 docker logs lune | rg op_...
@@ -209,7 +211,9 @@ scripts/audit/redact.sh <input> <output>
 
 脚本必须依赖工具容器提供 `curl`、`jq`、`sqlite3`，不得把这些工具打进生产镜像。
 
-已经声明但尚未具备安全复现编排的场景，必须显式返回 `scenario_not_implemented`，不得静默降级为采集日志或伪造成功。
+核心发布阻塞场景不得返回 `scenario_not_implemented`。v0.2.0 中 `cpa-import-reimport` 是 CPA 删除后重导入修复的核心复现场景，必须实现并通过真实容器验证。
+
+已经声明但不属于本版本发布阻塞、且尚未具备安全复现编排的辅助场景，必须显式返回 `scenario_not_implemented`，不得静默降级为采集日志或伪造成功。
 
 ## 7. 脱敏审计包
 
@@ -228,6 +232,7 @@ lune-audit-<timestamp>.tar.gz
   summary.txt
   recent-operations.json
   accounts.redacted.json
+  account-diagnostics.redacted.json
   pools.redacted.json
   cpa-auth-files.redacted.json
   runtime.redacted.json
@@ -276,4 +281,5 @@ lune-audit-<timestamp>.tar.gz
 | AUD-08 | 保留窗口 | 制造超过保留数量的操作 | 旧记录按策略清理，清理动作有审计事件 |
 | AUD-09 | 工具容器构建 | 执行 `scripts/audit/build-tools.sh` | 成功构建 `lune-audit-tools:local`，生产镜像不增加审计工具 |
 | AUD-10 | 工具容器只读采集 | 执行 `scripts/audit/collect.sh` | 生成脱敏 evidence，`/data` 为只读挂载，正式 `lune` 容器不被重启、删除或写入 |
-| AUD-11 | 未实现场景显式失败 | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 返回 `scenario_not_implemented`，不得伪造成功或静默降级 |
+| AUD-11 | 核心复现场景必须实现 | 执行 `scripts/audit/repro.sh cpa-import-reimport` | 完成删除后重导入复现并输出脱敏 evidence；不得返回 `scenario_not_implemented` |
+| AUD-12 | 辅助未实现场景显式失败 | 执行非发布阻塞且尚未安全编排的辅助场景 | 返回 `scenario_not_implemented`，不得伪造成功或静默降级 |
