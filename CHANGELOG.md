@@ -6,7 +6,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ## [0.2.0] - 2026-05-20
 
-状态：本轮发布产物已整理，但未达到严格完成标准。CPA 删除后重导入核心修复、生命周期 operation 审计、账号真实请求诊断 evidence 回写、数据保留清理审计、隔离容器复现和发布证据整理已完成；`c` 额度不足案例已在隔离真实容器中验证，`al` 和 quota 鉴权失败但可用两类真实账号矩阵尚未跑通。
+状态：本轮发布产物已整理，但未达到严格完成标准。CPA 删除后重导入核心修复、生命周期 operation 审计、账号真实请求诊断 evidence 回写、数据保留清理审计、隔离容器复现和发布证据整理已完成；`c` 额度不足和 quota 鉴权失败但可用案例已在隔离真实容器中验证，`al` 封号真实样本尚未跑通。
 
 ### CPA Auth JSON 删除后重导入
 
@@ -28,6 +28,7 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 - 真实模型请求观察现在会写入 `account_diagnostics` 和 `account_diagnostic_evidence`。
 - Codex CPA 模型请求成功会记录 `usable / succeeded`，带安全的 routing observation evidence。
+- Codex CPA 账号已有 quota/history `401/403` 证据时，后续真实模型请求成功会基于最新持久化 quota 状态写回 `quota_probe_auth_failed_but_usable / succeeded`，并保持 `eligible_with_warning`。
 - quota/history 探测返回 `401/403` 时只会在已有新鲜成功业务证据的前提下抬升为 `quota_probe_auth_failed_but_usable`；已有封号、认证无效或额度耗尽稳定状态不会被 quota 探测洗成可调度 warning。
 - 业务请求 quota/limit 语义的 429 会记录 `quota_exhausted / quota_exhausted_signal`，并默认映射为不可调度。
 - CPA 上游认证失败会记录 `auth_invalid / auth_invalid_signal`。
@@ -43,9 +44,11 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 - 隔离容器复现 `cpa-import-reimport`
 - 隔离容器验证 `data-retention prune`，清理 operation 可在 `recent-operations` 中恢复
 - 隔离容器复现 `stateful-probe`，当前真实 volume 样本证据为 `request_log_collected / http_code=503 / account_log_matched=0 / diagnostic_evidence_count=0`
-- 隔离容器验证 `c` 额度不足案例，真实模型请求返回 `HTTP 429 / usage_limit_reached`，诊断写回 `quota_exhausted / quota_exhausted_signal / ineligible`。
-- subagent 严格审计通过
-- 未完成：`al`、quota 鉴权失败但可用两类真实账号矩阵尚未在一次隔离真实容器中跑通，因此不能宣称 v0.2.0 严格完成。
+- 隔离容器验证 `c` 额度不足案例，真实模型请求返回 `HTTP 429 / usage_limit_reached`，诊断写回 `quota_exhausted / quota_exhausted_signal / ineligible`；证据目录为 `audit-output/repro-stateful-probe-20260520T115801Z`。
+- 隔离容器验证 quota 鉴权失败但可用案例：从 `lune-data-018` 复制出的临时卷中，账号先复现 `quota_probe HTTP 401`，随后强制账号真实模型请求返回 `HTTP 200`，诊断写回 `quota_probe_auth_failed_but_usable / succeeded / eligible_with_warning`；证据目录为 `audit-output/repro-quota-auth-usable-20260520T125927Z`。
+- subagent 严格审计通过：代码复审确认 stale routing cache 场景已覆盖，文档审计确认 quota 可用性证据充分且 `al` 仍为发布阻塞。
+- 未完成：`al` 封号真实账号矩阵尚未在一次隔离真实容器中跑通，因此不能宣称 v0.2.0 严格完成。
+- 发布注意：远端已存在历史 `v0.2.0` tag，指向 `b81ee09a9d30e9fdd4d153c7f7557c5b5f55a605`；该 tag 早于当前证据收口，不能视为本轮严格发布完成证据，当前不应再推进新的 v0.2.0 release。
 
 ## [未发布]
 

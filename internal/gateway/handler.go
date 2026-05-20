@@ -402,16 +402,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if resolved.Account.SourceKind == "cpa" && strings.EqualFold(resolved.Account.CpaProvider, "codex") && (!diagnostic || statefulProbe) {
-				if strings.EqualFold(resolved.Account.CpaQuotaStatus, "error") && isQuotaProbeAuthFailureText(resolved.Account.CpaQuotaLastError) {
+				latestAccount := resolved.Account
+				latestAccountFresh := false
+				if latest, err := h.store.GetAccount(resolved.AccountID); err == nil && latest != nil {
+					latestAccount = *latest
+					latestAccountFresh = true
+				} else if err != nil {
+					slog.Warn("load latest account before recording successful model request", "account_id", resolved.AccountID, "err", err)
+				}
+				quotaProbeAuthFailed := strings.EqualFold(latestAccount.CpaQuotaStatus, "error") && isQuotaProbeAuthFailureText(latestAccount.CpaQuotaLastError)
+				if quotaProbeAuthFailed {
 					// Preserve quota/auth-failure evidence; only enrich diagnostic state.
-				} else {
+				} else if latestAccountFresh {
 					_ = h.store.ClearAccountCodexModelRequestQuotaEvidence(resolved.AccountID)
 				}
 				_ = h.store.UpdateAccountCpaAccessStatus(resolved.AccountID, "eligible", "model_request_success", "", time.Now().UTC().Format(time.RFC3339))
-				if strings.EqualFold(resolved.Account.CpaQuotaStatus, "error") && isQuotaProbeAuthFailureText(resolved.Account.CpaQuotaLastError) {
-					h.recordAccountDiagnosticObservation(resolved.Account, "quota_probe_auth_failed_but_usable", "succeeded", "quota probe authentication failed but model request succeeded", result.StatusCode, "quota_probe_auth_failed_but_usable", "")
+				if quotaProbeAuthFailed {
+					h.recordAccountDiagnosticObservation(latestAccount, "quota_probe_auth_failed_but_usable", "succeeded", "quota probe authentication failed but model request succeeded", result.StatusCode, "quota_probe_auth_failed_but_usable", "")
+				} else if latestAccountFresh {
+					h.recordAccountDiagnosticObservation(latestAccount, "usable", "succeeded", "model request succeeded", result.StatusCode, "", "")
 				} else {
-					h.recordAccountDiagnosticObservation(resolved.Account, "usable", "succeeded", "model request succeeded", result.StatusCode, "", "")
+					h.recordAccountDiagnosticObservation(latestAccount, "", "succeeded", "model request succeeded; latest account state unavailable", result.StatusCode, "", "")
 				}
 				h.cache.Invalidate()
 			}

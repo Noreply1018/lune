@@ -742,6 +742,46 @@ func TestGatewayRecordsQuotaProbeAuthFailureButUsableAfterModelSuccess(t *testin
 		t.Fatalf("CreateCpaService: %v", err)
 	}
 	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "quota-auth-warning-cpa", "codex", "gpt-5-codex")
+	handler.runtimeBinder = staticRuntimeBinder{}
+	cache.Invalidate()
+	_ = cache.Get()
+
+	if err := st.UpdateAccountCodexQuotaStatus(accountID, "error", "HTTP 401", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+	}
+
+	req := authenticatedRequest(handler, token, `{"model":"gpt-5-codex","input":"hi"}`)
+	req.Header.Set("X-Lune-Account-Id", strconv.FormatInt(accountID, 10))
+	req.Header.Set("X-Lune-Probe-Mode", "stateful")
+	rr := httptest.NewRecorder()
+	req.ServeHTTP(rr, req.Request)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	diag := waitForAccountDiagnosticStatus(t, st, accountID, "quota_probe_auth_failed_but_usable", "succeeded")
+	if diag.SchedulerStatus != "eligible_with_warning" {
+		t.Fatalf("expected quota auth warning to remain schedulable, got %+v", diag)
+	}
+}
+
+func TestGatewayCodexCpaSuccessUsesLatestQuotaAuthWarningState(t *testing.T) {
+	st, cache, handler, token := newHandlerTestStore(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"usage": map[string]any{"input_tokens": 1}})
+	}))
+	defer server.Close()
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: server.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := addCpaGatewayAccount(t, st, *token.PoolID, serviceID, "quota-auth-warning-cpa", "codex", "gpt-5-codex")
 	if err := st.UpdateAccountCodexQuotaStatus(accountID, "error", "HTTP 401", time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
 	}
