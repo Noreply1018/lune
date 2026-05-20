@@ -416,6 +416,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				} else if latestAccountFresh {
 					_ = h.store.ClearAccountCodexModelRequestQuotaEvidence(resolved.AccountID)
 				}
+				if latestAccountFresh && !strings.EqualFold(latestAccount.CpaCredentialStatus, "ok") {
+					_ = h.store.UpdateAccountCpaCredentialStatus(resolved.AccountID, "ok", "model_request_success", "", time.Now().UTC().Format(time.RFC3339))
+				}
 				_ = h.store.UpdateAccountCpaAccessStatus(resolved.AccountID, "eligible", "model_request_success", "", time.Now().UTC().Format(time.RFC3339))
 				if quotaProbeAuthFailed {
 					h.recordAccountDiagnosticObservation(latestAccount, "quota_probe_auth_failed_but_usable", "succeeded", "quota probe authentication failed but model request succeeded", result.StatusCode, "quota_probe_auth_failed_but_usable", "")

@@ -30,11 +30,13 @@
 - `quota_probe_auth_failed_but_usable` 可在 quota 探测 401/403 且账号仍可用时写回。
 - quota 401/403 不再误写 `needs_login`。
 - quota 鉴权失败但可用时，诊断与调度保持 warning 但仍可路由。
+- 旧数据中残留 `needs_login` 的 Codex CPA 账号，在 stateful 真实模型请求成功后会恢复 `cpa_credential_status=ok / model_request_success`。
 
 ## 真实账号状态矩阵进展
 
 - `c` 额度不足案例：已在从 `lune-data-018` 复制出的隔离容器中验证。真实模型请求返回 `HTTP 429 / usage_limit_reached`，诊断写回 `stable_diagnostic_status=quota_exhausted`、`last_probe_status=quota_exhausted_signal`、`scheduler_status=ineligible`，证据包含 `routing_observation / model_request / quota_exhausted`。证据目录：`audit-output/repro-stateful-probe-20260520T115801Z`。
 - quota 鉴权失败但可用案例：已在从 `lune-data-018` 复制出的隔离容器中验证。启动后 `quota_probe / wham_usage` 返回 `HTTP 401 / quota_probe_auth_failed`，随后强制账号真实模型请求返回 `HTTP 200`，诊断写回 `stable_diagnostic_status=quota_probe_auth_failed_but_usable`、`last_probe_status=succeeded`、`scheduler_status=eligible_with_warning`，证据包含 `quota_probe / wham_usage` 和 `routing_observation / model_request`。证据目录：`audit-output/repro-quota-auth-usable-20260520T125927Z`。
+- 旧 credential 残留恢复案例：已在从 `lune-0.1.5` 只读复制出的隔离容器中验证。账号 2/3/4 强制 stateful 真实模型请求均返回 `HTTP 200`，请求日志 `success=1`，`cpa_credential_status` 写回 `ok`、`cpa_credential_reason=model_request_success`；账号 2/3 的 quota 鉴权失败但可用诊断仍保持 `stable_diagnostic_status=quota_probe_auth_failed_but_usable`、`scheduler_status=eligible_with_warning`。证据目录：`audit-output/repro-credential-ok-20260520T131713Z`。
 - `al` 封号案例：现有可见 volume 中未发现能产出账号级 banned 语义的真实样本；仍为发布阻塞。
 
 未完成项：
@@ -48,6 +50,7 @@
 - 已删除临时测试卷：`lune-v020-stage-data`
 - 已删除临时 quota 可用性验证容器与卷：`lune-v020-quota-usable-20260520T124820Z`
 - 已删除临时 quota 可用性验证容器与卷：`lune-v020-quota-usable-20260520T125927Z`
+- 已删除临时旧 credential 残留验证容器与卷：`lune-audit-credential-ok-20260520T131713Z-*`
 - 旧运行容器未改动：
   - `lune-v020-019-test`
   - `lune-0.1.9`

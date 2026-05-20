@@ -61,6 +61,7 @@
 | DIA-11 | fake upstream 回放 | 无法长期保留真实账号时 | 回放 `al`、`c`、quota 鉴权失败可用三类上游语义 | fake upstream 结果与真实案例期望一致，但不能替代至少一次真实容器验收 |
 | DIA-12 | auth invalid | 构造 refresh/access token 无效且无法恢复的账号 | 触发完整诊断 | 最终 `stable_diagnostic_status=auth_invalid`；不得误判为封号或额度不足；默认不可调度 |
 | DIA-13 | 真实案例治理 | 准备 `al`、`c`、quota 鉴权失败但可用案例 | 检查验收输入和审计输出 | 凭据只来自 secret；记录脱敏 case id、采集时间、采集人或环境、当时真实状态、预期状态、可接受证据和过期策略；状态漂移时不得用 fake upstream 静默放行 |
+| DIA-14 | 旧 credential 残留恢复 | 旧数据中 Codex CPA 账号残留 `cpa_credential_status=needs_login`，但真实模型请求可成功 | 强制账号 stateful 真实请求 | 成功后写回 `cpa_credential_status=ok / model_request_success`；若仍有 quota 鉴权失败但可用证据，保持 `eligible_with_warning` |
 
 ## 关键反例
 

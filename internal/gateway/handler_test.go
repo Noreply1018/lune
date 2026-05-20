@@ -785,6 +785,9 @@ func TestGatewayCodexCpaSuccessUsesLatestQuotaAuthWarningState(t *testing.T) {
 	if err := st.UpdateAccountCodexQuotaStatus(accountID, "error", "HTTP 401", time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
 	}
+	if err := st.UpdateAccountCpaCredentialStatus(accountID, "needs_login", "legacy_auth_probe", "auth probe failed before model request", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("UpdateAccountCpaCredentialStatus: %v", err)
+	}
 	handler.runtimeBinder = staticRuntimeBinder{}
 	cache.Invalidate()
 
@@ -800,6 +803,13 @@ func TestGatewayCodexCpaSuccessUsesLatestQuotaAuthWarningState(t *testing.T) {
 	diag := waitForAccountDiagnosticStatus(t, st, accountID, "quota_probe_auth_failed_but_usable", "succeeded")
 	if diag.SchedulerStatus != "eligible_with_warning" {
 		t.Fatalf("expected quota auth warning to remain schedulable, got %+v", diag)
+	}
+	acc, err := st.GetAccount(accountID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.CpaCredentialStatus != "ok" || acc.CpaCredentialReason != "model_request_success" {
+		t.Fatalf("expected successful stateful model request to restore credential status, got %+v", acc)
 	}
 }
 
