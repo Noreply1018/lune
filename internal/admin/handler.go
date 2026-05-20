@@ -330,8 +330,10 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	h.cpaLifecycleMu.Lock()
 	defer h.cpaLifecycleMu.Unlock()
+	operationID := h.newOperationID("delete-account", strconv.FormatInt(id, 10))
 	acc, err := h.store.GetAccount(id)
 	if err != nil {
+		h.recordLifecycleOperation(operationID, "delete_account", "account", strconv.FormatInt(id, 10), "failed", "lookup_failed", "lookup_account", err)
 		h.internalError(w, err)
 		return
 	}
@@ -341,19 +343,31 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if acc.SourceKind == "cpa" && h.cpaAuthDir != "" && strings.TrimSpace(acc.CpaAccountKey) != "" {
 		if err := cpa.DeleteAuthFile(h.cpaAuthDir, acc.CpaAccountKey); err != nil {
+			h.recordLifecycleOperation(operationID, "delete_account", "account", strconv.FormatInt(id, 10), "failed", "delete_auth_file_failed", "delete_auth_file", fmt.Errorf("cpa auth file deletion failed"))
 			h.internalError(w, err)
 			return
 		}
 	}
 	if err := h.store.DeleteAccount(id); err != nil {
+		h.recordLifecycleOperation(operationID, "delete_account", "account", strconv.FormatInt(id, 10), "failed", "delete_account_failed", "delete_db", err)
 		h.internalError(w, err)
 		return
 	}
+	status := "succeeded"
+	errorCode := ""
+	stage := ""
+	var opErr error
 	if acc.SourceKind == "cpa" && h.healthChecker != nil && acc.CpaServiceID != nil {
 		if svc, err := h.store.GetCpaServiceByID(*acc.CpaServiceID); err == nil && svc != nil {
-			_ = h.healthChecker.RequestCpaRuntimeReload(r.Context(), svc)
+			stage = "request_runtime_reload"
+			if reloadErr := h.requestCpaRuntimeReloadWithOperation(r.Context(), svc, "delete_account", fmt.Sprintf("account=%d key=%s", id, shortHash(acc.CpaAccountKey)), operationID); reloadErr != nil {
+				status = "partial"
+				errorCode = "runtime_reload_failed"
+				opErr = fmt.Errorf("CPA runtime reload failed")
+			}
 		}
 	}
+	h.recordLifecycleOperation(operationID, "delete_account", "account", strconv.FormatInt(id, 10), status, errorCode, stage, opErr)
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
 }
@@ -761,22 +775,30 @@ func (h *Handler) deletePool(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	operationID := h.newOperationID("delete-pool", strconv.FormatInt(id, 10))
 	reloadServices := h.cpaServicesForPoolRuntimeReload(id)
 	if err := h.store.DeletePoolWithAccounts(id); err != nil {
+		h.recordLifecycleOperation(operationID, "delete_pool", "pool", strconv.FormatInt(id, 10), "failed", "delete_pool_failed", "delete_db", err)
 		h.internalError(w, err)
 		return
 	}
 	h.cache.Invalidate()
 	var reloadErrs []string
 	for _, svc := range reloadServices {
-		if err := h.healthChecker.RequestCpaRuntimeReload(r.Context(), svc); err != nil {
-			reloadErrs = append(reloadErrs, fmt.Sprintf("%s: %v", svc.Label, err))
+		if err := h.requestCpaRuntimeReloadWithOperation(r.Context(), svc, "delete_pool", fmt.Sprintf("pool=%d service=%d", id, svc.ID), operationID); err != nil {
+			reloadErrs = append(reloadErrs, svc.Label)
 		}
 	}
 	if len(reloadErrs) > 0 {
-		webutil.WriteAdminError(w, 503, "cpa_reload_failed", "pool deleted, but CPA runtime reload failed: "+strings.Join(reloadErrs, "; "))
+		h.recordLifecycleOperation(operationID, "delete_pool", "pool", strconv.FormatInt(id, 10), "partial", "runtime_reload_failed", "request_runtime_reload", fmt.Errorf("CPA runtime reload failed"))
+		webutil.WriteAdminError(w, 503, "cpa_reload_failed", "pool deleted, but CPA runtime reload failed")
 		return
 	}
+	stage := ""
+	if len(reloadServices) > 0 {
+		stage = "request_runtime_reload"
+	}
+	h.recordLifecycleOperation(operationID, "delete_pool", "pool", strconv.FormatInt(id, 10), "succeeded", "", stage, nil)
 	webutil.WriteData(w, 200, map[string]string{"status": "ok"})
 }
 
@@ -3295,11 +3317,114 @@ func (h *Handler) reloadCpaRuntimeAfterAuthImport(svc *store.CpaService, targetS
 	}
 	reloadCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := h.healthChecker.RequestCpaRuntimeReload(reloadCtx, svc); err != nil {
+	if err := h.requestCpaRuntimeReloadWithOperation(reloadCtx, svc, "cpa_import", fmt.Sprintf("%s phase=%s", targetSummary, phase), ""); err != nil {
 		slog.Warn("importCpaAuthJSON: CPA runtime reload failed", "target", targetSummary, "phase", phase, "err", err)
 		return "failed", "runtime_reload_failed", "CPA runtime reload failed after import"
 	}
 	return "pending", "", ""
+}
+
+func (h *Handler) requestCpaRuntimeReloadWithOperation(ctx context.Context, svc *store.CpaService, source, targetSummary, correlationID string) error {
+	if h.healthChecker == nil || svc == nil {
+		return nil
+	}
+	operationID := h.newOperationID("runtime-reload", fmt.Sprintf("%d:%s", svc.ID, targetSummary))
+	err := h.healthChecker.RequestCpaRuntimeReload(ctx, svc)
+	status := "succeeded"
+	errorCode := ""
+	safeMessage := ""
+	if err != nil {
+		status = "failed"
+		errorCode = "runtime_reload_failed"
+		safeMessage = "CPA runtime reload failed"
+	}
+	h.recordOperation(&store.Operation{
+		OperationID:      operationID,
+		OperationType:    "runtime_reload",
+		Source:           source,
+		TargetType:       "cpa_service",
+		TargetID:         strconv.FormatInt(svc.ID, 10),
+		TargetSummary:    targetSummary,
+		Status:           status,
+		ErrorCode:        errorCode,
+		SafeErrorMessage: safeMessage,
+		CorrelationID:    correlationID,
+		Items: []store.OperationItem{{
+			ItemIndex:        1,
+			Status:           status,
+			ErrorCode:        errorCode,
+			SafeErrorMessage: safeMessage,
+			Stage:            "request_runtime_reload",
+		}},
+	})
+	return err
+}
+
+func (h *Handler) recordLifecycleOperation(operationID, operationType, targetType, targetID, status, errorCode, stage string, err error) {
+	itemStatus := status
+	if itemStatus == "partial" {
+		itemStatus = "failed"
+	}
+	op := &store.Operation{
+		OperationID:      operationID,
+		OperationType:    operationType,
+		Source:           "admin_api",
+		TargetType:       targetType,
+		TargetID:         targetID,
+		TargetSummary:    fmt.Sprintf("%s=%s", targetType, targetID),
+		Status:           status,
+		ErrorCode:        errorCode,
+		SafeErrorMessage: safeLifecycleOperationError(errorCode, err),
+	}
+	if strings.TrimSpace(stage) != "" || strings.TrimSpace(errorCode) != "" {
+		op.Items = []store.OperationItem{{
+			ItemIndex:        1,
+			Status:           itemStatus,
+			ErrorCode:        errorCode,
+			SafeErrorMessage: safeLifecycleOperationError(errorCode, err),
+			Stage:            stage,
+		}}
+	}
+	h.recordOperation(op)
+}
+
+func (h *Handler) recordOperation(op *store.Operation) {
+	if err := h.store.RecordOperation(op); err != nil {
+		slog.Warn("record operation failed", "operation_type", op.OperationType, "err", err)
+	}
+}
+
+func (h *Handler) newOperationID(prefix, seed string) string {
+	return shortHash(fmt.Sprintf("%s:%s:%s", prefix, seed, time.Now().UTC().Format(time.RFC3339Nano)))
+}
+
+func safeOperationError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func safeLifecycleOperationError(errorCode string, err error) string {
+	if err == nil && strings.TrimSpace(errorCode) == "" {
+		return ""
+	}
+	switch errorCode {
+	case "lookup_failed":
+		return "account lookup failed"
+	case "delete_auth_file_failed":
+		return "cpa auth file deletion failed"
+	case "delete_account_failed":
+		return "account deletion failed"
+	case "delete_pool_failed":
+		return "pool deletion failed"
+	case "runtime_reload_failed":
+		return "CPA runtime reload failed"
+	}
+	if err == nil {
+		return ""
+	}
+	return "operation failed"
 }
 
 const maxUploadedAuthJSONBytes = 256 << 10

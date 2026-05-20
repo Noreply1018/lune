@@ -6,7 +6,28 @@ Lune 目前仍处于早期 `0.x` 阶段。版本会尽量遵循语义化版本�
 
 ## [未发布]
 
-暂无。
+### v0.2.0
+
+状态：本轮已完成 CPA 删除后重导入核心修复、生命周期 operation 审计和隔离容器复现；完整 v0.2.0 发布仍需按规格矩阵继续验收。
+
+### CPA Auth JSON 删除后重导入
+
+- 删除 CPA 账号后立即重导入同一批 auth JSON 时，`delete_account`、`delete_pool` 和 `runtime_reload` 现在都会落操作事件。
+- `runtime_reload` 作为可审计 operation 记录 `request_runtime_reload` 阶段，后续可从审计记录恢复成功或失败原因。
+- `delete_account` 的 auth file 删除失败现已脱敏，不再泄露底层路径或账号 key。
+- `tool-repro` 的 `cpa-import-reimport` 场景现在会导出删除、重导入和 runtime reload 的脱敏 evidence。
+
+### 通用可审计性
+
+- `tool-collect` 现在会排除 `/data/audit-cpa-import/*` staging 文件，避免审计包泄露临时导入副本。
+- 审计包、最近操作快照和恢复脚本的输出口径已对齐 v0.2.0 规格。
+
+### 验证
+
+- `go test ./...`
+- `bash -n scripts/audit/*.sh`
+- `git diff --check`
+- 隔离容器复现 `cpa-import-reimport`
 
 ## [0.1.9] - 2026-05-17
 

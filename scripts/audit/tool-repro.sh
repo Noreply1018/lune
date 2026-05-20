@@ -224,7 +224,7 @@ SQL
 }
 
 cpa_import_reimport() {
-  local admin pool_id token batch_body boundary manifest batch_resp account_id delete_resp latest_op target_name target_key target_hash
+  local admin pool_id token batch_body boundary manifest batch_resp account_id delete_resp latest_op target_name target_key target_hash before_operation_id
   local before_delete_count post_delete_count reimport_account_id post_reimport_count import_count cpa_accounts cpa_files reimport_candidate batch_id reimport_batch_id token_id
   admin="$(admin_token)"
   [[ -n "$admin" ]] || {
@@ -267,6 +267,7 @@ cpa_import_reimport() {
   target_name="$(head -n 1 "$manifest" | cut -d'|' -f1)"
   target_key="${target_name%.json}"
   target_hash="$(printf '%s' "$target_key" | sha256sum | awk '{print $1}')"
+  before_operation_id="$(sqlite3 -readonly "$db_file" "SELECT COALESCE(MAX(id), 0) FROM operations;" 2>/dev/null || echo 0)"
 
   batch_body="$tmp_dir/cpa-batch.bin"
   boundary="$(build_multipart_batch "$pool_id" "$manifest" "$batch_body")"
@@ -332,15 +333,22 @@ SQL
   sqlite3 -readonly "$db_file" -json <<SQL > "$out/redacted/scenario/cpa-import-reimport-operations.json"
 SELECT operation_id, operation_type, source, target_type, target_id, target_summary, status, error_code, safe_error_message, correlation_id, started_at, finished_at, created_at
 FROM operations
-WHERE operation_id IN ('$batch_id', '$reimport_batch_id')
+WHERE id > $before_operation_id
+  AND operation_type IN ('cpa_import_batch', 'delete_account', 'runtime_reload')
 ORDER BY datetime(created_at) ASC, id ASC;
 SQL
+  /work/scripts/audit/redact.sh "$out/redacted/scenario/cpa-import-reimport-operations.json" "$tmp_dir/cpa-import-reimport-operations.redacted.json"
+  mv "$tmp_dir/cpa-import-reimport-operations.redacted.json" "$out/redacted/scenario/cpa-import-reimport-operations.json"
   sqlite3 -readonly "$db_file" -json <<SQL > "$out/redacted/scenario/cpa-import-reimport-items.json"
 SELECT oi.operation_id, oi.item_index, 'ACCOUNT_KEY_REDACTED.json' AS client_file_name, oi.account_key_hash, oi.action, oi.status, oi.runtime_sync, oi.error_code, oi.safe_error_message, oi.account_id, oi.pool_member_id, oi.stage, oi.created_at
 FROM operation_items oi
-WHERE oi.operation_id IN ('$batch_id', '$reimport_batch_id')
-ORDER BY oi.operation_id, oi.item_index, oi.id;
+JOIN operations o ON o.operation_id = oi.operation_id
+WHERE o.id > $before_operation_id
+  AND o.operation_type IN ('cpa_import_batch', 'delete_account', 'runtime_reload')
+ORDER BY o.id, oi.item_index, oi.id;
 SQL
+  /work/scripts/audit/redact.sh "$out/redacted/scenario/cpa-import-reimport-items.json" "$tmp_dir/cpa-import-reimport-items.redacted.json"
+  mv "$tmp_dir/cpa-import-reimport-items.redacted.json" "$out/redacted/scenario/cpa-import-reimport-items.json"
   sqlite3 -readonly "$db_file" -json <<SQL > "$out/redacted/scenario/cpa-import-reimport-account.json"
 SELECT id, source_kind, cpa_service_id, cpa_provider, cpa_plan_type, cpa_disabled, cpa_credential_status, cpa_subscription_status, cpa_access_status, cpa_quota_status, serving_status, enabled, status, created_at, updated_at
 FROM accounts

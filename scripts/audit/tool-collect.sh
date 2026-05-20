@@ -20,7 +20,7 @@ mkdir -p "$out/redacted"
   echo "  sqlite3=$(sqlite3 --version)"
 } > "$out/summary.txt"
 
-find "$data_dir" -maxdepth 3 -type f ! -path "$data_dir/cpa-auth/*" -printf '%P\t%s bytes\t%TY-%Tm-%TdT%TH:%TM:%TSZ\n' \
+find "$data_dir" -maxdepth 3 -type f ! -path "$data_dir/cpa-auth/*" ! -path "$data_dir/audit-cpa-import/*" -printf '%P\t%s bytes\t%TY-%Tm-%TdT%TH:%TM:%TSZ\n' \
   | sort > "$raw_tmp/files.txt" 2>/dev/null || true
 
 if [[ -d "$data_dir/cpa-auth" ]]; then
@@ -57,6 +57,25 @@ UNION ALL SELECT 'pool_members', COUNT(*) FROM pool_members
 UNION ALL SELECT 'access_tokens', COUNT(*) FROM access_tokens
 UNION ALL SELECT 'request_logs', COUNT(*) FROM request_logs;
 SQL
+
+  sqlite3 -readonly "$db_file" -json <<'SQL' > "$raw_tmp/recent-operations.json" 2>&1 || true
+SELECT operation_id, operation_type, source, target_type, target_id, target_summary, status, error_code, safe_error_message, correlation_id, started_at, finished_at, created_at
+FROM operations
+ORDER BY datetime(created_at) DESC, id DESC
+LIMIT 10;
+SQL
+  sqlite3 -readonly "$db_file" -json <<'SQL' > "$raw_tmp/recent-operation-items.json" 2>&1 || true
+WITH recent AS (
+  SELECT operation_id, id
+  FROM operations
+  ORDER BY datetime(created_at) DESC, id DESC
+  LIMIT 10
+)
+SELECT oi.operation_id, oi.item_index, 'ACCOUNT_KEY_REDACTED.json' AS client_file_name, oi.account_key_hash, oi.action, oi.status, oi.runtime_sync, oi.error_code, oi.safe_error_message, oi.account_id, oi.pool_member_id, oi.stage, oi.created_at
+FROM operation_items oi
+JOIN recent r ON r.operation_id = oi.operation_id
+ORDER BY r.id DESC, oi.item_index, oi.id;
+SQL
 else
   echo "no sqlite db found under $data_dir" > "$raw_tmp/db-tables.txt"
 fi
@@ -65,10 +84,12 @@ if [[ -n "$db_file" ]] && command -v lune >/dev/null 2>&1; then
   for cmd in summary recent-operations db-integrity cpa-auth cpa-runtime; do
     lune debug "$cmd" > "$raw_tmp/debug-$cmd.json" 2>&1 || true
   done
-  first_operation_id="$(sqlite3 -readonly "$db_file" "SELECT operation_id FROM operations ORDER BY datetime(created_at) DESC, id DESC LIMIT 1;" 2>/dev/null || true)"
-  if [[ -n "$first_operation_id" ]]; then
-    lune debug operation "$first_operation_id" > "$raw_tmp/debug-operation.json" 2>&1 || true
-  fi
+  sqlite3 -readonly "$db_file" "SELECT operation_id FROM operations ORDER BY datetime(created_at) DESC, id DESC LIMIT 10;" 2>/dev/null \
+    | nl -w2 -s' ' \
+    | while read -r index operation_id; do
+      [[ -n "$operation_id" ]] || continue
+      lune debug operation "$operation_id" > "$raw_tmp/debug-operation-$index.json" 2>&1 || true
+    done
   first_account_id="$(sqlite3 -readonly "$db_file" "SELECT id FROM accounts ORDER BY id LIMIT 1;" 2>/dev/null || true)"
   if [[ -n "$first_account_id" ]]; then
     lune debug account "$first_account_id" > "$raw_tmp/debug-account.json" 2>&1 || true

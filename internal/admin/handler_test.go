@@ -42,6 +42,21 @@ func newTestNotifier(st *store.Store) *notify.Service {
 	)
 }
 
+func requireRecentOperation(t *testing.T, st *store.Store, operationType string) store.Operation {
+	t.Helper()
+	ops, err := st.ListRecentOperations(20)
+	if err != nil {
+		t.Fatalf("list recent operations: %v", err)
+	}
+	for _, op := range ops {
+		if op.OperationType == operationType {
+			return op
+		}
+	}
+	t.Fatalf("expected recent operation %q, got %+v", operationType, ops)
+	return store.Operation{}
+}
+
 func fakeJWT(t *testing.T, claims map[string]any) string {
 	t.Helper()
 	encode := func(v any) string {
@@ -1500,7 +1515,9 @@ func TestDeleteCpaAccountRemovesAuthFileAndSignalsReload(t *testing.T) {
 	checker.SetCpaReloadSignalPath(reloadSignal)
 	handler := NewHandler(st, cache, authDir, "", checker, newTestNotifier(st))
 
-	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/admin/api/accounts/%d", accID), http.NoBody)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodDelete, fmt.Sprintf("/admin/api/accounts/%d", accID), http.NoBody)
 	req.SetPathValue("id", fmt.Sprintf("%d", accID))
 	rr := httptest.NewRecorder()
 	handler.deleteAccount(rr, req)
@@ -1516,6 +1533,86 @@ func TestDeleteCpaAccountRemovesAuthFileAndSignalsReload(t *testing.T) {
 	}
 	if _, err := os.Stat(reloadSignal); err != nil {
 		t.Fatalf("expected reload signal to be written: %v", err)
+	}
+	deleteOp := requireRecentOperation(t, st, "delete_account")
+	if deleteOp.Status != "partial" || deleteOp.ErrorCode != "runtime_reload_failed" || deleteOp.TargetType != "account" || deleteOp.TargetID != fmt.Sprint(accID) {
+		t.Fatalf("unexpected delete account operation: %+v", deleteOp)
+	}
+	if deleteOp.SafeErrorMessage != "CPA runtime reload failed" || strings.Contains(deleteOp.SafeErrorMessage, "context canceled") {
+		t.Fatalf("delete account operation leaked reload internals: %+v", deleteOp)
+	}
+	reloadOp := requireRecentOperation(t, st, "runtime_reload")
+	if reloadOp.Status != "failed" || reloadOp.ErrorCode != "runtime_reload_failed" || reloadOp.Source != "delete_account" {
+		t.Fatalf("unexpected runtime reload operation: %+v", reloadOp)
+	}
+	if reloadOp.CorrelationID != deleteOp.OperationID {
+		t.Fatalf("runtime reload operation is not correlated to delete account operation: reload=%+v delete=%+v", reloadOp, deleteOp)
+	}
+	if reloadOp.SafeErrorMessage != "CPA runtime reload failed" || strings.Contains(reloadOp.SafeErrorMessage, "context canceled") {
+		t.Fatalf("runtime reload operation leaked reload internals: %+v", reloadOp)
+	}
+	detail, err := st.GetOperation(reloadOp.OperationID)
+	if err != nil {
+		t.Fatalf("get reload operation: %v", err)
+	}
+	if detail == nil || len(detail.Items) != 1 || detail.Items[0].Stage != "request_runtime_reload" {
+		t.Fatalf("unexpected runtime reload operation detail: %+v", detail)
+	}
+	if detail.Items[0].SafeErrorMessage != "CPA runtime reload failed" || strings.Contains(detail.Items[0].SafeErrorMessage, "context canceled") {
+		t.Fatalf("runtime reload item leaked reload internals: %+v", detail.Items[0])
+	}
+}
+
+func TestDeleteCpaAccountRedactsAuthFileDeletionFailure(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	svcID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "https://cpa.example.com",
+		APIKey:  "svc-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accID, err := st.CreateAccount(&store.Account{
+		Label:               "Delete me",
+		SourceKind:          "cpa",
+		CpaServiceID:        &svcID,
+		CpaProvider:         "codex",
+		CpaAccountKey:       "codex-delete-redact-plus",
+		CpaCredentialStatus: "ok",
+		Enabled:             true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	reloadSignal := filepath.Join(t.TempDir(), "reload.signal")
+	checker := health.NewChecker(st, cache, authDir, "", newTestNotifier(st))
+	checker.SetCpaReloadSignalPath(reloadSignal)
+	handler := NewHandler(st, cache, authDir, "", checker, newTestNotifier(st))
+	if err := os.MkdirAll(filepath.Join(authDir, "codex-delete-redact-plus.json"), 0o755); err != nil {
+		t.Fatalf("create blocking auth path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "codex-delete-redact-plus.json", "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed blocking auth path: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/admin/api/accounts/%d", accID), http.NoBody)
+	req.SetPathValue("id", fmt.Sprintf("%d", accID))
+	rr := httptest.NewRecorder()
+	handler.deleteAccount(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+	op := requireRecentOperation(t, st, "delete_account")
+	if !strings.Contains(op.SafeErrorMessage, "cpa auth file deletion failed") {
+		t.Fatalf("expected redacted auth file delete error, got %+v", op)
+	}
+	if strings.Contains(op.SafeErrorMessage, "codex-delete-redact-plus") || strings.Contains(op.SafeErrorMessage, ".json") || strings.Contains(op.SafeErrorMessage, "@") {
+		t.Fatalf("operation leaked sensitive file details: %+v", op)
 	}
 }
 
@@ -1566,6 +1663,9 @@ func TestDeletePoolWithCpaAccountReportsReloadFailure(t *testing.T) {
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 reload failure, got %d: %s", rr.Code, rr.Body.String())
 	}
+	if strings.Contains(rr.Body.String(), "context canceled") {
+		t.Fatalf("delete pool response leaked reload internals: %s", rr.Body.String())
+	}
 	if pool, err := st.GetPool(poolID); err != nil || pool != nil {
 		t.Fatalf("pool should already be deleted despite reload failure, pool=%+v err=%v", pool, err)
 	}
@@ -1574,6 +1674,33 @@ func TestDeletePoolWithCpaAccountReportsReloadFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(reloadSignal); err != nil {
 		t.Fatalf("expected reload signal write attempt: %v", err)
+	}
+	deleteOp := requireRecentOperation(t, st, "delete_pool")
+	if deleteOp.Status != "partial" || deleteOp.ErrorCode != "runtime_reload_failed" || deleteOp.TargetID != fmt.Sprint(poolID) {
+		t.Fatalf("unexpected delete pool operation: %+v", deleteOp)
+	}
+	if deleteOp.SafeErrorMessage != "CPA runtime reload failed" || strings.Contains(deleteOp.SafeErrorMessage, "context canceled") {
+		t.Fatalf("delete pool operation leaked reload internals: %+v", deleteOp)
+	}
+	reloadOp := requireRecentOperation(t, st, "runtime_reload")
+	if reloadOp.Status != "failed" || reloadOp.ErrorCode != "runtime_reload_failed" || reloadOp.Source != "delete_pool" {
+		t.Fatalf("unexpected runtime reload operation: %+v", reloadOp)
+	}
+	if reloadOp.CorrelationID != deleteOp.OperationID {
+		t.Fatalf("runtime reload operation is not correlated to delete pool operation: reload=%+v delete=%+v", reloadOp, deleteOp)
+	}
+	if reloadOp.SafeErrorMessage != "CPA runtime reload failed" || strings.Contains(reloadOp.SafeErrorMessage, "context canceled") {
+		t.Fatalf("runtime reload operation leaked reload internals: %+v", reloadOp)
+	}
+	detail, err := st.GetOperation(reloadOp.OperationID)
+	if err != nil {
+		t.Fatalf("get reload operation: %v", err)
+	}
+	if detail == nil || len(detail.Items) != 1 || detail.Items[0].Stage != "request_runtime_reload" {
+		t.Fatalf("unexpected runtime reload operation detail: %+v", detail)
+	}
+	if detail.Items[0].SafeErrorMessage != "CPA runtime reload failed" || strings.Contains(detail.Items[0].SafeErrorMessage, "context canceled") {
+		t.Fatalf("runtime reload item leaked reload internals: %+v", detail.Items[0])
 	}
 }
 
