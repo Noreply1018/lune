@@ -1320,6 +1320,14 @@ function friendlyDiagnostic(value?: string | null, empty = "--") {
   const text = value?.trim();
   if (!text) return empty;
   const lower = text.toLowerCase();
+  const includesInternalDetail =
+    text.length > 96 ||
+    text.includes("\n") ||
+    text.includes("\\n") ||
+    /\b(auth_dir|auth dir|cpa-auth|stack trace|traceback)\b/i.test(text) ||
+    /(^|\s|["'=(])(?:\/(?:app|var|tmp|home|data|run|etc|usr|opt)(?:\/|\b)|[A-Za-z]:\\)/.test(text) ||
+    /https?:\/\/[^\s]+/.test(text) ||
+    /\bat\s+\S+\([^)]*\)/.test(text);
   if (lower === "ok") return "无";
   if (lower.includes("connection refused") || lower.includes("connect:")) {
     return "运行时连接失败，请检查容器内服务是否已启动。";
@@ -1330,7 +1338,7 @@ function friendlyDiagnostic(value?: string | null, empty = "--") {
   if (lower.includes("no such file") || lower.includes("permission denied")) {
     return "运行时文件访问失败，请检查数据目录挂载和权限。";
   }
-  if (text.length > 96 || text.includes("/app/") || text.includes("\\n")) {
+  if (includesInternalDetail) {
     return "运行时返回了详细错误，请查看容器日志定位。";
   }
   return text;
