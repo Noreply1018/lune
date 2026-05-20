@@ -96,6 +96,6 @@
 | REL-06 | 后续 spec 审查 | 后续涉及状态变更、运行时、外部服务或异步任务的 spec 必须包含可审计性要求 |
 | REL-07 | 真实账号状态矩阵 | `al`、`c`、quota 鉴权失败但可用案例必须至少在一次隔离真实容器验收中跑通 |
 | REL-08 | fake upstream 不替代真实验收 | fake upstream 可用于 CI 回归，但不能作为真实账号状态识别的唯一证据 |
-| REL-09 | 旧数据卷升级 | 使用 v0.1.9 真实或模拟数据卷副本启动 v0.2.0 | schema migration 成功；旧账号、Pool、request log 可读；旧账号诊断初始化为 `stable_diagnostic_status=unknown`、`last_probe_status` 为空或 `not_run`，`scheduler_status` 按旧启停状态保守映射；新增 operation/diagnostic 表兼容空历史 |
+| REL-09 | 旧数据卷升级 | 使用 v0.1.9 真实或模拟数据卷副本启动 v0.2.0 | schema migration 成功；旧账号、Pool、request log 可读；旧账号诊断初始化为 `stable_diagnostic_status=unknown`、`last_probe_status=not_run` 或空值；`scheduler_status` 按旧启停/健康字段保守映射，旧启用账号不得仅因缺少诊断历史被自动禁用；新增 operation/diagnostic 表兼容空历史 |
 | REL-10 | 重启恢复 | 在导入、删除、reload、诊断中断后重启容器 | 启动流程自动 reconcile 收敛；只读 debug 可验证；无长期 running；状态可审计 |
 | REL-11 | 并发压力 | 同时运行导入、删除、health/quota refresh、诊断和 routing 请求 | 无数据竞争导致的半写状态；调度、UI、debug 结果一致 |
