@@ -77,6 +77,7 @@ func (c *RoutingCache) loadFromDB() *CacheSnapshot {
 			snap.Accounts[acc.ID] = &acc
 		}
 	}
+	c.loadAccountDiagnostics(snap)
 
 	// Load pools
 	if pools, err := c.store.ListPools(); err == nil {
@@ -149,6 +150,21 @@ func (c *RoutingCache) loadMembers(snap *CacheSnapshot) {
 			}
 			return members[i].ID < members[j].ID
 		})
+	}
+}
+
+func (c *RoutingCache) loadAccountDiagnostics(snap *CacheSnapshot) {
+	diagnostics, err := c.store.ListAccountDiagnostics()
+	if err != nil {
+		for _, acc := range snap.Accounts {
+			acc.DiagnosticLoadFailed = true
+		}
+		return
+	}
+	for accountID, diag := range diagnostics {
+		if acc := snap.Accounts[accountID]; acc != nil {
+			attachAccountDiagnostic(acc, diag)
+		}
 	}
 }
 

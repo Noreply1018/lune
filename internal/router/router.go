@@ -293,7 +293,8 @@ func (rt *Router) pickFromMembers(snap *store.CacheSnapshot, members []*store.Po
 			}
 			continue
 		}
-		if accountRoutePenalty(acc) > maxPenalty {
+		decision := rt.accountDecision(acc, opts)
+		if decision.Penalty > maxPenalty {
 			continue
 		}
 		match := accountModelMatch(snap, m.AccountID, model)
@@ -326,23 +327,6 @@ func (rt *Router) accountDecision(acc *store.Account, opts ResolveOptions) store
 		Diagnostic:                 opts.Diagnostic,
 		CpaRuntimeBindingSupported: rt.options.CpaRuntimeBindingSupported,
 	})
-}
-
-func accountRoutePenalty(acc *store.Account) int {
-	if acc == nil {
-		return 0
-	}
-	penalty := 0
-	if acc.SourceKind == "cpa" {
-		if acc.CpaCredentialStatus == "auth_suspect" {
-			penalty++
-		}
-		switch acc.CpaQuotaStatus {
-		case "error", "unknown", "pending":
-			penalty++
-		}
-	}
-	return penalty
 }
 
 type modelMatch int

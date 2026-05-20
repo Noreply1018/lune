@@ -496,6 +496,205 @@ func TestPoolRoutableCountBlocksCodexAccessPendingEvenWithActiveSubscription(t *
 	}
 }
 
+func TestPoolRoutableCountHonorsDiagnosticSchedulerStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		stable   string
+		expected int
+	}{
+		{name: "usable", stable: "usable", expected: 1},
+		{name: "quota-auth-failed-but-usable", stable: "quota_probe_auth_failed_but_usable", expected: 1},
+		{name: "unknown", stable: "unknown", expected: 1},
+		{name: "banned", stable: "banned", expected: 0},
+		{name: "quota-exhausted", stable: "quota_exhausted", expected: 0},
+		{name: "auth-invalid", stable: "auth_invalid", expected: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newTestStore(t)
+			poolID, err := st.CreatePool("Pool", 0, true)
+			if err != nil {
+				t.Fatalf("create pool: %v", err)
+			}
+			accountID, err := st.CreateAccount(&Account{
+				Label:      tc.name,
+				SourceKind: "openai_compat",
+				BaseURL:    "https://" + tc.name + ".example.com/v1",
+				APIKey:     "sk-test",
+				Enabled:    true,
+			})
+			if err != nil {
+				t.Fatalf("create account: %v", err)
+			}
+			if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+				t.Fatalf("add member: %v", err)
+			}
+			if err := st.UpdateAccountDiagnostic(accountID, AccountDiagnosticUpdate{
+				StableDiagnosticStatus: tc.stable,
+				LastProbeStatus:        "succeeded",
+				SafeSummary:            tc.name,
+			}); err != nil {
+				t.Fatalf("update diagnostic: %v", err)
+			}
+
+			pool, err := st.GetPool(poolID)
+			if err != nil || pool == nil {
+				t.Fatalf("get pool: %v", err)
+			}
+			if pool.RoutableAccountCount != tc.expected {
+				t.Fatalf("expected routable count %d, got %d", tc.expected, pool.RoutableAccountCount)
+			}
+		})
+	}
+}
+
+func TestPoolRoutableCountRejectsDirtyFatalDiagnosticScheduler(t *testing.T) {
+	st := newTestStore(t)
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:      "Dirty banned",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://dirty.example.com/v1",
+		APIKey:     "sk-test",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if _, err := st.DB().Exec(
+		`UPDATE account_diagnostics
+		 SET stable_diagnostic_status='banned', scheduler_status='eligible', scheduler_override=''
+		 WHERE account_id=?`,
+		accountID,
+	); err != nil {
+		t.Fatalf("dirty diagnostic update: %v", err)
+	}
+
+	pool, err := st.GetPool(poolID)
+	if err != nil || pool == nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if pool.RoutableAccountCount != 0 {
+		t.Fatalf("expected dirty fatal diagnostic to be non-routable, got %d", pool.RoutableAccountCount)
+	}
+}
+
+func TestPoolRoutableCountTrimsDiagnosticSchedulerAndOverride(t *testing.T) {
+	st := newTestStore(t)
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:      "Blank override",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://blank.example.com/v1",
+		APIKey:     "sk-test",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if _, err := st.DB().Exec(
+		`UPDATE account_diagnostics
+		 SET stable_diagnostic_status=' banned ', scheduler_status=' eligible ', scheduler_override='   '
+		 WHERE account_id=?`,
+		accountID,
+	); err != nil {
+		t.Fatalf("dirty diagnostic update: %v", err)
+	}
+
+	pool, err := st.GetPool(poolID)
+	if err != nil || pool == nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if pool.RoutableAccountCount != 0 {
+		t.Fatalf("expected blank override with fatal stable status to be non-routable, got %d", pool.RoutableAccountCount)
+	}
+}
+
+func TestPoolRoutableCountAcceptsTrimmedEligibleScheduler(t *testing.T) {
+	st := newTestStore(t)
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:      "Trimmed eligible",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://trimmed.example.com/v1",
+		APIKey:     "sk-test",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if _, err := st.DB().Exec(
+		`UPDATE account_diagnostics
+		 SET stable_diagnostic_status=' usable ', scheduler_status=' eligible ', scheduler_override=''
+		 WHERE account_id=?`,
+		accountID,
+	); err != nil {
+		t.Fatalf("dirty diagnostic update: %v", err)
+	}
+
+	pool, err := st.GetPool(poolID)
+	if err != nil || pool == nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if pool.RoutableAccountCount != 1 {
+		t.Fatalf("expected trimmed eligible scheduler to stay routable, got %d", pool.RoutableAccountCount)
+	}
+}
+
+func TestPoolRoutableCountRejectsUnknownDiagnosticSchedulerStatus(t *testing.T) {
+	st := newTestStore(t)
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	accountID, err := st.CreateAccount(&Account{
+		Label:      "Unknown scheduler",
+		SourceKind: "openai_compat",
+		BaseURL:    "https://unknown.example.com/v1",
+		APIKey:     "sk-test",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := st.AddPoolMember(poolID, accountID); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if _, err := st.DB().Exec(
+		`UPDATE account_diagnostics
+		 SET stable_diagnostic_status='usable', scheduler_status='future_value'
+		 WHERE account_id=?`,
+		accountID,
+	); err != nil {
+		t.Fatalf("dirty diagnostic update: %v", err)
+	}
+
+	pool, err := st.GetPool(poolID)
+	if err != nil || pool == nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if pool.RoutableAccountCount != 0 {
+		t.Fatalf("expected unknown scheduler status to be non-routable, got %d", pool.RoutableAccountCount)
+	}
+}
+
 func TestPoolRoutableCountBlocksMixedCaseCredentialStatus(t *testing.T) {
 	st := newTestStore(t)
 	poolID, err := st.CreatePool("Pool", 0, true)

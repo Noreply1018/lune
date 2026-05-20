@@ -2095,11 +2095,7 @@ func (h *Handler) fillAccountDiagnostic(a *store.Account) {
 }
 
 func attachAccountDiagnostic(a *store.Account, diag *store.AccountDiagnostic) {
-	a.Diagnostic = diag
-	a.DiagnosticStatus = diag.StableDiagnosticStatus
-	a.SchedulerStatus = diag.SchedulerStatus
-	a.LastDiagnosedAt = diag.FinishedAt
-	a.DiagnosticSummary = diag.SafeSummary
+	store.AttachAccountDiagnostic(a, diag)
 }
 
 // --- CPA Login Sessions (Device Code Flow) ---

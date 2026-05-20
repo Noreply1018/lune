@@ -66,11 +66,12 @@ type Account struct {
 	UpdatedAt     string  `json:"updated_at"`
 
 	// computed fields (not stored in DB)
-	APIKeySet    bool               `json:"api_key_set"`
-	APIKeyMasked string             `json:"api_key_masked"`
-	Models       []string           `json:"models"`
-	Runtime      *AccountRuntime    `json:"runtime,omitempty"`
-	Diagnostic   *AccountDiagnostic `json:"diagnostic,omitempty"`
+	APIKeySet            bool               `json:"api_key_set"`
+	APIKeyMasked         string             `json:"api_key_masked"`
+	Models               []string           `json:"models"`
+	Runtime              *AccountRuntime    `json:"runtime,omitempty"`
+	Diagnostic           *AccountDiagnostic `json:"diagnostic,omitempty"`
+	DiagnosticLoadFailed bool               `json:"-"`
 
 	DiagnosticStatus  string `json:"diagnostic_status,omitempty"`
 	SchedulerStatus   string `json:"scheduler_status,omitempty"`

@@ -11,6 +11,17 @@ const accountRoutableBaseWhereSQL = `a.enabled = 1
 		AND a.status IN ('healthy', 'degraded')
 		AND a.serving_status <> 'error'
 		AND (a.serving_status <> 'cooldown' OR (a.cooldown_until <> '' AND datetime(a.cooldown_until) <= datetime('now')))
+		AND NOT EXISTS (
+			SELECT 1 FROM account_diagnostics ad
+			WHERE ad.account_id = a.id
+			  AND (
+				lower(trim(ad.scheduler_status)) NOT IN ('eligible', 'eligible_with_warning')
+				OR (
+					trim(COALESCE(ad.scheduler_override, '')) = ''
+					AND lower(trim(ad.stable_diagnostic_status)) IN ('banned', 'quota_exhausted', 'auth_invalid')
+				)
+			  )
+		)
 		AND (
 			a.source_kind <> 'cpa'
 			OR (

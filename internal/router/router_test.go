@@ -533,6 +533,257 @@ func TestRoutingAllowsNonCodexCpaWithoutSubscriptionStatus(t *testing.T) {
 	}
 }
 
+func TestRoutingUsesPersistedDiagnosticSchedulerStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		stable      string
+		scheduler   string
+		wantBlocked bool
+	}{
+		{name: "usable", stable: "usable", scheduler: "eligible"},
+		{name: "quota-auth-failed-but-usable", stable: "quota_probe_auth_failed_but_usable", scheduler: "eligible_with_warning"},
+		{name: "unknown", stable: "unknown", scheduler: "eligible_with_warning"},
+		{name: "banned", stable: "banned", scheduler: "ineligible", wantBlocked: true},
+		{name: "quota-exhausted", stable: "quota_exhausted", scheduler: "ineligible", wantBlocked: true},
+		{name: "auth-invalid", stable: "auth_invalid", scheduler: "ineligible", wantBlocked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+			if err != nil {
+				t.Fatalf("store.New: %v", err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+
+			poolID, err := st.CreatePool("Pool", 0, true)
+			if err != nil {
+				t.Fatalf("CreatePool: %v", err)
+			}
+			serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+			if err != nil {
+				t.Fatalf("CreateCpaService: %v", err)
+			}
+			accountID := createRouterCpaAccount(t, st, poolID, serviceID, tc.name, "ok")
+			if err := st.UpdateAccountDiagnostic(accountID, store.AccountDiagnosticUpdate{
+				StableDiagnosticStatus: tc.stable,
+				LastProbeStatus:        "succeeded",
+				SchedulerStatus:        tc.scheduler,
+				SafeSummary:            tc.name,
+			}); err != nil {
+				t.Fatalf("UpdateAccountDiagnostic: %v", err)
+			}
+
+			rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+			resolved, err := rt.Resolve("gpt-test", &poolID, &accountID)
+			if tc.wantBlocked {
+				if !errors.Is(err, ErrNoHealthyAccount) {
+					t.Fatalf("expected diagnostic status %s to block forced route, got %v", tc.stable, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected diagnostic status %s to route, got %v", tc.stable, err)
+			}
+			if resolved.AccountID != accountID {
+				t.Fatalf("expected account %d, got %d", accountID, resolved.AccountID)
+			}
+		})
+	}
+}
+
+func TestRoutingDoesNotAllowFatalDiagnosticWithEligibleSchedulerWithoutOverride(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := createRouterCpaAccount(t, st, poolID, serviceID, "dirty-banned", "ok")
+	if _, err := st.DB().Exec(
+		`UPDATE account_diagnostics
+		 SET stable_diagnostic_status='banned', last_probe_status='upstream_banned_signal', scheduler_status='eligible', scheduler_override=''
+		 WHERE account_id=?`,
+		accountID,
+	); err != nil {
+		t.Fatalf("dirty diagnostic update: %v", err)
+	}
+
+	rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+	if _, err := rt.Resolve("gpt-test", &poolID, &accountID); !errors.Is(err, ErrNoHealthyAccount) {
+		t.Fatalf("fatal stable diagnostic must block without override, got %v", err)
+	}
+}
+
+func TestRoutingTrimsBlankDiagnosticOverride(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := createRouterCpaAccount(t, st, poolID, serviceID, "blank-override", "ok")
+	if err := st.UpdateAccountDiagnostic(accountID, store.AccountDiagnosticUpdate{
+		StableDiagnosticStatus: " banned ",
+		LastProbeStatus:        " upstream_banned_signal ",
+		SchedulerStatus:        " eligible ",
+		SchedulerOverride:      "   ",
+		SafeSummary:            " blank override ",
+	}); err != nil {
+		t.Fatalf("UpdateAccountDiagnostic: %v", err)
+	}
+
+	diag, err := st.GetAccountDiagnostic(accountID)
+	if err != nil {
+		t.Fatalf("GetAccountDiagnostic: %v", err)
+	}
+	if diag.SchedulerStatus != "ineligible" || diag.SchedulerOverride != "" || diag.StableDiagnosticStatus != "banned" {
+		t.Fatalf("expected trimmed default diagnostic mapping, got %+v", diag)
+	}
+
+	rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+	if _, err := rt.Resolve("gpt-test", &poolID, &accountID); !errors.Is(err, ErrNoHealthyAccount) {
+		t.Fatalf("blank override must not allow fatal stable diagnostic, got %v", err)
+	}
+}
+
+func TestRoutingAllowsFatalDiagnosticOnlyWithAuditableOverride(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := createRouterCpaAccount(t, st, poolID, serviceID, "override-banned", "ok")
+	if err := st.UpdateAccountDiagnostic(accountID, store.AccountDiagnosticUpdate{
+		StableDiagnosticStatus: "banned",
+		LastProbeStatus:        "upstream_banned_signal",
+		SchedulerStatus:        "eligible",
+		SchedulerOverride:      "manual smoke override",
+		SafeSummary:            "operator override",
+	}); err != nil {
+		t.Fatalf("UpdateAccountDiagnostic: %v", err)
+	}
+
+	rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+	resolved, err := rt.Resolve("gpt-test", &poolID, &accountID)
+	if err != nil {
+		t.Fatalf("expected auditable override to route, got %v", err)
+	}
+	if resolved.AccountID != accountID {
+		t.Fatalf("expected account %d, got %d", accountID, resolved.AccountID)
+	}
+}
+
+func TestRoutingCacheReflectsDiagnosticAfterInvalidate(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	accountID := createRouterCpaAccount(t, st, poolID, serviceID, "cache-invalidate", "ok")
+	cache := store.NewRoutingCache(st)
+	rt := NewWithOptions(cache, Options{CpaRuntimeBindingSupported: true})
+	if _, err := rt.Resolve("gpt-test", &poolID, &accountID); err != nil {
+		t.Fatalf("expected initial route, got %v", err)
+	}
+
+	if err := st.UpdateAccountDiagnostic(accountID, store.AccountDiagnosticUpdate{
+		StableDiagnosticStatus: "banned",
+		LastProbeStatus:        "upstream_banned_signal",
+		SafeSummary:            "banned after cache load",
+	}); err != nil {
+		t.Fatalf("UpdateAccountDiagnostic: %v", err)
+	}
+	cache.Invalidate()
+	if _, err := rt.Resolve("gpt-test", &poolID, &accountID); !errors.Is(err, ErrNoHealthyAccount) {
+		t.Fatalf("expected invalidated cache to block banned account, got %v", err)
+	}
+}
+
+func TestRoutingDeprioritizesDiagnosticWarningStatus(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	poolID, err := st.CreatePool("Pool", 0, true)
+	if err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+	serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+	if err != nil {
+		t.Fatalf("CreateCpaService: %v", err)
+	}
+	warnID := createRouterCpaAccount(t, st, poolID, serviceID, "quota-warning", "ok")
+	okID := createRouterCpaAccount(t, st, poolID, serviceID, "usable", "ok")
+	if err := st.UpdateAccountDiagnostic(warnID, store.AccountDiagnosticUpdate{
+		StableDiagnosticStatus: "quota_probe_auth_failed_but_usable",
+		LastProbeStatus:        "quota_probe_auth_failed",
+		SchedulerStatus:        "eligible_with_warning",
+		SafeSummary:            "quota probe auth failed but account remains usable",
+	}); err != nil {
+		t.Fatalf("UpdateAccountDiagnostic warn: %v", err)
+	}
+	if err := st.UpdateAccountDiagnostic(okID, store.AccountDiagnosticUpdate{
+		StableDiagnosticStatus: "usable",
+		LastProbeStatus:        "succeeded",
+		SchedulerStatus:        "eligible",
+		SafeSummary:            "usable",
+	}); err != nil {
+		t.Fatalf("UpdateAccountDiagnostic ok: %v", err)
+	}
+
+	rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+	resolved, err := rt.Resolve("gpt-test", &poolID, nil)
+	if err != nil {
+		t.Fatalf("expected route, got %v", err)
+	}
+	if resolved.AccountID != okID {
+		t.Fatalf("expected eligible account %d to outrank warning account %d, got %d", okID, warnID, resolved.AccountID)
+	}
+
+	resolved, err = rt.Resolve("gpt-test", &poolID, &warnID)
+	if err != nil {
+		t.Fatalf("expected warning account to remain force-routable, got %v", err)
+	}
+	if resolved.AccountID != warnID {
+		t.Fatalf("expected forced warning account %d, got %d", warnID, resolved.AccountID)
+	}
+}
+
 func createRouterCpaAccount(t *testing.T, st *store.Store, poolID, serviceID int64, label, credentialStatus string) int64 {
 	t.Helper()
 	accountID, err := st.CreateAccount(&store.Account{

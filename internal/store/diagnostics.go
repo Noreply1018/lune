@@ -145,6 +145,95 @@ func (s *Store) ListAccountDiagnosticEvidence(diagnosticID int64) ([]AccountDiag
 	return evidence, rows.Err()
 }
 
+func attachAccountDiagnostic(account *Account, diag *AccountDiagnostic) {
+	if account == nil || diag == nil {
+		return
+	}
+	account.Diagnostic = diag
+	account.DiagnosticStatus = diag.StableDiagnosticStatus
+	account.SchedulerStatus = diag.SchedulerStatus
+	account.LastDiagnosedAt = diag.FinishedAt
+	account.DiagnosticSummary = diag.SafeSummary
+}
+
+func AttachAccountDiagnostic(account *Account, diag *AccountDiagnostic) {
+	attachAccountDiagnostic(account, diag)
+}
+
+type AccountDiagnosticUpdate struct {
+	OperationID                    string
+	StableDiagnosticStatus         string
+	PreviousStableDiagnosticStatus string
+	LastProbeStatus                string
+	SchedulerStatus                string
+	SchedulerOverride              string
+	SafeSummary                    string
+}
+
+func (s *Store) UpdateAccountDiagnostic(accountID int64, update AccountDiagnosticUpdate) error {
+	update.StableDiagnosticStatus = strings.ToLower(strings.TrimSpace(update.StableDiagnosticStatus))
+	update.LastProbeStatus = strings.TrimSpace(update.LastProbeStatus)
+	update.SchedulerStatus = strings.ToLower(strings.TrimSpace(update.SchedulerStatus))
+	update.SchedulerOverride = strings.TrimSpace(update.SchedulerOverride)
+	update.SafeSummary = strings.TrimSpace(update.SafeSummary)
+	if err := ValidateDiagnosticStatus(update.StableDiagnosticStatus); err != nil {
+		return err
+	}
+	if update.LastProbeStatus == "" {
+		update.LastProbeStatus = "not_run"
+	}
+	if update.SchedulerOverride == "" {
+		update.SchedulerStatus = SchedulerStatusForStableDiagnostic(update.StableDiagnosticStatus)
+	} else if err := ValidateSchedulerStatus(update.SchedulerStatus); err != nil {
+		return err
+	}
+	if update.SafeSummary == "" {
+		update.SafeSummary = "diagnostic status updated"
+	}
+	if err := s.EnsureAccountDiagnostic(accountID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(
+		`UPDATE account_diagnostics
+		 SET operation_id=?,
+		     started_at=COALESCE(NULLIF(started_at, ''), datetime('now')),
+		     finished_at=datetime('now'),
+		     stable_diagnostic_status=?,
+		     previous_stable_diagnostic_status=?,
+		     last_probe_status=?,
+		     scheduler_status=?,
+		     scheduler_override=?,
+		     safe_summary=?,
+		     updated_at=datetime('now')
+		 WHERE account_id=?`,
+		update.OperationID, update.StableDiagnosticStatus, update.PreviousStableDiagnosticStatus,
+		update.LastProbeStatus, update.SchedulerStatus, update.SchedulerOverride, update.SafeSummary, accountID,
+	)
+	return err
+}
+
+func SchedulerStatusForStableDiagnostic(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "usable":
+		return "eligible"
+	case "quota_probe_auth_failed_but_usable":
+		return "eligible_with_warning"
+	case "banned", "quota_exhausted", "auth_invalid":
+		return "ineligible"
+	default:
+		return "eligible_with_warning"
+	}
+}
+
+func ValidateSchedulerStatus(status string) error {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "eligible", "eligible_with_warning", "ineligible":
+		return nil
+	default:
+		return fmt.Errorf("invalid scheduler status: %s", status)
+	}
+}
+
 func scanAccountDiagnosticRows(rows *sql.Rows) (AccountDiagnostic, error) {
 	diag, err := scanAccountDiagnosticRow(rows)
 	if err != nil {
