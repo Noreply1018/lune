@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -581,8 +582,103 @@ func TestImportCpaAuthJSONRollsBackNewFileWhenPoolAddFails(t *testing.T) {
 	if _, err := os.Stat(reloadSignal); err != nil {
 		t.Fatalf("expected rollback path to request CPA runtime reload: %v", err)
 	}
-	if healthCalls < 2 {
-		t.Fatalf("expected upload reload and rollback reload health probes, got %d", healthCalls)
+	if healthCalls != 1 {
+		t.Fatalf("expected rollback path to request exactly one CPA runtime reload, got %d", healthCalls)
+	}
+}
+
+func TestImportCpaAuthJSONBatchRequestsSingleRuntimeReload(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	reloadSignal := filepath.Join(t.TempDir(), "cpa-reload.signal")
+	var healthCalls int
+	cpaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		healthCalls++
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer cpaServer.Close()
+	if _, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: cpaServer.URL,
+		APIKey:  "service-key",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	poolID, err := st.CreatePool("Codex", 0, true)
+	if err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+	checker := health.NewChecker(st, cache, authDir, "", newTestNotifier(st))
+	checker.SetCpaReloadSignalPath(reloadSignal)
+	handler := NewHandler(st, cache, authDir, "", checker, newTestNotifier(st))
+
+	body, contentType := multipartAuthJSONBatchBody(t, map[string]string{
+		"pool_id": fmt.Sprint(poolID),
+	}, map[string]string{
+		"first.json":  codexAuthJSON(t, "batch-one@example.com", "acct_batch_one", "refresh-one"),
+		"second.json": codexAuthJSON(t, "batch-two@example.com", "acct_batch_two", "refresh-two"),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/accounts/cpa/import-json-batch", body)
+	req.Header.Set("Content-Type", contentType)
+	rr := httptest.NewRecorder()
+
+	handler.importCpaAuthJSONBatch(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if healthCalls != 1 {
+		t.Fatalf("expected one batch-level CPA runtime reload, got %d", healthCalls)
+	}
+	var resp struct {
+		Data cpaAuthJSONBatchResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.Summary.Created != 2 || resp.Data.Summary.PendingRuntimeSync != 2 || resp.Data.Summary.FailedRuntimeSync != 0 {
+		t.Fatalf("unexpected import summary: %+v", resp.Data.Summary)
+	}
+}
+
+func TestReloadFailureLogDoesNotExposeFullAccountKey(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+	authDir := t.TempDir()
+	reloadSignal := filepath.Join(t.TempDir(), "cpa-reload.signal")
+	checker := health.NewChecker(st, cache, authDir, "", newTestNotifier(st))
+	checker.SetCpaReloadSignalPath(reloadSignal)
+	handler := NewHandler(st, cache, authDir, "", checker, newTestNotifier(st))
+
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	fullKey := "codex-secret.user@example.com-plus"
+	status := handler.reloadCpaRuntimeAfterAuthImport(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "http://127.0.0.1:1",
+		Enabled: true,
+	}, shortHash(fullKey), "upload")
+	if status != "failed" {
+		t.Fatalf("expected failed runtime sync, got %q", status)
+	}
+	text := logs.String()
+	if strings.Contains(text, fullKey) || strings.Contains(text, "secret.user@example.com") {
+		t.Fatalf("reload failure log leaked account key/email: %s", text)
+	}
+	if !strings.Contains(text, "target=") {
+		t.Fatalf("expected sanitized target summary in log, got: %s", text)
 	}
 }
 

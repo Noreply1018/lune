@@ -40,7 +40,7 @@ type Handler struct {
 	sessions         *cpa.SessionStore
 	healthChecker    *health.Checker
 	notifier         *notify.Service
-	cpaImportMu      sync.Mutex
+	cpaLifecycleMu   sync.Mutex
 }
 
 func NewHandler(s *store.Store, c *store.RoutingCache, cpaAuthDir, cpaManagementKey string, hc *health.Checker, notifier *notify.Service, gatewayTmpDir ...string) *Handler {
@@ -325,6 +325,8 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.cpaLifecycleMu.Lock()
+	defer h.cpaLifecycleMu.Unlock()
 	acc, err := h.store.GetAccount(id)
 	if err != nil {
 		h.internalError(w, err)
@@ -2692,6 +2694,9 @@ func (h *Handler) importCpaAuthJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.cpaLifecycleMu.Lock()
+	defer h.cpaLifecycleMu.Unlock()
+
 	existingFile, hadExistingFile, err := readExistingAuthFileBytes(h.cpaAuthDir, accountKey)
 	if err != nil {
 		h.internalError(w, err)
@@ -2727,12 +2732,10 @@ func (h *Handler) importCpaAuthJSON(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.reloadCpaRuntimeAfterAuthImport(svc, accountKey, "upload")
-
 	account, err := h.upsertImportedCpaAccount(svc, accountKey, authFile, label, enabled, notes)
 	if err != nil {
 		rollbackAuthFile()
-		h.reloadCpaRuntimeAfterAuthImport(svc, accountKey, "rollback")
+		h.reloadCpaRuntimeAfterAuthImport(svc, shortHash(accountKey), "rollback")
 		h.internalError(w, err)
 		return
 	}
@@ -2745,10 +2748,11 @@ func (h *Handler) importCpaAuthJSON(w http.ResponseWriter, r *http.Request) {
 			slog.Error("importCpaAuthJSON: restore existing account failed", "account_id", existingBefore.ID, "err", restoreErr)
 		}
 		rollbackAuthFile()
-		h.reloadCpaRuntimeAfterAuthImport(svc, accountKey, "rollback")
+		h.reloadCpaRuntimeAfterAuthImport(svc, shortHash(accountKey), "rollback")
 		webutil.WriteAdminError(w, 500, "internal", "failed to add imported account to pool")
 		return
 	}
+	h.reloadCpaRuntimeAfterAuthImport(svc, shortHash(accountKey), "upload")
 	if h.healthChecker != nil {
 		if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
 			go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
@@ -2830,8 +2834,8 @@ func (h *Handler) importCpaAuthJSONBatch(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	h.cpaImportMu.Lock()
-	defer h.cpaImportMu.Unlock()
+	h.cpaLifecycleMu.Lock()
+	defer h.cpaLifecycleMu.Unlock()
 	enabled := true
 	if raw := strings.TrimSpace(r.FormValue("enabled")); raw != "" {
 		enabled = raw != "0" && !strings.EqualFold(raw, "false")
@@ -2839,6 +2843,8 @@ func (h *Handler) importCpaAuthJSONBatch(w http.ResponseWriter, r *http.Request)
 	batchID := shortHash(fmt.Sprintf("%d:%d:%s", svc.ID, poolID, time.Now().UTC().Format(time.RFC3339Nano)))
 	seen := make(map[string]bool)
 	resp := cpaAuthJSONBatchResponse{BatchID: batchID, PoolID: poolID}
+	changedAccountKeys := make([]string, 0, len(items))
+	changedAccountIDs := make([]int64, 0, len(items))
 	for _, item := range items {
 		if item.Status == "failed" {
 			resp.Items = append(resp.Items, item)
@@ -2856,6 +2862,12 @@ func (h *Handler) importCpaAuthJSONBatch(w http.ResponseWriter, r *http.Request)
 		}
 		seen[item.accountKey] = true
 		item = h.importSingleCpaAuthJSONBatchItem(svc, poolID, item, enabled)
+		if item.Status == "created" || item.Status == "updated" {
+			changedAccountKeys = append(changedAccountKeys, item.accountKey)
+			if item.AccountID != 0 {
+				changedAccountIDs = append(changedAccountIDs, item.AccountID)
+			}
+		}
 		resp.Items = append(resp.Items, item)
 		switch item.Status {
 		case "created":
@@ -2867,15 +2879,10 @@ func (h *Handler) importCpaAuthJSONBatch(w http.ResponseWriter, r *http.Request)
 		default:
 			resp.Summary.Failed++
 		}
-		switch item.RuntimeSync {
-		case "synced":
-			resp.Summary.SyncedRuntimeSync++
-		case "pending":
-			resp.Summary.PendingRuntimeSync++
-		case "failed":
-			resp.Summary.FailedRuntimeSync++
-		}
 	}
+	h.applyBatchRuntimeSync(svc, resp.Items, changedAccountKeys, batchID)
+	resp.Summary.SyncedRuntimeSync, resp.Summary.PendingRuntimeSync, resp.Summary.FailedRuntimeSync = summarizeRuntimeSync(resp.Items)
+	h.refreshImportedAccountsAsync(changedAccountIDs)
 	h.recordCpaAuthJSONBatchAudit(resp, poolID)
 	h.cache.Invalidate()
 	webutil.WriteData(w, 200, resp)
@@ -3032,21 +3039,57 @@ func (h *Handler) importSingleCpaAuthJSONBatchItem(svc *store.CpaService, poolID
 	} else {
 		item.Status = "updated"
 	}
-	item.RuntimeSync = h.reloadCpaRuntimeAfterAuthImport(svc, item.accountKey, "batch_upload")
-	if item.RuntimeSync == "not_applicable" && h.healthChecker != nil {
-		item.RuntimeSync = "pending"
-	}
 	if h.healthChecker != nil {
-		if acc, err := h.store.GetAccount(account.ID); err == nil && acc != nil {
-			go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
-				Models:        true,
-				Quota:         true,
-				Subscription:  true,
-				WaitAuthIndex: true,
-			})
-		}
+		item.RuntimeSync = "pending"
+	} else {
+		item.RuntimeSync = "not_applicable"
 	}
 	return item
+}
+
+func (h *Handler) applyBatchRuntimeSync(svc *store.CpaService, items []cpaAuthJSONBatchItem, changedAccountKeys []string, batchID string) {
+	if len(changedAccountKeys) == 0 || h.healthChecker == nil {
+		return
+	}
+	target := fmt.Sprintf("batch=%s accounts=%d", batchID, len(changedAccountKeys))
+	status := h.reloadCpaRuntimeAfterAuthImport(svc, target, "batch_upload")
+	for i := range items {
+		if items[i].Status == "created" || items[i].Status == "updated" {
+			items[i].RuntimeSync = status
+		}
+	}
+}
+
+func summarizeRuntimeSync(items []cpaAuthJSONBatchItem) (synced, pending, failed int) {
+	for _, item := range items {
+		switch item.RuntimeSync {
+		case "synced":
+			synced++
+		case "pending":
+			pending++
+		case "failed":
+			failed++
+		}
+	}
+	return synced, pending, failed
+}
+
+func (h *Handler) refreshImportedAccountsAsync(accountIDs []int64) {
+	if h.healthChecker == nil {
+		return
+	}
+	for _, accountID := range accountIDs {
+		acc, err := h.store.GetAccount(accountID)
+		if err != nil || acc == nil {
+			continue
+		}
+		go h.healthChecker.RefreshAccount(context.Background(), *acc, health.RefreshOptions{
+			Models:        true,
+			Quota:         true,
+			Subscription:  true,
+			WaitAuthIndex: true,
+		})
+	}
 }
 
 func (h *Handler) recordCpaAuthJSONBatchAudit(resp cpaAuthJSONBatchResponse, poolID int64) {
@@ -3087,14 +3130,14 @@ func (h *Handler) recordCpaAuthJSONBatchAudit(resp cpaAuthJSONBatchResponse, poo
 	})
 }
 
-func (h *Handler) reloadCpaRuntimeAfterAuthImport(svc *store.CpaService, accountKey, phase string) string {
+func (h *Handler) reloadCpaRuntimeAfterAuthImport(svc *store.CpaService, targetSummary, phase string) string {
 	if h.healthChecker == nil {
 		return "not_applicable"
 	}
 	reloadCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := h.healthChecker.RequestCpaRuntimeReload(reloadCtx, svc); err != nil {
-		slog.Warn("importCpaAuthJSON: CPA runtime reload failed", "account_key", accountKey, "phase", phase, "err", err)
+		slog.Warn("importCpaAuthJSON: CPA runtime reload failed", "target", targetSummary, "phase", phase, "err", err)
 		return "failed"
 	}
 	return "pending"
