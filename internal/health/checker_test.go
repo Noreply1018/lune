@@ -575,6 +575,128 @@ func TestCodexQuotaUnauthorizedPromotesExistingUsableDiagnostic(t *testing.T) {
 	}
 }
 
+func TestCodexQuotaUnauthorizedPreservesStaleUsableDiagnostic(t *testing.T) {
+	st := newTestStore(t)
+	cache := store.NewRoutingCache(st)
+
+	serviceID, err := st.CreateCpaService(&store.CpaService{
+		Label:   "CPA",
+		BaseURL: "http://cpa.example",
+		APIKey:  "service-key",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create cpa service: %v", err)
+	}
+	accountID, err := st.CreateAccount(&store.Account{
+		Label:                 "Codex",
+		SourceKind:            "cpa",
+		CpaServiceID:          &serviceID,
+		CpaProvider:           "codex",
+		CpaAccountKey:         "codex-user@example.com-plus",
+		CpaOpenaiID:           "acct_123",
+		CpaCredentialStatus:   "ok",
+		CpaSubscriptionStatus: "active",
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := st.UpdateAccountDiagnostic(accountID, store.AccountDiagnosticUpdate{
+		StableDiagnosticStatus: "usable",
+		LastProbeStatus:        "transient_error",
+		SchedulerStatus:        "eligible",
+		SafeSummary:            "stale usable state",
+	}); err != nil {
+		t.Fatalf("seed diagnostic: %v", err)
+	}
+	cache.Invalidate()
+
+	acc, err := st.GetAccount(accountID)
+	if err != nil || acc == nil {
+		t.Fatalf("get account: %v", err)
+	}
+	checker := NewChecker(st, cache, "", "", nil)
+	checker.recordCodexQuotaProbeDiagnostic(*acc, http.StatusForbidden, "HTTP 403")
+	diag, err := st.GetAccountDiagnostic(accountID)
+	if err != nil {
+		t.Fatalf("get diagnostic: %v", err)
+	}
+	if diag.StableDiagnosticStatus != "usable" || diag.SchedulerStatus != "eligible" {
+		t.Fatalf("expected stale usable stable status to be preserved, got %+v", diag)
+	}
+	if diag.LastProbeStatus != "quota_probe_auth_failed" || len(diag.Evidence) == 0 {
+		t.Fatalf("expected quota auth failure evidence, got %+v", diag)
+	}
+}
+
+func TestCodexQuotaUnauthorizedDoesNotOverwriteTerminalDiagnostic(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stable string
+	}{
+		{name: "banned", stable: "banned"},
+		{name: "auth-invalid", stable: "auth_invalid"},
+		{name: "quota-exhausted", stable: "quota_exhausted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newTestStore(t)
+			cache := store.NewRoutingCache(st)
+
+			serviceID, err := st.CreateCpaService(&store.CpaService{
+				Label:   "CPA",
+				BaseURL: "http://cpa.example",
+				APIKey:  "service-key",
+				Enabled: true,
+			})
+			if err != nil {
+				t.Fatalf("create cpa service: %v", err)
+			}
+			accountID, err := st.CreateAccount(&store.Account{
+				Label:                 "Codex",
+				SourceKind:            "cpa",
+				CpaServiceID:          &serviceID,
+				CpaProvider:           "codex",
+				CpaAccountKey:         "codex-user@example.com-plus",
+				CpaOpenaiID:           "acct_123",
+				CpaCredentialStatus:   "ok",
+				CpaSubscriptionStatus: "active",
+				Enabled:               true,
+			})
+			if err != nil {
+				t.Fatalf("create account: %v", err)
+			}
+			if err := st.UpdateAccountDiagnostic(accountID, store.AccountDiagnosticUpdate{
+				StableDiagnosticStatus: tc.stable,
+				LastProbeStatus:        "succeeded",
+				SchedulerStatus:        store.SchedulerStatusForStableDiagnostic(tc.stable),
+				SafeSummary:            "seed diagnostic",
+			}); err != nil {
+				t.Fatalf("seed diagnostic: %v", err)
+			}
+			cache.Invalidate()
+
+			acc, err := st.GetAccount(accountID)
+			if err != nil || acc == nil {
+				t.Fatalf("get account: %v", err)
+			}
+			checker := NewChecker(st, cache, "", "", nil)
+			checker.recordCodexQuotaProbeDiagnostic(*acc, http.StatusForbidden, "HTTP 403")
+
+			diag, err := st.GetAccountDiagnostic(accountID)
+			if err != nil {
+				t.Fatalf("get diagnostic: %v", err)
+			}
+			if diag.StableDiagnosticStatus != tc.stable {
+				t.Fatalf("expected terminal stable status to remain %q, got %+v", tc.stable, diag)
+			}
+			if diag.SchedulerStatus != store.SchedulerStatusForStableDiagnostic(tc.stable) {
+				t.Fatalf("expected scheduler status to remain terminal, got %+v", diag)
+			}
+		})
+	}
+}
+
 func TestFetchCodexQuotasSkipsAccountsInBackoff(t *testing.T) {
 	t.Parallel()
 

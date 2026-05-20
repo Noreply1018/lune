@@ -830,6 +830,9 @@ func isCpaAccountBannedSignal(statusCode int, body []byte, fallback string) bool
 	if text == "" || textHasQuotaLimitSignal(text) {
 		return false
 	}
+	if strings.Contains(text, "policy violation") {
+		return false
+	}
 	for _, phrase := range []string{
 		"account banned",
 		"account is banned",
@@ -840,11 +843,13 @@ func isCpaAccountBannedSignal(statusCode int, body []byte, fallback string) bool
 		"abuse lock",
 		"policy lock",
 		"account locked",
-		"access to this account has been disabled",
 	} {
 		if strings.Contains(text, phrase) {
 			return true
 		}
+	}
+	if strings.Contains(text, "access to this account has been disabled") {
+		return true
 	}
 	return false
 }

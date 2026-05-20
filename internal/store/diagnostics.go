@@ -254,6 +254,21 @@ func (s *Store) UpdateAccountDiagnosticWithEvidence(accountID int64, update Acco
 	if err := s.EnsureAccountDiagnostic(accountID); err != nil {
 		return err
 	}
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		lastErr = s.updateAccountDiagnosticWithEvidenceTx(accountID, update, evidence)
+		if lastErr == nil {
+			return nil
+		}
+		if !isSQLiteBusyError(lastErr) {
+			return lastErr
+		}
+		time.Sleep(time.Duration(attempt+1) * 50 * time.Millisecond)
+	}
+	return lastErr
+}
+
+func (s *Store) updateAccountDiagnosticWithEvidenceTx(accountID int64, update AccountDiagnosticUpdate, evidence AccountDiagnosticEvidenceInput) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -319,6 +334,14 @@ func (s *Store) UpdateAccountDiagnosticWithEvidence(accountID int64, update Acco
 		return err
 	}
 	return tx.Commit()
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	code := sqliteErrorCode(err)
+	return code == "sqlite_busy" || code == "sqlite_locked"
 }
 
 func SchedulerStatusForStableDiagnostic(status string) string {

@@ -590,6 +590,52 @@ func TestRoutingUsesPersistedDiagnosticSchedulerStatus(t *testing.T) {
 	}
 }
 
+func TestDiagnosticForceRouteBypassesCpaCredentialAndQuotaBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		credential string
+		quota      string
+	}{
+		{name: "needs-login", credential: "needs_login", quota: "unknown"},
+		{name: "quota-blocked", credential: "ok", quota: "blocked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
+			if err != nil {
+				t.Fatalf("store.New: %v", err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+
+			poolID, err := st.CreatePool("Pool", 0, true)
+			if err != nil {
+				t.Fatalf("CreatePool: %v", err)
+			}
+			serviceID, err := st.CreateCpaService(&store.CpaService{Label: "CPA", BaseURL: "http://cpa.example", APIKey: "sk", Enabled: true})
+			if err != nil {
+				t.Fatalf("CreateCpaService: %v", err)
+			}
+			accountID := createRouterCpaAccount(t, st, poolID, serviceID, tc.name, tc.credential)
+			if tc.quota != "" {
+				if err := st.UpdateAccountCodexQuotaStatus(accountID, tc.quota, "test quota state", time.Now().UTC().Format(time.RFC3339)); err != nil {
+					t.Fatalf("UpdateAccountCodexQuotaStatus: %v", err)
+				}
+			}
+
+			rt := NewWithOptions(store.NewRoutingCache(st), Options{CpaRuntimeBindingSupported: true})
+			if _, err := rt.Resolve("gpt-test", &poolID, &accountID); !errors.Is(err, ErrNoHealthyAccount) {
+				t.Fatalf("expected normal forced route to reject %s, got %v", tc.name, err)
+			}
+			resolved, err := rt.ResolveWithOptions("gpt-test", &poolID, &accountID, ResolveOptions{Diagnostic: true})
+			if err != nil {
+				t.Fatalf("expected diagnostic forced route to bypass %s, got %v", tc.name, err)
+			}
+			if resolved.AccountID != accountID {
+				t.Fatalf("expected account %d, got %d", accountID, resolved.AccountID)
+			}
+		})
+	}
+}
+
 func TestRoutingDoesNotAllowFatalDiagnosticWithEligibleSchedulerWithoutOverride(t *testing.T) {
 	st, err := store.New(filepath.Join(t.TempDir(), "router.db"))
 	if err != nil {

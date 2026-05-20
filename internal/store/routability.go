@@ -66,6 +66,10 @@ func EvaluateAccountRoutability(acc *Account, opts RoutabilityOptions) Routabili
 }
 
 func evaluateCpaRoutability(acc *Account, opts RoutabilityOptions) RoutabilityDecision {
+	if opts.Diagnostic {
+		return RoutabilityDecision{Routable: true, Reason: "routable"}
+	}
+
 	switch strings.ToLower(acc.CpaCredentialStatus) {
 	case "needs_login", "refresh_failed", "runtime_pending", "runtime_error", "unknown", "":
 		return blocked("credential_" + firstNonEmpty(strings.ToLower(acc.CpaCredentialStatus), "unknown"))
@@ -75,11 +79,10 @@ func evaluateCpaRoutability(acc *Account, opts RoutabilityOptions) RoutabilityDe
 	if strings.EqualFold(acc.CpaCredentialStatus, "auth_suspect") {
 		decision.Penalty++
 	}
-	if !opts.Diagnostic && strings.EqualFold(acc.CpaQuotaStatus, "blocked") {
+	if strings.EqualFold(acc.CpaQuotaStatus, "blocked") {
 		return blocked("quota_blocked")
 	}
-	if !opts.Diagnostic &&
-		strings.EqualFold(acc.CpaProvider, "codex") &&
+	if strings.EqualFold(acc.CpaProvider, "codex") &&
 		strings.EqualFold(acc.CpaQuotaStatus, "error") &&
 		strings.HasPrefix(acc.CpaQuotaLastError, "HTTP 429 from model request") {
 		return blocked("model_request_429")

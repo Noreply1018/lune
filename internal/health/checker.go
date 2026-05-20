@@ -1085,9 +1085,11 @@ func (c *Checker) recordCodexQuotaProbeDiagnostic(acc store.Account, httpStatus 
 		}
 		switch stableStatus {
 		case "usable", "quota_probe_auth_failed_but_usable":
-			stableStatus = "quota_probe_auth_failed_but_usable"
-			safeSummary = "quota probe authentication failed but account remains usable"
-			preserveStable = false
+			if hasFreshUsableDiagnostic(current) {
+				stableStatus = "quota_probe_auth_failed_but_usable"
+				safeSummary = "quota probe authentication failed but account remains usable"
+				preserveStable = false
+			}
 		}
 	}
 	previousStable := "unknown"
@@ -1114,6 +1116,17 @@ func (c *Checker) recordCodexQuotaProbeDiagnostic(acc store.Account, httpStatus 
 	}); err != nil {
 		slog.Warn("record quota probe diagnostic", "account_id", acc.ID, "err", err)
 	}
+}
+
+func hasFreshUsableDiagnostic(diag *store.AccountDiagnostic) bool {
+	if diag == nil {
+		return false
+	}
+	if !strings.EqualFold(diag.StableDiagnosticStatus, "usable") &&
+		!strings.EqualFold(diag.StableDiagnosticStatus, "quota_probe_auth_failed_but_usable") {
+		return false
+	}
+	return strings.EqualFold(diag.LastProbeStatus, "succeeded")
 }
 
 func isQuotaProbeAuthFailureStatus(statusCode int) bool {
